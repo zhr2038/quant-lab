@@ -3,18 +3,20 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import datetime
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 AI_TASK_SCHEMA_VERSION = "quant_lab.ai_research_task.v1"
 AI_STAGE1_SCHEMA_VERSION = "quant_lab.ai_research_diagnosis.v1"
-AI_STAGE2_SCHEMA_VERSION = "quant_lab.ai_research_proposals.v1"
+LEGACY_AI_STAGE2_SCHEMA_VERSION = "quant_lab.ai_research_proposals.v1"
+AI_STAGE2_SCHEMA_VERSION = "quant_lab.ai_research_hypothesis_drafts.v2"
 AI_RESULT_SCHEMA_VERSION = "quant_lab.ai_research_result.v1"
-AI_PROMPT_VERSION = "quant_lab.ai_research.prompt.v3"
+AI_PROMPT_VERSION = "quant_lab.ai_research.prompt.v4"
 SUPPORTED_AI_PROMPT_VERSIONS = (
     "quant_lab.ai_research.prompt.v1",
     "quant_lab.ai_research.prompt.v2",
+    "quant_lab.ai_research.prompt.v3",
     AI_PROMPT_VERSION,
 )
 
@@ -39,6 +41,25 @@ FactorTemplate = Literal[
     "range_vol_ratio",
     "range_location",
     "liquidity_adjusted",
+]
+
+HypothesisFamily = Literal[
+    "behavioral_underreaction",
+    "behavioral_overreaction",
+    "cross_sectional_rotation",
+    "inventory_pressure",
+    "liquidity_provision",
+    "market_structure",
+    "risk_transfer",
+    "execution_quality",
+    "exit_efficiency",
+    "data_quality",
+]
+DataAvailabilityStatus = Literal[
+    "AVAILABLE_VERIFIED",
+    "AVAILABLE_PARTIAL",
+    "MISSING",
+    "UNKNOWN",
 ]
 
 ResearchCategory = Literal[
@@ -382,8 +403,10 @@ class ExperimentProposal(StrictModel):
     live_order_effect: Literal[LIVE_ORDER_EFFECT] = LIVE_ORDER_EFFECT
 
 
-class Stage2ProposalSet(StrictModel):
-    schema_version: Literal[AI_STAGE2_SCHEMA_VERSION] = AI_STAGE2_SCHEMA_VERSION
+class LegacyStage2ProposalSet(StrictModel):
+    schema_version: Literal[LEGACY_AI_STAGE2_SCHEMA_VERSION] = (
+        LEGACY_AI_STAGE2_SCHEMA_VERSION
+    )
     task_id: str = Field(min_length=1, max_length=160)
     executive_summary: str = Field(min_length=1, max_length=3000)
     factor_proposals: list[FactorProposal] = Field(default_factory=list, max_length=8)
@@ -394,9 +417,142 @@ class Stage2ProposalSet(StrictModel):
     prohibited_actions: list[str] = Field(default_factory=lambda: list(PROHIBITED_ACTIONS))
 
     @model_validator(mode="after")
-    def preserve_safety_boundary(self) -> Stage2ProposalSet:
+    def preserve_safety_boundary(self) -> LegacyStage2ProposalSet:
         _require_prohibited_actions(self.prohibited_actions)
         return self
+
+
+class ResearchHypothesisDraft(StrictModel):
+    hypothesis_id: str = Field(min_length=1, max_length=160)
+    title: str = Field(min_length=1, max_length=300)
+    hypothesis_family: HypothesisFamily
+    research_question: str = Field(min_length=1, max_length=1500)
+    economic_return_payer: str = Field(min_length=1, max_length=2000)
+    persistence_mechanism: str = Field(min_length=1, max_length=2000)
+    beta_exclusion_design: str = Field(min_length=1, max_length=2000)
+    liquidity_exclusion_design: str = Field(min_length=1, max_length=2000)
+    symbol_fixed_effect_exclusion_design: str = Field(min_length=1, max_length=2000)
+    required_datasets: list[str] = Field(min_length=1, max_length=24)
+    required_fields: list[str] = Field(min_length=1, max_length=64)
+    data_availability_status: DataAvailabilityStatus
+    data_availability_notes: str = Field(min_length=1, max_length=1500)
+    expected_horizon_bars: list[int] = Field(min_length=1, max_length=8)
+    falsification_conditions: list[str] = Field(min_length=1, max_length=12)
+    stopping_conditions: list[str] = Field(min_length=1, max_length=12)
+    known_overlap_risks: list[str] = Field(min_length=1, max_length=12)
+    max_variants: int = Field(ge=1, le=3)
+    evidence_refs: list[EvidenceReference] = Field(min_length=1, max_length=12)
+    research_thread_id: str = Field(min_length=1, max_length=160)
+    source_finding_ids: list[str] = Field(min_length=1, max_length=12)
+    proposal_state: Literal["AI_RESEARCH_DRAFT"] = "AI_RESEARCH_DRAFT"
+    requires_human_review: Literal[True] = True
+    automatic_registration: Literal[False] = False
+    automatic_execution: Literal[False] = False
+    automatic_promotion: Literal[False] = False
+    research_only: Literal[True] = True
+    live_order_effect: Literal[LIVE_ORDER_EFFECT] = LIVE_ORDER_EFFECT
+
+    @field_validator("expected_horizon_bars")
+    @classmethod
+    def horizons_are_positive(cls, value: list[int]) -> list[int]:
+        cleaned = sorted(set(int(item) for item in value if int(item) > 0))
+        if not cleaned:
+            raise ValueError("expected_horizon_bars must contain positive values")
+        return cleaned
+
+
+class DataCollectionProposal(StrictModel):
+    proposal_id: str = Field(min_length=1, max_length=160)
+    title: str = Field(min_length=1, max_length=300)
+    observed_data_gap: str = Field(min_length=1, max_length=1500)
+    required_dataset: str = Field(min_length=1, max_length=300)
+    required_fields: list[str] = Field(min_length=1, max_length=64)
+    collection_scope: str = Field(min_length=1, max_length=1500)
+    collection_method: str = Field(min_length=1, max_length=2000)
+    availability_lag_requirement: str = Field(min_length=1, max_length=1000)
+    freshness_requirement: str = Field(min_length=1, max_length=1000)
+    quality_checks: list[str] = Field(min_length=1, max_length=16)
+    acceptance_criteria: list[str] = Field(min_length=1, max_length=16)
+    stopping_conditions: list[str] = Field(min_length=1, max_length=12)
+    evidence_refs: list[EvidenceReference] = Field(min_length=1, max_length=12)
+    research_thread_id: str = Field(min_length=1, max_length=160)
+    source_finding_ids: list[str] = Field(min_length=1, max_length=12)
+    proposal_state: Literal["AI_RESEARCH_DRAFT"] = "AI_RESEARCH_DRAFT"
+    requires_human_review: Literal[True] = True
+    automatic_execution: Literal[False] = False
+    research_only: Literal[True] = True
+    live_order_effect: Literal[LIVE_ORDER_EFFECT] = LIVE_ORDER_EFFECT
+
+
+class AttributionExperiment(StrictModel):
+    experiment_id: str = Field(min_length=1, max_length=160)
+    hypothesis_id: str | None = Field(default=None, max_length=160)
+    title: str = Field(min_length=1, max_length=300)
+    attribution_question: str = Field(min_length=1, max_length=1500)
+    target_outcome: str = Field(min_length=1, max_length=1000)
+    treatment_definition: str = Field(min_length=1, max_length=1500)
+    control_group_definition: str = Field(min_length=1, max_length=1500)
+    beta_control: str = Field(min_length=1, max_length=1500)
+    liquidity_control: str = Field(min_length=1, max_length=1500)
+    symbol_fixed_effect_control: str = Field(min_length=1, max_length=1500)
+    overlap_control: str = Field(min_length=1, max_length=1500)
+    cost_model_requirement: str = Field(min_length=1, max_length=1000)
+    time_split_design: str = Field(min_length=1, max_length=1500)
+    required_datasets: list[str] = Field(min_length=1, max_length=32)
+    minimum_independent_samples: int = Field(ge=10, le=1_000_000)
+    success_metrics: list[str] = Field(min_length=1, max_length=16)
+    falsification_conditions: list[str] = Field(min_length=1, max_length=12)
+    stopping_conditions: list[str] = Field(min_length=1, max_length=12)
+    regime_slices: list[str] = Field(min_length=1, max_length=12)
+    evidence_refs: list[EvidenceReference] = Field(min_length=1, max_length=12)
+    research_thread_id: str = Field(min_length=1, max_length=160)
+    source_finding_ids: list[str] = Field(min_length=1, max_length=12)
+    proposal_state: Literal["AI_RESEARCH_DRAFT"] = "AI_RESEARCH_DRAFT"
+    requires_human_review: Literal[True] = True
+    automatic_execution: Literal[False] = False
+    automatic_promotion: Literal[False] = False
+    research_only: Literal[True] = True
+    live_order_effect: Literal[LIVE_ORDER_EFFECT] = LIVE_ORDER_EFFECT
+
+
+class Stage2ProposalSet(StrictModel):
+    schema_version: Literal[AI_STAGE2_SCHEMA_VERSION] = AI_STAGE2_SCHEMA_VERSION
+    task_id: str = Field(min_length=1, max_length=160)
+    executive_summary: str = Field(min_length=1, max_length=3000)
+    research_hypothesis_drafts: list[ResearchHypothesisDraft] = Field(
+        default_factory=list, max_length=3
+    )
+    data_collection_proposals: list[DataCollectionProposal] = Field(
+        default_factory=list, max_length=3
+    )
+    attribution_experiments: list[AttributionExperiment] = Field(
+        default_factory=list, max_length=3
+    )
+    code_review_targets: list[CodeReviewTarget] = Field(default_factory=list, max_length=12)
+    no_action_reasons: list[str] = Field(default_factory=list, max_length=24)
+    prohibited_actions: list[str] = Field(default_factory=lambda: list(PROHIBITED_ACTIONS))
+
+    @model_validator(mode="after")
+    def preserve_safety_boundary(self) -> Stage2ProposalSet:
+        _require_prohibited_actions(self.prohibited_actions)
+        hypothesis_ids = {item.hypothesis_id for item in self.research_hypothesis_drafts}
+        unknown_links = {
+            item.hypothesis_id
+            for item in self.attribution_experiments
+            if item.hypothesis_id is not None and item.hypothesis_id not in hypothesis_ids
+        }
+        if unknown_links:
+            raise ValueError(
+                "attribution experiments reference unknown hypothesis drafts: "
+                f"{sorted(unknown_links)}"
+            )
+        return self
+
+
+AIStage2ProposalSet = Annotated[
+    LegacyStage2ProposalSet | Stage2ProposalSet,
+    Field(discriminator="schema_version"),
+]
 
 
 class EvidenceDocument(StrictModel):
@@ -421,6 +577,7 @@ class AIResearchTask(StrictModel):
         "quant_lab.ai_research.prompt.v1",
         "quant_lab.ai_research.prompt.v2",
         "quant_lab.ai_research.prompt.v3",
+        "quant_lab.ai_research.prompt.v4",
     ] = AI_PROMPT_VERSION
     task_id: str = Field(min_length=1, max_length=160)
     created_at: datetime
@@ -433,7 +590,10 @@ class AIResearchTask(StrictModel):
     sections: dict[str, list[EvidenceDocument]]
     preflight: TaskPreflight | None = None
     previous_research_context: PriorResearchContext | None = None
-    allowed_factor_templates: list[FactorTemplate]
+    allowed_factor_templates: list[FactorTemplate] = Field(default_factory=list)
+    allowed_hypothesis_families: list[HypothesisFamily] = Field(
+        default_factory=list, max_length=10
+    )
     prohibited_actions: list[str] = Field(default_factory=lambda: list(PROHIBITED_ACTIONS))
     warnings: list[str] = Field(default_factory=list, max_length=128)
 
@@ -447,8 +607,10 @@ class AIResearchTask(StrictModel):
             not self.source_pack_id or not self.source_snapshot_id
         ):
             raise ValueError("NAS AI research task requires pack_id and snapshot_id")
-        if not self.allowed_factor_templates:
-            raise ValueError("AI research task requires at least one factor template")
+        if self.prompt_version == AI_PROMPT_VERSION and not self.allowed_hypothesis_families:
+            raise ValueError("AI research task requires bounded hypothesis families")
+        if self.prompt_version != AI_PROMPT_VERSION and not self.allowed_factor_templates:
+            raise ValueError("legacy AI research task requires at least one factor template")
         return self
 
 
@@ -463,7 +625,7 @@ class AIResearchResult(StrictModel):
     started_at: datetime
     completed_at: datetime
     diagnosis: Stage1Diagnosis
-    proposals: Stage2ProposalSet | None
+    proposals: AIStage2ProposalSet | None
     stage1_response_id: str | None = Field(default=None, max_length=300)
     stage2_response_id: str | None = Field(default=None, max_length=300)
     usage_json: str = "{}"
@@ -496,12 +658,20 @@ class AIResearchResult(StrictModel):
             )
         }
         if self.proposals is not None:
-            proposal_items = (
-                list(self.proposals.factor_proposals)
-                + list(self.proposals.paper_strategy_drafts)
-                + list(self.proposals.experiment_proposals)
-                + list(self.proposals.code_review_targets)
-            )
+            if isinstance(self.proposals, LegacyStage2ProposalSet):
+                proposal_items = (
+                    list(self.proposals.factor_proposals)
+                    + list(self.proposals.paper_strategy_drafts)
+                    + list(self.proposals.experiment_proposals)
+                    + list(self.proposals.code_review_targets)
+                )
+            else:
+                proposal_items = (
+                    list(self.proposals.research_hypothesis_drafts)
+                    + list(self.proposals.data_collection_proposals)
+                    + list(self.proposals.attribution_experiments)
+                    + list(self.proposals.code_review_targets)
+                )
             unknown_ids = {
                 source_id
                 for item in proposal_items

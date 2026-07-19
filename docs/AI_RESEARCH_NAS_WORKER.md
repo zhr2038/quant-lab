@@ -87,10 +87,13 @@ finding -> primary bottleneck -> root cause tree -> next action -> code review t
 
 Stage 2 只能输出：
 
-- 受限 `FactorTemplate` 因子候选；
-- shadow/paper 规则草案；
-- 对照实验；
+- 最多 3 条具备经济付款方、持续机制和替代解释控制的研究假设；
+- 最多 3 条数据采集提案；
+- 最多 3 条 beta/liquidity/symbol fixed effect/overlap-aware 归因实验；
 - 待人工检查的代码路径。
+
+Stage 2 不再输出 `FactorTemplate`、公式枚举或 Paper 规则。研究假设只作为待人工
+登记的草案，不能自动进入 Hypothesis Registry、Factor Research Plane 或 Paper 生命周期。
 
 所有输出固定为：
 
@@ -101,7 +104,7 @@ requires_human_review=true
 proposal_state=AI_RESEARCH_DRAFT
 ```
 
-每个因子、Paper、实验和代码目标必须带 `research_thread_id` 或 `target_id`，并通过
+每个假设、采集提案、归因实验和代码目标必须带 `research_thread_id` 或 `target_id`，并通过
 `source_finding_ids` 追溯到 Stage 1 的具体发现。实验同时要求失败条件、停止条件和
 regime 切片，避免只定义“什么算成功”。
 
@@ -333,11 +336,14 @@ sudo -u quantlab /opt/quant-lab/.venv/bin/python \
 ```text
 gold/ai_research_run
 gold/ai_research_finding
-gold/ai_factor_proposal
-gold/ai_paper_strategy_draft
-gold/ai_experiment_proposal
+gold/ai_research_hypothesis_draft
+gold/ai_data_collection_proposal
+gold/ai_attribution_experiment
 gold/ai_code_review_target
 ```
+
+旧的 `ai_factor_proposal`、`ai_paper_strategy_draft` 和 `ai_experiment_proposal` 仅保留
+为历史只读证据；v4 任务不会再向这些表写入新草案。
 
 ## 7. 故障行为
 

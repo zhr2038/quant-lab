@@ -13,6 +13,9 @@ from quant_lab.ai_research.contracts import (
     AI_TASK_SCHEMA_VERSION,
     AIResearchResult,
     AIResearchTask,
+    AttributionExperiment,
+    DataCollectionProposal,
+    ResearchHypothesisDraft,
     Stage1Diagnosis,
     Stage2ProposalSet,
 )
@@ -25,6 +28,9 @@ __all__ = [
     "AI_TASK_SCHEMA_VERSION",
     "AIResearchResult",
     "AIResearchTask",
+    "AttributionExperiment",
+    "DataCollectionProposal",
+    "ResearchHypothesisDraft",
     "Stage1Diagnosis",
     "Stage2ProposalSet",
 ]

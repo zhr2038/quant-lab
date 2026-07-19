@@ -12,8 +12,8 @@ from quant_lab.ai_research.contracts import (
     EvidenceDocument,
     EvidenceManifestEntry,
     EvidenceReference,
-    FactorProposal,
     ResearchFinding,
+    ResearchHypothesisDraft,
     Stage1Diagnosis,
     Stage2ProposalSet,
     TaskPreflight,
@@ -21,6 +21,7 @@ from quant_lab.ai_research.contracts import (
 )
 from quant_lab.ai_research.importer import (
     AI_CODE_REVIEW_DATASET,
+    AI_HYPOTHESIS_DRAFT_DATASET,
     AI_RUN_DATASET,
     _publish_result,
     _validate_result_against_task,
@@ -47,7 +48,7 @@ def _task() -> AIResearchTask:
                 )
             ]
         },
-        allowed_factor_templates=["feature"],
+        allowed_hypothesis_families=["behavioral_underreaction"],
     )
     return provisional.model_copy(
         update={"packet_sha256": compute_task_packet_sha256(provisional)}
@@ -86,25 +87,29 @@ def _result(task: AIResearchTask, reference: EvidenceReference) -> AIResearchRes
     )
     proposals = Stage2ProposalSet(
         task_id=task.task_id,
-        executive_summary="One diagnostic factor draft.",
-        factor_proposals=[
-            FactorProposal(
-                proposal_id="factor-1",
-                factor_name="test_factor",
-                factor_family="test",
-                description="Diagnostic draft.",
-                template="feature",
-                input_features=["close_return_4"],
-                direction=1,
-                lookback_bars=4,
-                availability_lag_bars=1,
+        executive_summary="One diagnostic research hypothesis.",
+        research_hypothesis_drafts=[
+            ResearchHypothesisDraft(
+                hypothesis_id="hypothesis-1",
+                title="After-cost underreaction",
+                hypothesis_family="behavioral_underreaction",
+                research_question="Does the cited signal survive attribution controls?",
+                economic_return_payer="Late information adopters may fund the return.",
+                persistence_mechanism="Information diffusion may be gradual.",
+                beta_exclusion_design="Residualize against timestamp-aligned BTC beta.",
+                liquidity_exclusion_design="Match by spread and depth quantiles.",
+                symbol_fixed_effect_exclusion_design="Estimate within-symbol fixed effects.",
+                required_datasets=["factor_value", "market_bar"],
+                required_fields=["rank_ic_mean", "available_time"],
+                data_availability_status="AVAILABLE_VERIFIED",
+                data_availability_notes="The routed evidence contains the required fields.",
                 expected_horizon_bars=[4],
-                hypothesis="The feature may retain after-cost information.",
-                economic_rationale="Test only.",
-                falsification_conditions=["after-cost return is non-positive"],
+                falsification_conditions=["Residual after-cost effect is non-positive."],
+                stopping_conditions=["Stop after two failed independent holdouts."],
+                known_overlap_risks=["Existing momentum family."],
+                max_variants=2,
                 evidence_refs=[reference],
-                known_overlap_risk="May overlap with return factors.",
-                research_thread_id="thread-factor-1",
+                research_thread_id="thread-hypothesis-1",
                 source_finding_ids=["finding-1"],
             )
         ],
@@ -212,6 +217,13 @@ def test_nas_result_requires_and_publishes_materialized_effective_preflight(tmp_
     assert row["preflight_checked_at"] == datetime(2026, 7, 14, 1, tzinfo=UTC)
     assert row["preflight_blockers_json"] == "[]"
     assert row["preflight_warnings_json"] == '["paper_runtime_stale"]'
+    hypothesis = read_parquet_dataset(tmp_path / AI_HYPOTHESIS_DRAFT_DATASET).to_dicts()[
+        0
+    ]
+    assert hypothesis["hypothesis_id"] == "hypothesis-1"
+    assert hypothesis["proposal_state"] == "AI_RESEARCH_DRAFT"
+    assert hypothesis["automatic_execution"] is False
+    assert hypothesis["automatic_promotion"] is False
 
 
 def test_nas_result_without_materialized_preflight_is_rejected() -> None:

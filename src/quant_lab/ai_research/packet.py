@@ -119,16 +119,17 @@ _SECTION_RULES: dict[str, tuple[str, ...]] = {
     ),
 }
 
-_ALLOWED_FACTOR_TEMPLATES = [
-    "feature",
-    "neg_feature",
-    "product",
-    "difference",
-    "safe_divide",
-    "vol_adjusted",
-    "range_vol_ratio",
-    "range_location",
-    "liquidity_adjusted",
+_ALLOWED_HYPOTHESIS_FAMILIES = [
+    "behavioral_underreaction",
+    "behavioral_overreaction",
+    "cross_sectional_rotation",
+    "inventory_pressure",
+    "liquidity_provision",
+    "market_structure",
+    "risk_transfer",
+    "execution_quality",
+    "exit_efficiency",
+    "data_quality",
 ]
 
 _TASK_ID_RE = re.compile(r"[^A-Za-z0-9_.-]+")
@@ -315,7 +316,7 @@ def build_ai_research_task(
             if previous_research_context is not None
             else None
         ),
-        "allowed_factor_templates": _ALLOWED_FACTOR_TEMPLATES,
+        "allowed_hypothesis_families": _ALLOWED_HYPOTHESIS_FAMILIES,
         "prohibited_actions": list(PROHIBITED_ACTIONS),
         "warnings": sorted(set(warnings)),
     }
@@ -509,7 +510,7 @@ def build_task_from_nas_pack_reference(
         "previous_research_context": _load_previous_research_context(
             state_root / "latest_research_context.json"
         ),
-        "allowed_factor_templates": _ALLOWED_FACTOR_TEMPLATES,
+        "allowed_hypothesis_families": _ALLOWED_HYPOTHESIS_FAMILIES,
         "prohibited_actions": list(PROHIBITED_ACTIONS),
         "warnings": ["evidence_materialized_on_nas_worker"],
         "packet_sha256": "0" * 64,

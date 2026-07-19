@@ -9,9 +9,10 @@ from quant_lab.ai_research.contracts import (
     PROHIBITED_ACTIONS,
     AIResearchResult,
     EvidenceReference,
-    FactorProposal,
     KeyValue,
+    LegacyStage2ProposalSet,
     ResearchFinding,
+    ResearchHypothesisDraft,
     RootCauseNode,
     Stage1Diagnosis,
     Stage2ProposalSet,
@@ -55,33 +56,46 @@ def test_stage2_gate_requires_ready_state_and_route() -> None:
         )
 
 
-def test_factor_proposal_is_research_only_and_has_lag() -> None:
-    proposal = FactorProposal(
-        proposal_id="factor-1",
-        factor_name="volume_momentum_ratio",
-        factor_family="volume_price_confirm",
-        description="A constrained test proposal.",
-        template="safe_divide",
-        input_features=["close_return_4", "spread_bps"],
-        parameters=[],
-        direction=1,
-        lookback_bars=4,
-        availability_lag_bars=1,
+def test_hypothesis_draft_is_bounded_and_never_auto_executes() -> None:
+    proposal = ResearchHypothesisDraft(
+        hypothesis_id="hypothesis-1",
+        title="Lower-cost momentum persistence",
+        hypothesis_family="behavioral_underreaction",
+        research_question="Does underreaction persist after beta and liquidity controls?",
+        economic_return_payer="Late information adopters may pay earlier informed participants.",
+        persistence_mechanism="Information may diffuse slowly across the observed universe.",
+        beta_exclusion_design="Residualize returns against timestamp-aligned BTC beta.",
+        liquidity_exclusion_design="Match observations by spread and depth quantiles.",
+        symbol_fixed_effect_exclusion_design="Estimate within-symbol effects with fixed effects.",
+        required_datasets=["factor_value", "market_bar"],
+        required_fields=["available_time", "forward_return_bps", "spread_bps"],
+        data_availability_status="AVAILABLE_VERIFIED",
+        data_availability_notes="The cited report exposes the required fields.",
         expected_horizon_bars=[4, 8],
-        hypothesis="The ratio may separate efficient momentum from noisy moves.",
-        economic_rationale="Momentum with lower spread should be easier to monetize after cost.",
-        falsification_conditions=["after-cost spread is non-positive"],
+        falsification_conditions=["The residual after-cost effect is non-positive."],
+        stopping_conditions=["Stop after the independent holdout fails twice."],
+        known_overlap_risks=["Existing liquidity-adjusted momentum family."],
+        max_variants=2,
         evidence_refs=[_evidence()],
-        known_overlap_risk="May overlap with existing liquidity-adjusted momentum.",
-        research_thread_id="thread-factor-1",
+        research_thread_id="thread-hypothesis-1",
         source_finding_ids=["finding-1"],
     )
     assert proposal.research_only is True
     assert proposal.live_order_effect == "none_read_only_research"
+    assert proposal.proposal_state == "AI_RESEARCH_DRAFT"
+    assert proposal.automatic_execution is False
+    assert proposal.automatic_promotion is False
 
     with pytest.raises(ValidationError):
-        FactorProposal.model_validate(
-            {**proposal.model_dump(), "availability_lag_bars": 0}
+        ResearchHypothesisDraft.model_validate(
+            {**proposal.model_dump(), "max_variants": 4}
+        )
+
+    with pytest.raises(ValidationError):
+        Stage2ProposalSet(
+            task_id="task-too-many-hypotheses",
+            executive_summary="The contract must stay bounded.",
+            research_hypothesis_drafts=[proposal] * 4,
         )
 
 
@@ -123,6 +137,34 @@ def test_result_cannot_contain_proposals_when_stage2_is_blocked() -> None:
             diagnosis=diagnosis,
             proposals=proposals,
         )
+
+
+def test_result_contract_still_reads_legacy_stage2_history() -> None:
+    diagnosis = Stage1Diagnosis(
+        task_id="task-legacy-result",
+        system_state="READY_FOR_PROPOSALS",
+        executive_summary="Historical result.",
+        stage2_allowed=True,
+        route_sections=["factor_research"],
+    )
+    result = AIResearchResult(
+        task_id="task-legacy-result",
+        source_pack_sha256="a" * 64,
+        packet_sha256="b" * 64,
+        model="gpt-5.6-sol",
+        reasoning_effort="xhigh",
+        worker_id="nas-legacy",
+        started_at=datetime.now(UTC),
+        completed_at=datetime.now(UTC),
+        diagnosis=diagnosis,
+        proposals=LegacyStage2ProposalSet(
+            task_id="task-legacy-result",
+            executive_summary="Historical proposal payload.",
+        ),
+        prompt_version="quant_lab.ai_research.prompt.v3",
+    )
+
+    assert isinstance(result.proposals, LegacyStage2ProposalSet)
 
 
 def test_strict_schema_rejects_unknown_keys_and_requires_all_properties() -> None:

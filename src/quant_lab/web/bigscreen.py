@@ -300,6 +300,9 @@ def _snapshot_source_signature(root: Path) -> tuple[Any, ...]:
         _directory_signature(root / "gold" / "ai_factor_proposal"),
         _directory_signature(root / "gold" / "ai_paper_strategy_draft"),
         _directory_signature(root / "gold" / "ai_experiment_proposal"),
+        _directory_signature(root / "gold" / "ai_research_hypothesis_draft"),
+        _directory_signature(root / "gold" / "ai_data_collection_proposal"),
+        _directory_signature(root / "gold" / "ai_attribution_experiment"),
         _directory_signature(root / "gold" / "ai_code_review_target"),
         _directory_signature(_ai_queue_root() / "state"),
         _directory_signature(_ai_queue_root() / "pending"),
@@ -580,6 +583,9 @@ def _safe_ai_research_summary(
         "ai_factor_proposal",
         "ai_paper_strategy_draft",
         "ai_experiment_proposal",
+        "ai_research_hypothesis_draft",
+        "ai_data_collection_proposal",
+        "ai_attribution_experiment",
         "ai_code_review_target",
     )
     frames: dict[str, pl.DataFrame] = {}
@@ -627,6 +633,9 @@ def _safe_ai_research_summary(
         "factor_proposal_count": frames["ai_factor_proposal"].height,
         "paper_draft_count": frames["ai_paper_strategy_draft"].height,
         "experiment_count": frames["ai_experiment_proposal"].height,
+        "hypothesis_draft_count": frames["ai_research_hypothesis_draft"].height,
+        "data_collection_proposal_count": frames["ai_data_collection_proposal"].height,
+        "attribution_experiment_count": frames["ai_attribution_experiment"].height,
         "code_review_target_count": frames["ai_code_review_target"].height,
     }
     queue_counts = queue.get("counts") if isinstance(queue.get("counts"), dict) else {}
@@ -654,6 +663,24 @@ def _safe_ai_research_summary(
     )
     current_experiments = _ai_rows_for_task(
         frames["ai_experiment_proposal"], latest_task_id, sort_by="completed_at", limit=8
+    )
+    current_hypotheses = _ai_rows_for_task(
+        frames["ai_research_hypothesis_draft"],
+        latest_task_id,
+        sort_by="completed_at",
+        limit=3,
+    )
+    current_data_proposals = _ai_rows_for_task(
+        frames["ai_data_collection_proposal"],
+        latest_task_id,
+        sort_by="completed_at",
+        limit=3,
+    )
+    current_attribution_experiments = _ai_rows_for_task(
+        frames["ai_attribution_experiment"],
+        latest_task_id,
+        sort_by="completed_at",
+        limit=3,
     )
     current_code_targets = _ai_rows_for_task(
         frames["ai_code_review_target"], latest_task_id, sort_by="completed_at", limit=8
@@ -685,6 +712,9 @@ def _safe_ai_research_summary(
         "factor_proposals": current_factors,
         "paper_strategy_drafts": current_paper_drafts,
         "experiment_proposals": current_experiments,
+        "research_hypothesis_drafts": current_hypotheses,
+        "data_collection_proposals": current_data_proposals,
+        "attribution_experiments": current_attribution_experiments,
         "code_review_targets": current_code_targets,
         "warnings": warnings,
     }

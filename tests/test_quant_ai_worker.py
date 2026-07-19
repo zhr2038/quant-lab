@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 from pydantic import BaseModel
 
 from deploy.nas_ai_worker import worker
@@ -113,7 +114,7 @@ def test_worker_result_carries_materialized_effective_preflight(monkeypatch) -> 
             ]
         },
         preflight=preflight,
-        allowed_factor_templates=["feature"],
+        allowed_hypothesis_families=["behavioral_underreaction"],
     )
     task = provisional.model_copy(
         update={"packet_sha256": compute_task_packet_sha256(provisional)}
@@ -147,6 +148,35 @@ def test_worker_result_carries_materialized_effective_preflight(monkeypatch) -> 
 
     assert result.effective_preflight == preflight
     assert result.warnings == ["stage2_skipped:REVIEW_REQUIRED"]
+
+
+def test_worker_refuses_legacy_prompt_task_instead_of_mixing_contracts() -> None:
+    provisional = AIResearchTask(
+        prompt_version="quant_lab.ai_research.prompt.v3",
+        task_id="task-legacy-prompt",
+        created_at=datetime(2026, 7, 17, tzinfo=UTC),
+        source_pack_name="expert.zip",
+        source_pack_sha256="a" * 64,
+        packet_sha256="0" * 64,
+        sections={
+            "factor_research": [
+                EvidenceDocument(
+                    source_member="reports/factor.csv",
+                    source_format="csv",
+                    content_sha256="b" * 64,
+                    source_size_bytes=10,
+                    content={"rows": []},
+                )
+            ]
+        },
+        allowed_factor_templates=["feature"],
+    )
+    task = provisional.model_copy(
+        update={"packet_sha256": compute_task_packet_sha256(provisional)}
+    )
+
+    with pytest.raises(ValueError, match="prompt version"):
+        worker.run_research(SimpleNamespace(), task)
 
 
 def test_upload_result_stages_before_atomic_inbox_publish(monkeypatch, tmp_path) -> None:

@@ -178,6 +178,53 @@ def test_bigscreen_ai_status_prefers_pending_run_over_previous_result(monkeypatc
     assert ai["queue"]["counts"]["pending"] == 1
 
 
+def test_bigscreen_ai_exposes_hypothesis_research_without_paper_semantics(
+    monkeypatch, tmp_path
+):
+    lake = tmp_path / "lake"
+    queue = tmp_path / "ai_queue"
+    queue.mkdir(parents=True)
+    monkeypatch.setenv("QUANT_LAB_AI_QUEUE_ROOT", str(queue))
+    completed_at = datetime(2026, 7, 17, tzinfo=UTC)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "task_id": "task-hypothesis",
+                    "completed_at": completed_at,
+                    "system_state": "READY_FOR_PROPOSALS",
+                    "hypothesis_draft_count": 1,
+                    "data_collection_proposal_count": 0,
+                    "attribution_experiment_count": 0,
+                }
+            ]
+        ),
+        lake / "gold" / "ai_research_run",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "task_id": "task-hypothesis",
+                    "hypothesis_id": "hypothesis-1",
+                    "title": "Attribution-controlled underreaction",
+                    "proposal_state": "AI_RESEARCH_DRAFT",
+                    "completed_at": completed_at,
+                }
+            ]
+        ),
+        lake / "gold" / "ai_research_hypothesis_draft",
+    )
+    clear_bigscreen_cache()
+
+    ai = bigscreen_snapshot(lake)["ai_research"]
+
+    assert ai["latest_run"]["hypothesis_draft_count"] == 1
+    assert ai["research_hypothesis_drafts"][0]["hypothesis_id"] == "hypothesis-1"
+    assert ai["research_hypothesis_drafts"][0]["proposal_state"] == "AI_RESEARCH_DRAFT"
+    assert ai["paper_strategy_drafts"] == []
+
+
 def test_bigscreen_ai_result_discloses_newer_authoritative_pack(monkeypatch, tmp_path):
     lake = tmp_path / "lake"
     queue = tmp_path / "ai_queue"

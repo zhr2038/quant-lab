@@ -14,6 +14,7 @@ from quant_lab.ai_research.contracts import (
     LIVE_ORDER_EFFECT,
     AIResearchResult,
     AIResearchTask,
+    LegacyStage2ProposalSet,
     canonical_json,
     compute_task_packet_sha256,
 )
@@ -24,6 +25,9 @@ AI_FINDING_DATASET = Path("gold") / "ai_research_finding"
 AI_FACTOR_PROPOSAL_DATASET = Path("gold") / "ai_factor_proposal"
 AI_PAPER_DRAFT_DATASET = Path("gold") / "ai_paper_strategy_draft"
 AI_EXPERIMENT_DATASET = Path("gold") / "ai_experiment_proposal"
+AI_HYPOTHESIS_DRAFT_DATASET = Path("gold") / "ai_research_hypothesis_draft"
+AI_DATA_COLLECTION_DATASET = Path("gold") / "ai_data_collection_proposal"
+AI_ATTRIBUTION_EXPERIMENT_DATASET = Path("gold") / "ai_attribution_experiment"
 AI_CODE_REVIEW_DATASET = Path("gold") / "ai_code_review_target"
 
 AI_RUN_SCHEMA: dict[str, Any] = {
@@ -57,6 +61,9 @@ AI_RUN_SCHEMA: dict[str, Any] = {
     "factor_proposal_count": pl.Int64,
     "paper_draft_count": pl.Int64,
     "experiment_count": pl.Int64,
+    "hypothesis_draft_count": pl.Int64,
+    "data_collection_proposal_count": pl.Int64,
+    "attribution_experiment_count": pl.Int64,
     "code_review_target_count": pl.Int64,
     "usage_json": pl.Utf8,
     "warnings_json": pl.Utf8,
@@ -172,6 +179,103 @@ AI_EXPERIMENT_SCHEMA: dict[str, Any] = {
     "source": pl.Utf8,
 }
 
+AI_HYPOTHESIS_DRAFT_SCHEMA: dict[str, Any] = {
+    "task_id": pl.Utf8,
+    "hypothesis_id": pl.Utf8,
+    "title": pl.Utf8,
+    "hypothesis_family": pl.Utf8,
+    "research_question": pl.Utf8,
+    "economic_return_payer": pl.Utf8,
+    "persistence_mechanism": pl.Utf8,
+    "beta_exclusion_design": pl.Utf8,
+    "liquidity_exclusion_design": pl.Utf8,
+    "symbol_fixed_effect_exclusion_design": pl.Utf8,
+    "required_datasets_json": pl.Utf8,
+    "required_fields_json": pl.Utf8,
+    "data_availability_status": pl.Utf8,
+    "data_availability_notes": pl.Utf8,
+    "expected_horizon_bars_json": pl.Utf8,
+    "falsification_conditions_json": pl.Utf8,
+    "stopping_conditions_json": pl.Utf8,
+    "known_overlap_risks_json": pl.Utf8,
+    "max_variants": pl.Int64,
+    "evidence_refs_json": pl.Utf8,
+    "research_thread_id": pl.Utf8,
+    "source_finding_ids_json": pl.Utf8,
+    "model": pl.Utf8,
+    "completed_at": pl.Datetime(time_zone="UTC"),
+    "proposal_state": pl.Utf8,
+    "requires_human_review": pl.Boolean,
+    "automatic_registration": pl.Boolean,
+    "automatic_execution": pl.Boolean,
+    "automatic_promotion": pl.Boolean,
+    "diagnostic_only": pl.Boolean,
+    "live_order_effect": pl.Utf8,
+    "source": pl.Utf8,
+}
+
+AI_DATA_COLLECTION_SCHEMA: dict[str, Any] = {
+    "task_id": pl.Utf8,
+    "proposal_id": pl.Utf8,
+    "title": pl.Utf8,
+    "observed_data_gap": pl.Utf8,
+    "required_dataset": pl.Utf8,
+    "required_fields_json": pl.Utf8,
+    "collection_scope": pl.Utf8,
+    "collection_method": pl.Utf8,
+    "availability_lag_requirement": pl.Utf8,
+    "freshness_requirement": pl.Utf8,
+    "quality_checks_json": pl.Utf8,
+    "acceptance_criteria_json": pl.Utf8,
+    "stopping_conditions_json": pl.Utf8,
+    "evidence_refs_json": pl.Utf8,
+    "research_thread_id": pl.Utf8,
+    "source_finding_ids_json": pl.Utf8,
+    "model": pl.Utf8,
+    "completed_at": pl.Datetime(time_zone="UTC"),
+    "proposal_state": pl.Utf8,
+    "requires_human_review": pl.Boolean,
+    "automatic_execution": pl.Boolean,
+    "diagnostic_only": pl.Boolean,
+    "live_order_effect": pl.Utf8,
+    "source": pl.Utf8,
+}
+
+AI_ATTRIBUTION_EXPERIMENT_SCHEMA: dict[str, Any] = {
+    "task_id": pl.Utf8,
+    "experiment_id": pl.Utf8,
+    "hypothesis_id": pl.Utf8,
+    "title": pl.Utf8,
+    "attribution_question": pl.Utf8,
+    "target_outcome": pl.Utf8,
+    "treatment_definition": pl.Utf8,
+    "control_group_definition": pl.Utf8,
+    "beta_control": pl.Utf8,
+    "liquidity_control": pl.Utf8,
+    "symbol_fixed_effect_control": pl.Utf8,
+    "overlap_control": pl.Utf8,
+    "cost_model_requirement": pl.Utf8,
+    "time_split_design": pl.Utf8,
+    "required_datasets_json": pl.Utf8,
+    "minimum_independent_samples": pl.Int64,
+    "success_metrics_json": pl.Utf8,
+    "falsification_conditions_json": pl.Utf8,
+    "stopping_conditions_json": pl.Utf8,
+    "regime_slices_json": pl.Utf8,
+    "evidence_refs_json": pl.Utf8,
+    "research_thread_id": pl.Utf8,
+    "source_finding_ids_json": pl.Utf8,
+    "model": pl.Utf8,
+    "completed_at": pl.Datetime(time_zone="UTC"),
+    "proposal_state": pl.Utf8,
+    "requires_human_review": pl.Boolean,
+    "automatic_execution": pl.Boolean,
+    "automatic_promotion": pl.Boolean,
+    "diagnostic_only": pl.Boolean,
+    "live_order_effect": pl.Utf8,
+    "source": pl.Utf8,
+}
+
 AI_CODE_REVIEW_SCHEMA: dict[str, Any] = {
     "task_id": pl.Utf8,
     "target_id": pl.Utf8,
@@ -189,6 +293,36 @@ AI_CODE_REVIEW_SCHEMA: dict[str, Any] = {
     "live_order_effect": pl.Utf8,
     "source": pl.Utf8,
 }
+
+
+def _proposal_count_payload(result: AIResearchResult) -> dict[str, int]:
+    proposals = result.proposals
+    if proposals is None:
+        return {
+            "factor_proposals": 0,
+            "paper_strategy_drafts": 0,
+            "experiment_proposals": 0,
+            "research_hypothesis_drafts": 0,
+            "data_collection_proposals": 0,
+            "attribution_experiments": 0,
+        }
+    if isinstance(proposals, LegacyStage2ProposalSet):
+        return {
+            "factor_proposals": len(proposals.factor_proposals),
+            "paper_strategy_drafts": len(proposals.paper_strategy_drafts),
+            "experiment_proposals": len(proposals.experiment_proposals),
+            "research_hypothesis_drafts": 0,
+            "data_collection_proposals": 0,
+            "attribution_experiments": 0,
+        }
+    return {
+        "factor_proposals": 0,
+        "paper_strategy_drafts": 0,
+        "experiment_proposals": 0,
+        "research_hypothesis_drafts": len(proposals.research_hypothesis_drafts),
+        "data_collection_proposals": len(proposals.data_collection_proposals),
+        "attribution_experiments": len(proposals.attribution_experiments),
+    }
 
 
 def import_ai_research_results(
@@ -247,15 +381,7 @@ def import_ai_research_results(
                     "imported_at": datetime.now(UTC).isoformat(),
                     "model": result.model,
                     "system_state": result.diagnosis.system_state,
-                    "factor_proposals": len(result.proposals.factor_proposals)
-                    if result.proposals
-                    else 0,
-                    "paper_strategy_drafts": len(result.proposals.paper_strategy_drafts)
-                    if result.proposals
-                    else 0,
-                    "experiment_proposals": len(result.proposals.experiment_proposals)
-                    if result.proposals
-                    else 0,
+                    **_proposal_count_payload(result),
                     "diagnostic_only": True,
                     "live_order_effect": LIVE_ORDER_EFFECT,
                 },
@@ -293,6 +419,14 @@ def _publish_result(
     completed = result.completed_at.astimezone(UTC)
     effective_preflight = result.effective_preflight or task.preflight
     proposals = result.proposals
+    legacy_proposals = (
+        proposals if isinstance(proposals, LegacyStage2ProposalSet) else None
+    )
+    current_proposals = (
+        proposals
+        if proposals is not None and not isinstance(proposals, LegacyStage2ProposalSet)
+        else None
+    )
     finding_groups = {
         "primary_bottleneck": result.diagnosis.primary_bottlenecks,
         "contradiction": result.diagnosis.contradictions,
@@ -349,9 +483,30 @@ def _publish_result(
             "stage2_attempts": result.stage2_attempts,
             "validation_events_json": result.validation_events_json,
             "finding_count": finding_count,
-            "factor_proposal_count": len(proposals.factor_proposals) if proposals else 0,
-            "paper_draft_count": len(proposals.paper_strategy_drafts) if proposals else 0,
-            "experiment_count": len(proposals.experiment_proposals) if proposals else 0,
+            "factor_proposal_count": (
+                len(legacy_proposals.factor_proposals) if legacy_proposals else 0
+            ),
+            "paper_draft_count": (
+                len(legacy_proposals.paper_strategy_drafts) if legacy_proposals else 0
+            ),
+            "experiment_count": (
+                len(legacy_proposals.experiment_proposals) if legacy_proposals else 0
+            ),
+            "hypothesis_draft_count": (
+                len(current_proposals.research_hypothesis_drafts)
+                if current_proposals
+                else 0
+            ),
+            "data_collection_proposal_count": (
+                len(current_proposals.data_collection_proposals)
+                if current_proposals
+                else 0
+            ),
+            "attribution_experiment_count": (
+                len(current_proposals.attribution_experiments)
+                if current_proposals
+                else 0
+            ),
             "code_review_target_count": code_review_target_count,
             "usage_json": result.usage_json,
             "warnings_json": canonical_json(result.warnings),
@@ -401,9 +556,13 @@ def _publish_result(
         keys=["task_id", "finding_group", "finding_id"],
     )
 
-    factor_proposals = proposals.factor_proposals if proposals else []
-    paper_strategy_drafts = proposals.paper_strategy_drafts if proposals else []
-    experiment_proposals = proposals.experiment_proposals if proposals else []
+    factor_proposals = legacy_proposals.factor_proposals if legacy_proposals else []
+    paper_strategy_drafts = (
+        legacy_proposals.paper_strategy_drafts if legacy_proposals else []
+    )
+    experiment_proposals = (
+        legacy_proposals.experiment_proposals if legacy_proposals else []
+    )
 
     factor_rows = [
         {
@@ -528,6 +687,148 @@ def _publish_result(
         schema=AI_EXPERIMENT_SCHEMA,
         path=lake_root / AI_EXPERIMENT_DATASET,
         keys=["task_id", "proposal_id"],
+    )
+
+    hypothesis_rows = [
+        {
+            "task_id": result.task_id,
+            "hypothesis_id": item.hypothesis_id,
+            "title": item.title,
+            "hypothesis_family": item.hypothesis_family,
+            "research_question": item.research_question,
+            "economic_return_payer": item.economic_return_payer,
+            "persistence_mechanism": item.persistence_mechanism,
+            "beta_exclusion_design": item.beta_exclusion_design,
+            "liquidity_exclusion_design": item.liquidity_exclusion_design,
+            "symbol_fixed_effect_exclusion_design": (
+                item.symbol_fixed_effect_exclusion_design
+            ),
+            "required_datasets_json": canonical_json(item.required_datasets),
+            "required_fields_json": canonical_json(item.required_fields),
+            "data_availability_status": item.data_availability_status,
+            "data_availability_notes": item.data_availability_notes,
+            "expected_horizon_bars_json": canonical_json(item.expected_horizon_bars),
+            "falsification_conditions_json": canonical_json(
+                item.falsification_conditions
+            ),
+            "stopping_conditions_json": canonical_json(item.stopping_conditions),
+            "known_overlap_risks_json": canonical_json(item.known_overlap_risks),
+            "max_variants": item.max_variants,
+            "evidence_refs_json": canonical_json(
+                [reference.model_dump(mode="json") for reference in item.evidence_refs]
+            ),
+            "research_thread_id": item.research_thread_id,
+            "source_finding_ids_json": canonical_json(item.source_finding_ids),
+            "model": result.model,
+            "completed_at": completed,
+            "proposal_state": item.proposal_state,
+            "requires_human_review": item.requires_human_review,
+            "automatic_registration": item.automatic_registration,
+            "automatic_execution": item.automatic_execution,
+            "automatic_promotion": item.automatic_promotion,
+            "diagnostic_only": True,
+            "live_order_effect": LIVE_ORDER_EFFECT,
+            "source": "ai_research.importer.v3",
+        }
+        for item in (
+            current_proposals.research_hypothesis_drafts if current_proposals else []
+        )
+    ]
+    _upsert_rows(
+        hypothesis_rows,
+        schema=AI_HYPOTHESIS_DRAFT_SCHEMA,
+        path=lake_root / AI_HYPOTHESIS_DRAFT_DATASET,
+        keys=["task_id", "hypothesis_id"],
+    )
+
+    data_collection_rows = [
+        {
+            "task_id": result.task_id,
+            "proposal_id": item.proposal_id,
+            "title": item.title,
+            "observed_data_gap": item.observed_data_gap,
+            "required_dataset": item.required_dataset,
+            "required_fields_json": canonical_json(item.required_fields),
+            "collection_scope": item.collection_scope,
+            "collection_method": item.collection_method,
+            "availability_lag_requirement": item.availability_lag_requirement,
+            "freshness_requirement": item.freshness_requirement,
+            "quality_checks_json": canonical_json(item.quality_checks),
+            "acceptance_criteria_json": canonical_json(item.acceptance_criteria),
+            "stopping_conditions_json": canonical_json(item.stopping_conditions),
+            "evidence_refs_json": canonical_json(
+                [reference.model_dump(mode="json") for reference in item.evidence_refs]
+            ),
+            "research_thread_id": item.research_thread_id,
+            "source_finding_ids_json": canonical_json(item.source_finding_ids),
+            "model": result.model,
+            "completed_at": completed,
+            "proposal_state": item.proposal_state,
+            "requires_human_review": item.requires_human_review,
+            "automatic_execution": item.automatic_execution,
+            "diagnostic_only": True,
+            "live_order_effect": LIVE_ORDER_EFFECT,
+            "source": "ai_research.importer.v3",
+        }
+        for item in (
+            current_proposals.data_collection_proposals if current_proposals else []
+        )
+    ]
+    _upsert_rows(
+        data_collection_rows,
+        schema=AI_DATA_COLLECTION_SCHEMA,
+        path=lake_root / AI_DATA_COLLECTION_DATASET,
+        keys=["task_id", "proposal_id"],
+    )
+
+    attribution_rows = [
+        {
+            "task_id": result.task_id,
+            "experiment_id": item.experiment_id,
+            "hypothesis_id": item.hypothesis_id,
+            "title": item.title,
+            "attribution_question": item.attribution_question,
+            "target_outcome": item.target_outcome,
+            "treatment_definition": item.treatment_definition,
+            "control_group_definition": item.control_group_definition,
+            "beta_control": item.beta_control,
+            "liquidity_control": item.liquidity_control,
+            "symbol_fixed_effect_control": item.symbol_fixed_effect_control,
+            "overlap_control": item.overlap_control,
+            "cost_model_requirement": item.cost_model_requirement,
+            "time_split_design": item.time_split_design,
+            "required_datasets_json": canonical_json(item.required_datasets),
+            "minimum_independent_samples": item.minimum_independent_samples,
+            "success_metrics_json": canonical_json(item.success_metrics),
+            "falsification_conditions_json": canonical_json(
+                item.falsification_conditions
+            ),
+            "stopping_conditions_json": canonical_json(item.stopping_conditions),
+            "regime_slices_json": canonical_json(item.regime_slices),
+            "evidence_refs_json": canonical_json(
+                [reference.model_dump(mode="json") for reference in item.evidence_refs]
+            ),
+            "research_thread_id": item.research_thread_id,
+            "source_finding_ids_json": canonical_json(item.source_finding_ids),
+            "model": result.model,
+            "completed_at": completed,
+            "proposal_state": item.proposal_state,
+            "requires_human_review": item.requires_human_review,
+            "automatic_execution": item.automatic_execution,
+            "automatic_promotion": item.automatic_promotion,
+            "diagnostic_only": True,
+            "live_order_effect": LIVE_ORDER_EFFECT,
+            "source": "ai_research.importer.v3",
+        }
+        for item in (
+            current_proposals.attribution_experiments if current_proposals else []
+        )
+    ]
+    _upsert_rows(
+        attribution_rows,
+        schema=AI_ATTRIBUTION_EXPERIMENT_SCHEMA,
+        path=lake_root / AI_ATTRIBUTION_EXPERIMENT_DATASET,
+        keys=["task_id", "experiment_id"],
     )
 
     stage1_code_targets = [
@@ -691,17 +992,33 @@ def _validate_result_against_task(result: AIResearchResult, task: AIResearchTask
     allowed_stage2_sections = set(result.diagnosis.route_sections)
     if "core_state" in available_sections:
         allowed_stage2_sections.add("core_state")
-    for proposal in result.proposals.factor_proposals:
-        if proposal.template not in task.allowed_factor_templates:
-            raise ValueError(f"factor template not allowed by task: {proposal.template}")
-    stage2_references = [
-        reference
-        for proposal in (
+    if isinstance(result.proposals, LegacyStage2ProposalSet):
+        for proposal in result.proposals.factor_proposals:
+            if proposal.template not in task.allowed_factor_templates:
+                raise ValueError(f"factor template not allowed by task: {proposal.template}")
+        stage2_items = (
             *result.proposals.factor_proposals,
             *result.proposals.paper_strategy_drafts,
             *result.proposals.experiment_proposals,
         )
-        for reference in proposal.evidence_refs
+    else:
+        disallowed_families = {
+            proposal.hypothesis_family
+            for proposal in result.proposals.research_hypothesis_drafts
+            if proposal.hypothesis_family not in task.allowed_hypothesis_families
+        }
+        if disallowed_families:
+            raise ValueError(
+                "hypothesis family not allowed by task: "
+                f"{sorted(disallowed_families)}"
+            )
+        stage2_items = (
+            *result.proposals.research_hypothesis_drafts,
+            *result.proposals.data_collection_proposals,
+            *result.proposals.attribution_experiments,
+        )
+    stage2_references = [
+        reference for proposal in stage2_items for reference in proposal.evidence_refs
     ]
     _validate_evidence_references(
         stage2_references,

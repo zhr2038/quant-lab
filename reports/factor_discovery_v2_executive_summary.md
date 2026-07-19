@@ -47,6 +47,12 @@ strict result validation, atomic publication, resource, exact generation
 binding, and zero-live-effect checks. The weekly Factor request timer was
 enabled only after that acceptance.
 
+An additional operational commit bounded the frequent Web-derived refresh to
+40 declared inputs instead of all 190 registered datasets. Production runtime
+fell from a 45-minute timeout to 45.56 seconds in isolation, with no swap. The
+complete V5 research refresh then finished successfully in 704.4 seconds. This
+fix changes refresh resource behavior only and is not new Factor evidence.
+
 The current research verdict is intentionally negative: all eight current
 trials are `REJECTED_DATA_QUALITY`, with zero `SIGNAL_VALID` and zero
 `PAPER_CANDIDATE`. This is successful platform acceptance, not successful alpha

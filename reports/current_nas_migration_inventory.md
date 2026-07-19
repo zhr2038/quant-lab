@@ -1,6 +1,6 @@
 # Current NAS Migration Inventory
 
-Captured at `2026-07-19T11:24:00Z`. This is observed runtime state from Git,
+Captured at `2026-07-19T12:48:01Z`. This is observed runtime state from Git,
 SSH, systemd, Docker, queue, and Lake inspection. It does not infer deployment
 from documentation.
 
@@ -9,13 +9,15 @@ from documentation.
 | Surface | Observed commit | State |
 | --- | --- | --- |
 | GitHub `main` | `49ad71fb9d3043e4882546fd8b8d4ff0ba93106b` | unchanged; this refactor is not merged |
-| GitHub refactor branch | `8d8c884ad9fc35ff600921fc8c0a05bf732cff72` | pushed |
-| qyun2 `/opt/quant-lab` | `8d8c884ad9fc35ff600921fc8c0a05bf732cff72` | clean shadow deployment |
-| NAS Research Worker repo/image | `8d8c884ad9fc35ff600921fc8c0a05bf732cff72` | exact worker commit |
+| GitHub operational runtime commit | `1bd35db43c71298e37d6ae8ef16a694a94ebaab3` | pushed on the refactor branch |
+| qyun2 `/opt/quant-lab` | `1bd35db43c71298e37d6ae8ef16a694a94ebaab3` | clean shadow deployment |
+| NAS Research Worker repo/image | `1bd35db43c71298e37d6ae8ef16a694a94ebaab3` | exact worker commit |
 | qyun V5 | `3df1c67cc44cc8be364ec5d3798ea0d3595c0abc` | clean and read-only |
 
-The original cloud/worker mismatch was resolved before acceptance. Both final
-signed tasks bind the full cloud and worker commit shown above.
+The original cloud/worker mismatch was resolved before acceptance. The two
+accepted signed tasks remain bound to `8d8c884ad9fc35ff600921fc8c0a05bf732cff72`;
+the later `1bd35db` deployment is an operational Web-refresh fix and is not
+presented as new Factor or Alpha evidence.
 
 ## Capability inventory
 
@@ -29,14 +31,17 @@ signed tasks bind the full cloud and worker commit shown above.
 
 ## Cloud runtime
 
-- Root filesystem: 79 GiB total, 41 GiB used, 36 GiB free, 54% used.
+- Root filesystem: 79 GiB total, 41 GiB used, 35 GiB free, 54% used.
 - Memory: 7.4 GiB total, about 6.3 GiB available at capture time.
-- Lake: 13,552,091,317 bytes (about 12.6 GiB).
+- Lake: 13,592,119,349 bytes (about 12.7 GiB).
 - Research Queue: 101,766,175 bytes (about 97 MiB).
 - Factor request, Alpha request, result import, Entry Quality request, API, and
   Web services/timers were active after acceptance.
 - The V5 research refresh no longer calls cloud-local `build-factor-factory`.
   It is capped at 40% CPU and 1.2 GB memory.
+- Its Web-derived final stage now loads 40 declared inputs instead of all 190
+  registered datasets. The full service completed in 704.4 seconds with
+  `Result=success`; full-chain swap peak fell by 73.15%.
 - Factor snapshot request is capped at 30% CPU and 900 MB memory.
 - Result import is capped at 40% CPU and 1.2 GB memory.
 
@@ -45,7 +50,7 @@ signed tasks bind the full cloud and worker commit shown above.
 - Host: UGREEN `HR-Cloud`, x86_64, 15.4 GiB RAM.
 - `/volume1`: about 916 GiB total, 796 GiB available, 13% used.
 - Research Worker image ID:
-  `sha256:97bae4c7f062f1ae97d61ff1e31934a217368f3700d9524d75786dbbbd30c517`.
+  `sha256:28c7e80192cdbdfb8f3debb7d5496e88f60fb9250d6579f7f762a35276a149e7`.
 - Research Worker: 3 CPUs, 8 GiB memory limit, PID limit 256, read-only root.
 - The persistent compose container is intentionally `created`/idle; controlled
   shadow tasks used the same image through `docker compose run --rm`.

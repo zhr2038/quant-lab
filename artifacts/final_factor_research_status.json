@@ -1,13 +1,14 @@
 {
   "schema_version": "quant_lab.factor_discovery_v2_final_status.v1",
-  "captured_at": "2026-07-19T11:24:00Z",
+  "captured_at": "2026-07-19T12:48:01Z",
   "verdict": "PASS_FACTOR_DISCOVERY_V2_RESEARCH_SHADOW",
   "scope": "research_only_shadow_platform_acceptance",
   "commits": {
     "github_main": "49ad71fb9d3043e4882546fd8b8d4ff0ba93106b",
-    "refactor_branch": "8d8c884ad9fc35ff600921fc8c0a05bf732cff72",
-    "cloud": "8d8c884ad9fc35ff600921fc8c0a05bf732cff72",
-    "nas_worker": "8d8c884ad9fc35ff600921fc8c0a05bf732cff72",
+    "accepted_shadow_task_code": "8d8c884ad9fc35ff600921fc8c0a05bf732cff72",
+    "operational_runtime": "1bd35db43c71298e37d6ae8ef16a694a94ebaab3",
+    "cloud": "1bd35db43c71298e37d6ae8ef16a694a94ebaab3",
+    "nas_worker": "1bd35db43c71298e37d6ae8ef16a694a94ebaab3",
     "v5_read_only": "3df1c67cc44cc8be364ec5d3798ea0d3595c0abc"
   },
   "factor_generation": {
@@ -59,7 +60,7 @@
     "layout_clipped": false
   },
   "tests": {
-    "pytest_passed": 1494,
+    "pytest_passed": 1495,
     "pytest_skipped": 4,
     "ruff": "PASS",
     "compileall": "PASS",
@@ -68,8 +69,17 @@
     "git_diff_check": "PASS"
   },
   "operational_risks": {
-    "v5_refresh_peak_rss_bytes": 995586048,
-    "v5_refresh_swap_peak_bytes": 1993785344,
+    "v5_web_refresh_pre_fix_duration_seconds": 2700,
+    "v5_web_refresh_pre_fix_swap_peak_bytes": 1993785344,
+    "v5_web_refresh_post_fix_duration_seconds": 45.56,
+    "v5_web_refresh_post_fix_swap_peak_bytes": 0,
+    "v5_refresh_peak_rss_bytes": 944246784,
+    "v5_refresh_swap_peak_bytes": 535240704,
+    "v5_refresh_duration_seconds": 704.4,
+    "v5_refresh_result": "success",
+    "v5_refresh_swap_reduction_percent": 73.15,
+    "web_refresh_source_dataset_count": 40,
+    "registered_dataset_count": 190,
     "v5_refresh_heavy_factor_compute_removed": true,
     "cloud_import_peak_rss_retained_after_exit": false
   },

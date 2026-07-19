@@ -41,6 +41,20 @@ Both NAS peaks are below the 6 GiB acceptance ceiling. Both result bundles
 passed signature, task, snapshot, commit, schema, hash, row-count, safety, and
 all-PASS Anti-Leakage validation before publication.
 
+## Post-acceptance operational fix
+
+The accepted Factor and Alpha result bundles remain bound to `8d8c884`; they
+were not re-labelled as evidence for later code. Operational commit
+`1bd35db43c71298e37d6ae8ef16a694a94ebaab3` only bounds the frequent Web-derived
+snapshot loader to its 40 declared source datasets. qyun2 and the NAS Worker
+were both deployed at that exact commit for future signed tasks.
+
+Before the fix, the final Web refresh loaded all 190 registered datasets,
+reached 1,993,785,344 bytes of swap, and timed out after 45 minutes. The isolated
+post-fix refresh completed in 45.56 seconds with no swap. The complete V5
+research refresh then completed successfully in 704.4 seconds with a
+944,246,784-byte memory peak and a 535,240,704-byte swap peak.
+
 ## Published Factor generation
 
 - Generation ID: `factor-research-097a452bfeb6edfd8baf5d1e`
@@ -94,7 +108,7 @@ changed. All accepted records keep `research_only=true`,
 
 ## Final regression
 
-- Full pytest: `1494 passed, 4 skipped in 283.48s`.
+- Full pytest: `1495 passed, 4 skipped in 294.78s`.
 - Ruff: pass.
 - `compileall` for `src`, `deploy`, and `tools`: pass.
 - Frontend TypeScript and Vite production build: pass.

@@ -17,7 +17,9 @@ reported.
 | Cloud Factor import | 40% | 1.2 GB | 4.06 s | hard-capped; no OOM |
 | NAS bound Alpha compute | 3 CPUs | 8 GiB | 20.65 s | 1,439,264,768 B |
 | Cloud Alpha import | 40% | 1.2 GB | 120.68 s | hard-capped; no OOM |
-| Cloud V5 light refresh | 40% | 1.2 GB | production timer retained | 995,586,048 B observed peak |
+| Cloud Web-derived refresh, before fix | 40% | 1.2 GB | 45 min timeout | 995,586,048 B resident; 1,993,785,344 B swap |
+| Cloud Web-derived refresh, bounded | 40% | 1.2 GB | 45.56 s | 1,053,769,728 B max RSS; zero swap |
+| Full V5 research refresh, after fix | 40% | 1.2 GB | 704.4 s | 944,246,784 B cgroup peak; 535,240,704 B swap peak |
 
 The host's systemd version exposes live memory peak while a service is active
 but does not retain `MemoryPeak` after these oneshots exit. The exact cloud peak
@@ -25,9 +27,13 @@ therefore remains unobserved; acceptance is based on enforced cgroup limits and
 successful completion without OOM. This limitation is recorded rather than
 replacing it with an estimate.
 
-The restored V5 refresh was observed live at 995,586,048 bytes memory peak and
-1,993,785,344 bytes swap peak. It remained below `MemoryMax`, and the heavy
-Factor command was absent, but the swap volume is a separate performance risk.
+The pre-fix Web refresh loaded all 190 registered datasets, including an
+unrelated 118 MB compressed conflict table, then spent 45 minutes in cgroup
+reclaim before timing out. The bounded loader now reads 40 explicit source
+datasets. An isolated production run completed in 45.56 seconds with no swap;
+the complete V5 chain completed successfully in 704.4 seconds. Full-chain swap
+peak fell by 73.15%, from 1,993,785,344 to 535,240,704 bytes. The remaining swap
+belongs to other stages in the multi-command chain and is recorded separately.
 
 ## Data movement
 
@@ -42,9 +48,9 @@ The low Alpha cache ratio is expected for the first exact final-commit snapshot.
 
 ## Current capacity
 
-- qyun2 root: 79 GiB total, 41 GiB used, 36 GiB free, 54% used.
-- qyun2 Lake: about 12.6 GiB; Research Queue: about 97 MiB.
-- NAS `/volume1`: about 916 GiB total, 796 GiB available, 13% used.
+- qyun2 root: 79 GiB total, 41 GiB used, 35 GiB free, 54% used.
+- qyun2 Lake: 13,592,119,349 B; Research Queue: 101,766,175 B.
+- NAS `/volume1`: about 916 GiB total, 795 GiB available, 14% used.
 - NAS memory: 15.4 GiB; both tasks remained below the 6 GiB acceptance peak.
 
 This change reduces cloud heavy-compute exposure and bounds the research search

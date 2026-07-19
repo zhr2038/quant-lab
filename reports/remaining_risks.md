@@ -13,10 +13,12 @@
 4. qyun2 systemd enforces 900 MB snapshot and 1.2 GB import limits, but this host
    does not retain inactive oneshot cgroup `MemoryPeak`. Exact cloud peak RSS
    needs explicit telemetry in a future operational change.
-5. The V5 research refresh is now bounded and no longer runs Factor Factory, but
-   the remaining multi-command refresh is still long. A live run reached
-   995,586,048 bytes memory peak and 1,993,785,344 bytes swap peak while staying
-   under `MemoryMax`; runtime and swap pressure need separate optimization.
+5. The Web-derived refresh no longer loads the full 190-dataset registry and
+   now completes in about 46 seconds without swap. The complete multi-command
+   V5 refresh still peaked at 535,240,704 bytes of swap in an earlier stage,
+   despite completing successfully in about 11.7 minutes. That remaining
+   pressure should be profiled per command; it is no longer caused by the final
+   Web refresh and does not justify raising the cgroup limit blindly.
 6. The append-only ledger contains historical compatibility rows, including a
    cancelled pre-final task lineage. They remain for audit and are not silently
    deleted; dashboards must scope current metrics to the generation trial IDs.

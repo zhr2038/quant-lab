@@ -13,9 +13,17 @@ export function StrategyFlow({ flow }: { flow: Record<string, unknown> }) {
   const lifecycleCounts = (paperLifecycle.counts ?? {}) as Record<string, number>;
   const hypothesisRows = safeRows(factorFactory.hypotheses);
   const trialRows = safeRows(factorFactory.trials);
-  const attributionRows = safeRows(factorFactory.attribution);
-  const portfolioRows = safeRows(factorFactory.portfolio_validation);
+  const attributionRows = safeRows(factorFactory.attribution).filter(
+    (row) => stringValue(row.trial_id, "") && stringValue(row.factor_id, "")
+  );
+  const portfolioRows = safeRows(factorFactory.portfolio_validation).filter(
+    (row) => stringValue(row.trial_id, "") && stringValue(row.factor_id, "")
+  );
   const nasTask = (factorFactory.nas_task ?? {}) as Record<string, unknown>;
+  const nasTaskDetail = (nasTask.task ?? {}) as Record<string, unknown>;
+  const generation = (factorFactory.generation ?? {}) as Record<string, unknown>;
+  const nasTaskId = stringValue(nasTaskDetail.task_id, "");
+  const generationId = stringValue(generation.generation_id, "");
   return (
     <section className="card pad strategy-card">
       <h2 className="section-title icon-title"><GitBranch size={23} />策略机会流</h2>
@@ -78,10 +86,16 @@ export function StrategyFlow({ flow }: { flow: Record<string, unknown> }) {
             ))}
           </div>
           {!hypothesisRows.length && <div className="factor-empty">暂无已登记研究假设</div>}
-          <div className="opportunity-cost-note">
-            <span>NAS {stringValue(nasTask.state, "idle")}</span>
-            <em>Signal {shortNumber(factorFactory.signal_valid_count)} · Portfolio fail {shortNumber(factorFactory.portfolio_fail_count)}</em>
-            <strong>Confirmatory {shortNumber(factorFactory.confirmatory_trial_count)} · FDR pass {shortNumber(factorFactory.multiple_testing_pass_count)}</strong>
+          <div className="opportunity-cost-note" title={[nasTaskId, generationId].filter(Boolean).join(" | ")}>
+            <span>NAS {stringValue(nasTask.state, "idle")} · {shortId(nasTaskId || generationId)}</span>
+            <em>
+              {stringValue(factorFactory.current_generation_verdict, "NO_CURRENT_TRIALS")}
+              {" · 当前 "}{shortNumber(factorFactory.current_trial_count)} 个试验
+            </em>
+            <strong>
+              数据质量拒绝 {shortNumber(factorFactory.current_data_quality_rejected_count)}
+              {" · FDR pass "}{shortNumber(factorFactory.multiple_testing_pass_count)}
+            </strong>
           </div>
         </div>
         <div className="candidate-list">
@@ -115,7 +129,7 @@ export function StrategyFlow({ flow }: { flow: Record<string, unknown> }) {
           rows={trialRows.slice(0, 4).map((row) => [
             stringValue(row.trial_id, "trial"),
             stringValue(row.trial_kind, "EXPLORATORY"),
-            stringValue(row.status, "SUBMITTED")
+            stringValue(row.decision ?? row.status, "SUBMITTED")
           ])}
         />
         <ResearchMiniPanel
@@ -164,6 +178,12 @@ function ResearchMiniPanel({ title, rows }: { title: string; rows: string[][] })
       </div>
     </div>
   );
+}
+
+function shortId(value: string): string {
+  if (!value) return "no-task";
+  const compact = value.replace(/^factor-research-/, "");
+  return compact.length > 10 ? `${compact.slice(0, 10)}…` : compact;
 }
 
 function dedupeCandidates(rows: Record<string, unknown>[]): Record<string, unknown>[] {

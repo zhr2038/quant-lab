@@ -2000,6 +2000,109 @@ def test_bigscreen_factor_research_kpis_are_hypothesis_and_trial_driven(tmp_path
     assert factor_research["external_audit_evidence"][0]["eligible_for_promotion"] is False
 
 
+def test_bigscreen_factor_research_scopes_current_generation_and_hides_null_placeholders(
+    tmp_path,
+):
+    clear_bigscreen_cache()
+    lake = tmp_path / "lake"
+    created_at = datetime(2026, 7, 19, tzinfo=UTC)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "trial_id": "trial-current",
+                    "hypothesis_id": "hypothesis-current",
+                    "trial_kind": "CONFIRMATORY",
+                    "status": "COMPLETED",
+                    "decision": "REJECTED_DATA_QUALITY",
+                    "submitted_at": created_at,
+                },
+                {
+                    "trial_id": "trial-history",
+                    "hypothesis_id": "hypothesis-history",
+                    "trial_kind": "CONFIRMATORY",
+                    "status": "COMPLETED",
+                    "decision": "PAPER_CANDIDATE",
+                    "submitted_at": created_at,
+                },
+            ]
+        ),
+        lake / "gold" / "research_trial_ledger",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "trial_id": None,
+                    "factor_id": None,
+                    "joint_residual_rank_ic": None,
+                    "created_at": None,
+                },
+                {
+                    "trial_id": "trial-current",
+                    "factor_id": "factor-current",
+                    "joint_residual_rank_ic": 0.01,
+                    "created_at": created_at,
+                },
+            ]
+        ),
+        lake / "gold" / "factor_attribution",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "trial_id": None,
+                    "factor_id": None,
+                    "portfolio_validity": None,
+                    "decision": None,
+                    "created_at": None,
+                },
+                {
+                    "trial_id": "trial-current",
+                    "factor_id": "factor-current",
+                    "portfolio_validity": "INCONCLUSIVE",
+                    "decision": "INCONCLUSIVE",
+                    "created_at": created_at,
+                },
+            ]
+        ),
+        lake / "gold" / "factor_portfolio_validation",
+    )
+    generation_path = lake / "gold" / "factor_research_generation.json"
+    generation_path.parent.mkdir(parents=True, exist_ok=True)
+    generation_path.write_text(
+        json.dumps(
+            {
+                "generation_id": "factor-generation-current",
+                "trial_ids": ["trial-current"],
+                "published_at": created_at.isoformat(),
+                "research_only": True,
+                "live_order_effect": "none",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    factor_research = bigscreen_snapshot(lake)["strategy_flow"]["factor_factory"]
+
+    assert factor_research["total_trial_count"] == 2
+    assert factor_research["current_trial_count"] == 1
+    assert factor_research["current_completed_trial_count"] == 1
+    assert factor_research["current_data_quality_rejected_count"] == 1
+    assert factor_research["current_trial_decision_counts"] == {
+        "REJECTED_DATA_QUALITY": 1
+    }
+    assert factor_research["current_generation_verdict"] == "DATA_QUALITY_BLOCKED"
+    assert [row["trial_id"] for row in factor_research["trials"]] == ["trial-current"]
+    assert [row["factor_id"] for row in factor_research["attribution"]] == [
+        "factor-current"
+    ]
+    assert [row["factor_id"] for row in factor_research["portfolio_validation"]] == [
+        "factor-current"
+    ]
+
+
 def test_bigscreen_snapshot_surfaces_legacy_web_anomalies(monkeypatch, tmp_path):
     clear_bigscreen_cache()
 

@@ -188,6 +188,19 @@ def test_factor_research_task_is_content_addressed_signed_and_idempotent(tmp_pat
     assert result_manifest.live_order_effect == "none"
     assert receipt.output_rows == sum(item.row_count for item in result_manifest.outputs)
 
+    # Old bootstrap generations could leave one all-null schema placeholder.
+    # A real generation must remove it instead of carrying it forward forever.
+    for dataset_name in ("factor_attribution", "factor_portfolio_validation"):
+        dataset_root = lake / "gold" / dataset_name
+        dataset_root.mkdir(parents=True, exist_ok=True)
+        pl.DataFrame(
+            {
+                "as_of_date": [None],
+                "trial_id": [None],
+                "factor_id": [None],
+            }
+        ).write_parquet(dataset_root / "legacy-null-placeholder.parquet")
+
     os.replace(queue / "pending" / first.task_id, queue / "running" / first.task_id)
     shutil.copytree(result_root, queue / "results" / "inbox" / first.task_id)
     imported = import_entry_quality_history_result(
@@ -209,6 +222,11 @@ def test_factor_research_task_is_content_addressed_signed_and_idempotent(tmp_pat
     assert pointer["live_order_effect"] == "none"
     assert pointer["automatic_promotion"] is False
     assert pointer["max_live_notional_usdt"] == 0
+    for dataset_name in ("factor_attribution", "factor_portfolio_validation"):
+        published = read_parquet_dataset(lake / "gold" / dataset_name)
+        assert published.filter(
+            pl.col("as_of_date").is_null() | pl.col("trial_id").is_null()
+        ).is_empty()
     completed_ledger = read_parquet_dataset(lake / RESEARCH_TRIAL_LEDGER_DATASET)
     assert set(completed_ledger.get_column("status").to_list()) == {"COMPLETED"}
     completed_registry = read_parquet_dataset(lake / RESEARCH_HYPOTHESIS_REGISTRY_DATASET)

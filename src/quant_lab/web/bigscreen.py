@@ -2157,14 +2157,59 @@ def _factor_factory_payload(
     evidence_by_horizon = _factor_evidence_by_horizon(evidence)
     hypothesis_rows = _frame_rows(hypotheses, limit=2_000)
     trial_rows = _frame_rows(trials, limit=10_000)
-    attribution_rows = _frame_rows(attribution, limit=10_000)
-    portfolio_rows = _frame_rows(portfolio_validation, limit=10_000)
+    attribution_rows = [
+        row
+        for row in _frame_rows(attribution, limit=10_000)
+        if row.get("trial_id") and row.get("factor_id")
+    ]
+    portfolio_rows = [
+        row
+        for row in _frame_rows(portfolio_validation, limit=10_000)
+        if row.get("trial_id") and row.get("factor_id")
+    ]
+    generation_trial_ids = {
+        str(trial_id)
+        for trial_id in generation.get("trial_ids", [])
+        if trial_id
+    }
+    current_trial_rows = (
+        [
+            row
+            for row in trial_rows
+            if str(row.get("trial_id") or "") in generation_trial_ids
+        ]
+        if generation_trial_ids
+        else trial_rows
+    )
     hypothesis_status_counts = _count_by_column(hypotheses, "status")
     trial_status_counts = _count_by_column(trials, "status")
     confirmatory_trial_count = sum(
         1
         for row in trial_rows
         if str(row.get("trial_kind") or "").upper() == "CONFIRMATORY"
+    )
+    current_confirmatory_trial_count = sum(
+        1
+        for row in current_trial_rows
+        if str(row.get("trial_kind") or "").upper() == "CONFIRMATORY"
+    )
+    current_trial_decision_counts: dict[str, int] = {}
+    for row in current_trial_rows:
+        decision = str(row.get("decision") or "UNKNOWN").upper()
+        current_trial_decision_counts[decision] = (
+            current_trial_decision_counts.get(decision, 0) + 1
+        )
+    current_completed_trial_count = sum(
+        1
+        for row in current_trial_rows
+        if str(row.get("status") or "").upper() == "COMPLETED"
+    )
+    current_data_quality_rejected_count = current_trial_decision_counts.get(
+        "REJECTED_DATA_QUALITY", 0
+    )
+    current_generation_verdict = _factor_generation_verdict(
+        current_trial_rows,
+        current_trial_decision_counts,
     )
     failed_trial_count = sum(
         trial_status_counts.get(state, 0)
@@ -2214,6 +2259,11 @@ def _factor_factory_payload(
         warnings.append("research_hypothesis_registry_missing_or_empty")
     if not generation:
         warnings.append("factor_research_generation_not_published")
+    if current_data_quality_rejected_count:
+        warnings.append(
+            "current_factor_trials_rejected_data_quality:"
+            f"{current_data_quality_rejected_count}"
+        )
     return {
         "title": "Hypothesis-Driven Factor Research",
         "live_order_effect": "none_read_only_research",
@@ -2240,6 +2290,12 @@ def _factor_factory_payload(
         ),
         "total_trial_count": trials.height,
         "confirmatory_trial_count": confirmatory_trial_count,
+        "current_trial_count": len(current_trial_rows),
+        "current_completed_trial_count": current_completed_trial_count,
+        "current_confirmatory_trial_count": current_confirmatory_trial_count,
+        "current_data_quality_rejected_count": current_data_quality_rejected_count,
+        "current_trial_decision_counts": current_trial_decision_counts,
+        "current_generation_verdict": current_generation_verdict,
         "failed_trial_count": failed_trial_count,
         "failed_trial_retention_pct": 100.0 if failed_trial_count else None,
         "multiple_testing_pass_count": multiple_testing_pass_count,
@@ -2262,7 +2318,7 @@ def _factor_factory_payload(
         "hypothesis_status_counts": hypothesis_status_counts,
         "trial_status_counts": trial_status_counts,
         "hypotheses": hypothesis_rows[:8],
-        "trials": trial_rows[:8],
+        "trials": current_trial_rows[:8],
         "attribution": attribution_rows[:8],
         "portfolio_validation": portfolio_rows[:8],
         "retirement": _frame_rows(retirement, limit=8),
@@ -2293,6 +2349,25 @@ def _factor_factory_payload(
         ),
         "warnings": warnings,
     }
+
+
+def _factor_generation_verdict(
+    current_trial_rows: list[dict[str, Any]],
+    decision_counts: dict[str, int],
+) -> str:
+    if not current_trial_rows:
+        return "NO_CURRENT_TRIALS"
+    if decision_counts.get("PAPER_CANDIDATE", 0):
+        return "PAPER_REVIEW_CANDIDATE"
+    if decision_counts.get("PORTFOLIO_FAIL", 0):
+        return "PORTFOLIO_FAIL"
+    if decision_counts.get("SIGNAL_VALID", 0):
+        return "SIGNAL_VALID"
+    if decision_counts.get("REJECTED_DATA_QUALITY", 0) == len(current_trial_rows):
+        return "DATA_QUALITY_BLOCKED"
+    if decision_counts.get("DATA_BLOCKED", 0) == len(current_trial_rows):
+        return "DATA_BLOCKED"
+    return "INCONCLUSIVE"
 
 
 def _fast_microstructure_forward_payload(value: Any) -> dict[str, Any]:

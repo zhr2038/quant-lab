@@ -243,6 +243,7 @@ def publish_factor_research_generation(
                 existing,
                 incoming,
                 schema=spec.schema,
+                primary_keys=spec.primary_keys,
                 hypothesis_ids=set(manifest.hypothesis_ids),
                 as_of_date=manifest.as_of_date.isoformat(),
             )
@@ -478,11 +479,20 @@ def _merge_managed_factor_rows(
     incoming: pl.DataFrame,
     *,
     schema: dict[str, pl.DataType],
+    primary_keys: tuple[str, ...],
     hypothesis_ids: set[str],
     as_of_date: str,
 ) -> pl.DataFrame:
-    current = _normalize_frame(existing, schema)
+    current = _normalize_frame(existing, schema).drop_nulls(list(primary_keys))
     replacement = _normalize_frame(incoming, schema)
+    null_primary_keys = [
+        key for key in primary_keys if replacement.get_column(key).null_count()
+    ]
+    if null_primary_keys:
+        raise ValueError(
+            "factor_research_publish_primary_key_null:"
+            + ",".join(null_primary_keys)
+        )
     if not current.is_empty() and "hypothesis_id" in current.columns:
         managed = pl.col("hypothesis_id").is_in(sorted(hypothesis_ids))
         if "as_of_date" in current.columns:

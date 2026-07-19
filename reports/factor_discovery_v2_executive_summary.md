@@ -40,10 +40,15 @@ All new records carry `research_only=true`, `live_order_effect=none`,
 read-only and was not modified. Paper ACK/Tracker, risk permission, canary,
 enforce, capital, positions, and exchange order paths are outside this change.
 
-## Acceptance boundary
+## Acceptance result
 
-Code and local tests are necessary but not sufficient. The new weekly timer must
-remain disabled until two real NAS shadow tasks pass signature, snapshot,
-anti-leakage, result-validation, atomic-publication, resource, and zero-live-
-effect checks. A valid final result may contain zero `SIGNAL_VALID` and zero
-`PAPER_CANDIDATE` factors.
+Two final-commit NAS shadow tasks passed signature, snapshot, Anti-Leakage,
+strict result validation, atomic publication, resource, exact generation
+binding, and zero-live-effect checks. The weekly Factor request timer was
+enabled only after that acceptance.
+
+The current research verdict is intentionally negative: all eight current
+trials are `REJECTED_DATA_QUALITY`, with zero `SIGNAL_VALID` and zero
+`PAPER_CANDIDATE`. This is successful platform acceptance, not successful alpha
+discovery. The review branch is deployed for research shadow only; GitHub main
+is unchanged and no live-readiness claim is made.

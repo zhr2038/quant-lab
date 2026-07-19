@@ -1,11 +1,12 @@
 {
-  "schema_version": "quant_lab.current_nas_migration_inventory.v1",
-  "captured_at": "2026-07-19T04:02:00Z",
-  "source_truth": "live_ssh_systemd_docker_and_lake_inspection",
+  "schema_version": "quant_lab.current_nas_migration_inventory.v2",
+  "captured_at": "2026-07-19T11:24:00Z",
+  "source_truth": "live_ssh_systemd_docker_queue_and_lake_inspection",
   "commits": {
     "github_quant_lab_main": "49ad71fb9d3043e4882546fd8b8d4ff0ba93106b",
-    "cloud_quant_lab": "49ad71fb9d3043e4882546fd8b8d4ff0ba93106b",
-    "nas_research_worker": "dcbfc22217d48bf80a0a2ea6e1aa55c42d047511",
+    "github_refactor_branch": "8d8c884ad9fc35ff600921fc8c0a05bf732cff72",
+    "cloud_quant_lab": "8d8c884ad9fc35ff600921fc8c0a05bf732cff72",
+    "nas_research_worker": "8d8c884ad9fc35ff600921fc8c0a05bf732cff72",
     "v5_prod_read_only": "3df1c67cc44cc8be364ec5d3798ea0d3595c0abc"
   },
   "capabilities": [
@@ -14,90 +15,95 @@
     {"name": "entry_quality_history", "state": "PRODUCTION_RESEARCH_RUNNING"},
     {
       "name": "alpha_factory",
-      "state": "FAILED",
-      "reason": "current_cloud_worker_code_mismatch",
-      "task_id": "alpha-factory-2f9862f5951430b2a27724d2"
+      "state": "PRODUCTION_RESEARCH_RUNNING",
+      "task_id": "alpha-factory-c3b0425791b3ce7800ed1470"
     },
     {
       "name": "factor_research",
-      "state": "CODE_ONLY",
-      "reason": "cloud_factor_factory_exists_but_shared_research_plane_task_type_missing"
+      "state": "PRODUCTION_RESEARCH_RUNNING",
+      "task_id": "factor-research-097a452bfeb6edfd8baf5d1e"
     }
   ],
   "cloud": {
     "host": "qyun2",
-    "root_disk_total_gib": 79,
-    "root_disk_used_gib": 38,
-    "root_disk_available_gib": 38,
-    "root_disk_used_percent": 51,
-    "memory_total_gib": 7.4,
-    "memory_available_gib": 6.4,
-    "lake_size_gib": 13,
-    "research_queue_size_mib": 75,
-    "cloud_heavy_factor_factory_still_scheduled": true
+    "root_disk_total_bytes": 84423806976,
+    "root_disk_used_bytes": 43307094016,
+    "root_disk_available_bytes": 37556994048,
+    "root_disk_used_percent": 54,
+    "memory_total_bytes": 7994249216,
+    "memory_available_bytes": 6797287424,
+    "lake_size_bytes": 13552091317,
+    "research_queue_size_bytes": 101766175,
+    "cloud_heavy_factor_factory_still_scheduled": false,
+    "factor_request_memory_max_bytes": 943718400,
+    "research_import_memory_max_bytes": 1258291200
   },
   "nas": {
     "host": "HR-Cloud",
-    "volume_total_gib": 916,
-    "volume_available_gib": 803,
+    "volume_total_bytes": 983547510784,
+    "volume_available_bytes": 854954741760,
     "volume_used_percent": 13,
-    "memory_total_gib": 15,
-    "memory_available_gib": 9.9,
+    "memory_total_bytes": 16539697152,
+    "memory_available_bytes": 10771222528,
     "research_worker": {
       "container": "quant-research-worker",
-      "healthy": true,
-      "image_id": "sha256:4fa0bb11388a22d2a2a3d27718e8c8d39d6466cda8f30dca2e5ce5e6d24119d0",
+      "state": "created_idle",
+      "image_id": "sha256:97bae4c7f062f1ae97d61ff1e31934a217368f3700d9524d75786dbbbd30c517",
       "cpu_limit": 3.0,
       "memory_limit_bytes": 8589934592,
       "pid_limit": 256,
-      "read_only_root": true,
-      "run_once": false,
-      "observed_memory_mib": 142.4,
-      "heavy_job_lock_mount": "/runtime"
+      "read_only_root": true
     }
   },
-  "latest_successful_tasks": [
+  "accepted_tasks": [
     {
-      "task_id": "entry-quality-history-8475bf67a8d388705332fbc2",
-      "task_type": "entry_quality_history",
-      "input_bytes": 7452309,
-      "downloaded_bytes": 7429118,
-      "cache_hit_bytes": 23191,
-      "output_rows": 2755,
-      "peak_rss_bytes": 245825536,
-      "compute_duration_seconds": 20.39588853297755,
+      "task_id": "factor-research-097a452bfeb6edfd8baf5d1e",
+      "task_type": "factor_research",
+      "snapshot_id": "factor-research-b7ba4acfe2d475c65fa0d474",
+      "input_bytes": 388332,
+      "downloaded_bytes": 311072,
+      "cache_hit_bytes": 77260,
+      "output_rows": 22122,
+      "output_bytes": 554306,
+      "peak_rss_bytes": 354426880,
+      "compute_duration_seconds": 24.88037915015593,
       "anti_leakage_status": "PASS",
       "import_status": "imported"
     },
     {
-      "task_id": "alpha-factory-cb0df230d9639799882689da",
+      "task_id": "alpha-factory-c3b0425791b3ce7800ed1470",
       "task_type": "alpha_factory",
-      "input_bytes": 10710510,
-      "downloaded_bytes": 10617295,
-      "cache_hit_bytes": 93215,
-      "output_rows": 173947,
-      "peak_rss_bytes": 1003642880,
-      "compute_duration_seconds": 212.7271219259128,
+      "snapshot_id": "alpha-factory-d6cdd2d63e20ce52a39c8183",
+      "input_bytes": 16295243,
+      "downloaded_bytes": 16220714,
+      "cache_hit_bytes": 74529,
+      "output_rows": 307138,
+      "output_bytes": 2562375,
+      "peak_rss_bytes": 1439264768,
+      "compute_duration_seconds": 20.650072281016037,
       "anti_leakage_status": "PASS",
-      "import_status": "imported"
-    },
-    {
-      "task_id": "alpha-factory-2eb57de8ba8734f0cff95bb6",
-      "task_type": "alpha_factory",
-      "input_bytes": 8640879,
-      "downloaded_bytes": 2651171,
-      "cache_hit_bytes": 5989708,
-      "output_rows": 179966,
-      "peak_rss_bytes": 1022083072,
-      "compute_duration_seconds": 223.12863351404667,
-      "anti_leakage_status": "PASS",
-      "import_status": "imported"
+      "import_status": "imported",
+      "factor_generation_id": "factor-research-097a452bfeb6edfd8baf5d1e",
+      "factor_generation_digest": "82655622935aa4fcfc6e153162ff4c4edb7450b41f098b8cfdf8043eb5511f52"
     }
   ],
+  "factor_research": {
+    "independent_hypothesis_count": 4,
+    "active_hypothesis_count": 2,
+    "current_trial_count": 8,
+    "total_trial_ledger_count": 56,
+    "data_quality_rejected_count": 8,
+    "multiple_testing_pass_count": 0,
+    "signal_valid_count": 0,
+    "portfolio_fail_count": 0,
+    "paper_candidate_count": 0,
+    "point_in_time_cost_coverage": 0.747906976744186
+  },
   "safety": {
     "v5_modified": false,
     "research_only": true,
     "live_order_effect": "none",
-    "automatic_promotion": false
+    "automatic_promotion": false,
+    "max_live_notional_usdt": 0
   }
 }

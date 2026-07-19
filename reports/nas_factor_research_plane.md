@@ -15,5 +15,6 @@ digest, date range, hypothesis IDs, trial IDs, test count, and all safety fields
 The result must return the exact output/report set, hashes, schemas, row counts,
 resource metrics, and an all-PASS anti-leakage report.
 
-The request timer is weekly and remains disabled until two real shadow tasks pass.
+The request timer is weekly. It was kept disabled during implementation and was
+enabled only after the final-commit Factor and bound Alpha shadow tasks passed.
 NAS offline behavior is wait-and-retry; there is no automatic cloud fallback.

@@ -1,62 +1,86 @@
 # Current NAS Migration Inventory
 
-Captured at `2026-07-19T04:02:00Z`. This report records observed runtime state, not README claims.
+Captured at `2026-07-19T11:24:00Z`. This is observed runtime state from Git,
+SSH, systemd, Docker, queue, and Lake inspection. It does not infer deployment
+from documentation.
 
 ## Source identities
 
-| Surface | Observed commit | Working tree |
+| Surface | Observed commit | State |
 | --- | --- | --- |
-| GitHub `zhr2038/quant-lab` `main` | `49ad71fb9d3043e4882546fd8b8d4ff0ba93106b` | remote reference |
-| qyun2 `/opt/quant-lab` | `49ad71fb9d3043e4882546fd8b8d4ff0ba93106b` | clean |
-| NAS Research Worker image | `dcbfc22217d48bf80a0a2ea6e1aa55c42d047511` | running image |
-| qyun V5 `/home/ubuntu/clawd/v5-prod` | `3df1c67cc44cc8be364ec5d3798ea0d3595c0abc` | clean, read-only for this task |
+| GitHub `main` | `49ad71fb9d3043e4882546fd8b8d4ff0ba93106b` | unchanged; this refactor is not merged |
+| GitHub refactor branch | `8d8c884ad9fc35ff600921fc8c0a05bf732cff72` | pushed |
+| qyun2 `/opt/quant-lab` | `8d8c884ad9fc35ff600921fc8c0a05bf732cff72` | clean shadow deployment |
+| NAS Research Worker repo/image | `8d8c884ad9fc35ff600921fc8c0a05bf732cff72` | exact worker commit |
+| qyun V5 | `3df1c67cc44cc8be364ec5d3798ea0d3595c0abc` | clean and read-only |
 
-The qyun2/NAS commit mismatch is currently material: the latest Alpha Factory task is repeatedly rejected by the worker as `worker_code_mismatch`. It is not counted as a successful current-main run.
+The original cloud/worker mismatch was resolved before acceptance. Both final
+signed tasks bind the full cloud and worker commit shown above.
 
 ## Capability inventory
 
 | Capability | State | Runtime evidence |
 | --- | --- | --- |
-| Expert Export | `PRODUCTION_RESEARCH_RUNNING` | `quant-export-worker` and download services running on NAS; qyun2 receipt import timer active |
-| AI Research | `PRODUCTION_RESEARCH_RUNNING` | `quant-ai-worker` running; qyun2 AI task/import timers active |
-| Entry Quality History | `PRODUCTION_RESEARCH_RUNNING` | latest task `entry-quality-history-8475bf67a8d388705332fbc2` completed, imported, Anti-Leakage `PASS` |
-| Alpha Factory / Second Stage | `FAILED` | previous signed tasks completed at `dcbfc22`; current task `alpha-factory-2f9862f5951430b2a27724d2` loops on `worker_code_mismatch` |
-| Factor Research v2 | `CODE_ONLY` | cloud Factor Factory exists, but the signed Research Plane has no `factor_research` task, snapshot, worker dispatch, result, or importer contract |
+| Expert Export | `PRODUCTION_RESEARCH_RUNNING` | NAS export worker and download services are running and healthy |
+| AI Research | `PRODUCTION_RESEARCH_RUNNING` | NAS AI worker is running |
+| Entry Quality History | `PRODUCTION_RESEARCH_RUNNING` | existing request timer remains active; protocol tests remain compatible |
+| Alpha Factory / Second Stage | `PRODUCTION_RESEARCH_RUNNING` | final task `alpha-factory-c3b0425791b3ce7800ed1470` imported, Anti-Leakage `PASS` |
+| Factor Research v2 | `PRODUCTION_RESEARCH_RUNNING` | final task `factor-research-097a452bfeb6edfd8baf5d1e` imported, Anti-Leakage `PASS`; weekly timer active |
 
 ## Cloud runtime
 
-- Root filesystem: 79 GiB total, 38 GiB used, 38 GiB free, 51% used.
-- Memory: 7.4 GiB total, 6.4 GiB available.
-- Lake: 13 GiB.
-- Research Queue: 75 MiB.
-- `quant-lab-alpha-factory-request.timer`: enabled and active.
-- `quant-lab-entry-quality-history-request.timer`: enabled and active.
-- `quant-lab-research-result-import.timer`: enabled and active.
-- Legacy local Alpha Factory timer: disabled.
-- `quant-lab-v5-research-refresh.service` still includes cloud-local `qlab build-factor-factory` with `MemoryMax=4G`, `CPUQuota=60%`, and a 45 minute timeout.
+- Root filesystem: 79 GiB total, 41 GiB used, 36 GiB free, 54% used.
+- Memory: 7.4 GiB total, about 6.3 GiB available at capture time.
+- Lake: 13,552,091,317 bytes (about 12.6 GiB).
+- Research Queue: 101,766,175 bytes (about 97 MiB).
+- Factor request, Alpha request, result import, Entry Quality request, API, and
+  Web services/timers were active after acceptance.
+- The V5 research refresh no longer calls cloud-local `build-factor-factory`.
+  It is capped at 40% CPU and 1.2 GB memory.
+- Factor snapshot request is capped at 30% CPU and 900 MB memory.
+- Result import is capped at 40% CPU and 1.2 GB memory.
 
 ## NAS runtime
 
-- Host: UGREEN `HR-Cloud`, x86_64, 15 GiB RAM visible to the OS.
-- `/volume1`: 916 GiB total, 803 GiB free, 13% used.
-- `quant-research-worker`: healthy, 3 CPUs, 8 GiB memory limit, PID limit 256, read-only root, `RUN_ONCE=false`.
-- Research Worker image ID: `sha256:4fa0bb11388a22d2a2a3d27718e8c8d39d6466cda8f30dca2e5ce5e6d24119d0`.
-- Research Worker idle observation: about 142 MiB.
-- Shared runtime mount: `/volume1/docker/quant-runtime -> /runtime`; configured heavy-job lock defaults to `/runtime/quant-runtime/heavy-job.lock`.
-- No exchange credential mount was observed on `quant-research-worker`.
+- Host: UGREEN `HR-Cloud`, x86_64, 15.4 GiB RAM.
+- `/volume1`: about 916 GiB total, 796 GiB available, 13% used.
+- Research Worker image ID:
+  `sha256:97bae4c7f062f1ae97d61ff1e31934a217368f3700d9524d75786dbbbd30c517`.
+- Research Worker: 3 CPUs, 8 GiB memory limit, PID limit 256, read-only root.
+- The persistent compose container is intentionally `created`/idle; controlled
+  shadow tasks used the same image through `docker compose run --rm`.
+- `quant-ai-worker`, `quant-export-worker`, and export download services were
+  running. No exchange credential mount was added to the Research Worker.
 
-## Latest successful research tasks
+## Final accepted tasks
 
 | Task | Input | Download | Cache | Output rows | Peak RSS | Compute | Result |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
-| `entry-quality-history-8475bf67a8d388705332fbc2` | 7,452,309 B | 7,429,118 B | 23,191 B | 2,755 | 245,825,536 B | 20.40 s | imported, Anti-Leakage PASS |
-| `alpha-factory-cb0df230d9639799882689da` | 10,710,510 B | 10,617,295 B | 93,215 B | 173,947 | 1,003,642,880 B | 212.73 s | imported, Anti-Leakage PASS |
-| `alpha-factory-2eb57de8ba8734f0cff95bb6` | 8,640,879 B | 2,651,171 B | 5,989,708 B | 179,966 | 1,022,083,072 B | 223.13 s | imported, Anti-Leakage PASS |
+| `factor-research-097a452bfeb6edfd8baf5d1e` | 388,332 B | 311,072 B | 77,260 B | 22,122 | 354,426,880 B | 24.88 s | imported, Anti-Leakage PASS |
+| `alpha-factory-c3b0425791b3ce7800ed1470` | 16,295,243 B | 16,220,714 B | 74,529 B | 307,138 | 1,439,264,768 B | 20.65 s | imported, Anti-Leakage PASS |
 
-## Current blocker
+The Alpha task binds Factor generation
+`factor-research-097a452bfeb6edfd8baf5d1e` and digest
+`82655622935aa4fcfc6e153162ff4c4edb7450b41f098b8cfdf8043eb5511f52`.
 
-Task `alpha-factory-2f9862f5951430b2a27724d2` was sealed by cloud commit `49ad71f...`, while the NAS worker enforces exact worker commit `dcbfc22...`. It remains retry-pending with attempt zero because rejection occurs before the claimed status increments. The v2 rollout must align cloud, worker repository, image, and signed task commit before shadow acceptance.
+## Current research truth
+
+- Four independent hypotheses are registered; two are active and two are
+  `DATA_BLOCKED` because real derivatives or microstructure inputs are absent.
+- The current generation contains eight confirmatory trials. All eight are
+  `REJECTED_DATA_QUALITY`; FDR passes, `SIGNAL_VALID`, and `PAPER_CANDIDATE` are
+  all zero.
+- Point-in-time cost coverage is 74.7907%, below the 80% gate. The available
+  historical universe context is also materially shorter than the requested
+  two-year window.
+- Factor attribution and portfolio tables contain eight current rows each and
+  have zero null primary keys.
+- Alpha output contains 165 rows: 65 `KEEP_SHADOW`, 78 `KILL`, and 22
+  `RESEARCH`. Every row has zero live notional and requires manual live approval.
 
 ## Safety state
 
-This inventory made no V5, order, position, risk-permission, canary, enforce, or capital changes. Existing NAS research outputs remain `research_only=true` with `live_order_effect=none` and no automatic promotion.
+No V5 file or runtime state was changed. Both generations are
+`research_only=true`, `live_order_effect=none`, and
+`automatic_promotion=false`. No Paper ACK/Tracker, risk permission, canary,
+enforce, capital, position, or exchange-order path was changed.

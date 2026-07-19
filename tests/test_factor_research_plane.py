@@ -18,6 +18,7 @@ from quant_lab.research.factor_research.registry import (
 from quant_lab.research_plane.contracts import FactorResearchSnapshotManifest
 from quant_lab.research_plane.factor_research_publish import (
     FACTOR_RESEARCH_GENERATION_POINTER,
+    FACTOR_RESEARCH_GENERATION_SCHEMA,
 )
 from quant_lab.research_plane.importer import import_entry_quality_history_result
 from quant_lab.research_plane.queue import create_factor_research_task
@@ -201,6 +202,7 @@ def test_factor_research_task_is_content_addressed_signed_and_idempotent(tmp_pat
     assert imported.state == "completed"
     assert imported.idempotent is False
     pointer = json.loads((lake / FACTOR_RESEARCH_GENERATION_POINTER).read_text("utf-8"))
+    assert pointer["schema_version"] == FACTOR_RESEARCH_GENERATION_SCHEMA
     assert pointer["generation_id"] == result_manifest.generation_id
     assert pointer["research_only"] is True
     assert pointer["live_order_effect"] == "none"

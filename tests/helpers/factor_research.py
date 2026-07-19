@@ -9,6 +9,8 @@ import polars as pl
 from quant_lab.data.lake import read_parquet_dataset, write_parquet_dataset
 from quant_lab.research.factor_research.outputs import FACTOR_RESEARCH_OUTPUT_SPECS
 from quant_lab.research.factor_research.registry import (
+    FACTOR_EXTERNAL_AUDIT_EVIDENCE_DATASET,
+    FACTOR_EXTERNAL_AUDIT_EVIDENCE_SCHEMA,
     FACTOR_RETIREMENT_DATASET,
     FACTOR_RETIREMENT_SCHEMA,
     HYPOTHESIS_REGISTRY_SCHEMA,
@@ -18,6 +20,7 @@ from quant_lab.research.factor_research.registry import (
 )
 from quant_lab.research_plane.factor_research_publish import (
     FACTOR_RESEARCH_GENERATION_POINTER,
+    FACTOR_RESEARCH_GENERATION_SCHEMA,
 )
 
 
@@ -41,6 +44,10 @@ def seed_verified_factor_generation(
             TRIAL_LEDGER_SCHEMA,
         ),
         "factor_retirement": (FACTOR_RETIREMENT_DATASET, FACTOR_RETIREMENT_SCHEMA),
+        "factor_external_audit_evidence": (
+            FACTOR_EXTERNAL_AUDIT_EVIDENCE_DATASET,
+            FACTOR_EXTERNAL_AUDIT_EVIDENCE_SCHEMA,
+        ),
         **{
             spec.dataset_name: (spec.relative_path, spec.schema)
             for spec in FACTOR_RESEARCH_OUTPUT_SPECS
@@ -79,7 +86,7 @@ def seed_verified_factor_generation(
         row_counts[dataset_name] = frame.height
 
     payload = {
-        "schema_version": "factor_research_generation.v1",
+        "schema_version": FACTOR_RESEARCH_GENERATION_SCHEMA,
         "generation_id": generation_id,
         "factor_generation_digest": generation_digest,
         "task_id": "factor-research-test-task",

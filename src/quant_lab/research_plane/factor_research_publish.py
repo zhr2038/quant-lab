@@ -42,6 +42,7 @@ from quant_lab.research_plane.atomic_publish import (
 from quant_lab.research_plane.result import ValidatedFactorResearchResult
 
 FACTOR_RESEARCH_GENERATION_POINTER = Path("gold") / "factor_research_generation.json"
+FACTOR_RESEARCH_GENERATION_SCHEMA = "factor_research_generation.v2"
 FACTOR_RESEARCH_TRANSACTION_NAME = "factor_research"
 FACTOR_RESEARCH_SOURCE = "factor_research.nas.v2"
 FACTOR_RESEARCH_GENERATION_FRESH_DAYS = 7
@@ -144,7 +145,7 @@ def publish_factor_research_generation(
 
     generation_digest = _generation_digest(validated)
     generation_payload = {
-        "schema_version": "factor_research_generation.v1",
+        "schema_version": FACTOR_RESEARCH_GENERATION_SCHEMA,
         "generation_id": manifest.generation_id,
         "factor_generation_digest": generation_digest,
         "task_id": manifest.task_id,
@@ -283,7 +284,7 @@ def verify_factor_research_generation(
     pointer = json.loads((root / FACTOR_RESEARCH_GENERATION_POINTER).read_text("utf-8"))
     if pointer.get("generation_id") != generation_id:
         raise RuntimeError("factor_research_generation_pointer_mismatch")
-    if pointer.get("schema_version") != "factor_research_generation.v1":
+    if pointer.get("schema_version") != FACTOR_RESEARCH_GENERATION_SCHEMA:
         raise RuntimeError("factor_research_generation_schema_mismatch")
     for field in (
         "factor_generation_digest",

@@ -7,6 +7,7 @@ from quant_lab.research.ic import (
     compute_by_symbol_ic,
     compute_ic,
     compute_ic_tstat,
+    compute_period_ic_values,
     compute_rank_ic,
 )
 
@@ -32,6 +33,7 @@ def test_compute_ic_and_rank_ic_cross_sectional():
     assert ic.mean == pytest.approx(1.0)
     assert rank_ic.mean == pytest.approx(1.0)
     assert ic.period_count == 3
+    assert compute_period_ic_values(df, rank=True) == pytest.approx([1.0, 1.0, 1.0])
 
 
 def test_ic_skips_periods_with_too_few_symbols():

@@ -22,6 +22,31 @@ def compute_rank_ic(df: pl.DataFrame, feature_column: str = "alpha_score") -> IC
     return _compute_period_stats(df, feature_column, rank=True)
 
 
+def compute_period_ic_values(
+    df: pl.DataFrame,
+    feature_column: str = "alpha_score",
+    *,
+    rank: bool = False,
+) -> list[float]:
+    if df.is_empty() or feature_column not in df.columns or "decision_ts" not in df.columns:
+        return []
+    values: list[float] = []
+    ordered = df.sort("decision_ts")
+    for _period, group in ordered.group_by("decision_ts", maintain_order=True):
+        pairs = _valid_pairs(group.to_dicts(), feature_column)
+        if len(pairs) < 3:
+            continue
+        x_values = [pair[0] for pair in pairs]
+        y_values = [pair[1] for pair in pairs]
+        if rank:
+            x_values = _ranks(x_values)
+            y_values = _ranks(y_values)
+        correlation = _pearson(x_values, y_values)
+        if math.isfinite(correlation):
+            values.append(correlation)
+    return values
+
+
 def compute_ic_tstat(values: list[float]) -> float:
     return _tstat(values)
 
@@ -44,19 +69,7 @@ def compute_by_symbol_ic(df: pl.DataFrame, feature_column: str = "alpha_score") 
 def _compute_period_stats(df: pl.DataFrame, feature_column: str, *, rank: bool) -> ICStats:
     if df.is_empty() or feature_column not in df.columns:
         return ICStats(mean=0.0, tstat=0.0, period_count=0, status="insufficient_samples")
-    values: list[float] = []
-    for _period, group in df.group_by("decision_ts", maintain_order=True):
-        pairs = _valid_pairs(group.to_dicts(), feature_column)
-        if len(pairs) < 3:
-            continue
-        x_values = [pair[0] for pair in pairs]
-        y_values = [pair[1] for pair in pairs]
-        if rank:
-            x_values = _ranks(x_values)
-            y_values = _ranks(y_values)
-        corr = _pearson(x_values, y_values)
-        if math.isfinite(corr):
-            values.append(corr)
+    values = compute_period_ic_values(df, feature_column, rank=rank)
     if not values:
         return ICStats(mean=0.0, tstat=0.0, period_count=0, status="insufficient_samples")
     return ICStats(mean=sum(values) / len(values), tstat=_tstat(values), period_count=len(values))

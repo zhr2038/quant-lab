@@ -20,7 +20,11 @@ from quant_lab.factors.registry import (
     discover_factor_specs,
 )
 from quant_lab.research.evidence import DEFAULT_RESEARCH_COST_BPS
-from quant_lab.research.ic import compute_ic, compute_rank_ic
+from quant_lab.research.factor_research.statistics import (
+    adjust_multiple_testing,
+    compute_overlap_aware_significance,
+)
+from quant_lab.research.ic import compute_ic, compute_period_ic_values, compute_rank_ic
 from quant_lab.research.labels import build_forward_return_labels, validate_no_label_lookahead
 from quant_lab.strategy_telemetry.sanitize import safe_json_dumps
 
@@ -135,6 +139,26 @@ FACTOR_EVIDENCE_SCHEMA: dict[str, Any] = {
     "ic_tstat": pl.Float64,
     "rank_ic_mean": pl.Float64,
     "rank_ic_tstat": pl.Float64,
+    "naive_rank_ic_tstat": pl.Float64,
+    "hac_rank_ic_tstat_horizon_half": pl.Float64,
+    "hac_rank_ic_tstat_horizon": pl.Float64,
+    "hac_rank_ic_tstat_horizon_double": pl.Float64,
+    "hac_rank_ic_tstat_auto": pl.Float64,
+    "hac_bandwidth_horizon_half": pl.Int64,
+    "hac_bandwidth_horizon": pl.Int64,
+    "hac_bandwidth_horizon_double": pl.Int64,
+    "hac_bandwidth_auto": pl.Int64,
+    "non_overlapping_rank_ic_mean": pl.Float64,
+    "non_overlapping_rank_ic_tstat": pl.Float64,
+    "non_overlapping_period_count": pl.Int64,
+    "block_bootstrap_rank_ic_ci_low": pl.Float64,
+    "block_bootstrap_rank_ic_ci_high": pl.Float64,
+    "permutation_empirical_pvalue": pl.Float64,
+    "raw_pvalue": pl.Float64,
+    "holm_adjusted_pvalue": pl.Float64,
+    "bh_fdr_qvalue": pl.Float64,
+    "multiple_testing_count": pl.Int64,
+    "statistical_method": pl.Utf8,
     "ic_period_count": pl.Int64,
     "top_quantile": pl.Float64,
     "long_only_mean_bps": pl.Float64,
@@ -598,6 +622,7 @@ def evaluate_and_publish_factor_evidence(
                 )
             )
 
+    rows = _apply_multiple_testing(rows)
     evidence = _schema_frame(rows, FACTOR_EVIDENCE_SCHEMA)
     candidates = _candidate_frame_from_evidence(evidence, as_of_date=day, created_at=now)
     correlations = _factor_correlation_frame(
@@ -1056,13 +1081,24 @@ def _factor_evidence_row(
     stats_input = valid.with_columns(pl.col("value").alias("alpha_score"))
     ic_stats = compute_ic(stats_input)
     rank_ic_stats = compute_rank_ic(stats_input)
+    rank_ic_values = compute_period_ic_values(stats_input, rank=True)
+    overlap_stats = compute_overlap_aware_significance(
+        rank_ic_values,
+        horizon=horizon_bars,
+        bootstrap_samples=500,
+        permutation_samples=500,
+        random_seed=_stable_seed(
+            str(factor_meta.get("factor_id") or "unknown"),
+            str(horizon_bars),
+        ),
+    )
     portfolio = _portfolio_stats(valid, top_quantile=top_quantile)
     decision, score, reasons, decision_warnings = _factor_decision(
         valid_sample_count=valid_rows,
         min_samples=min_samples,
         coverage=coverage,
         rank_ic_mean=rank_ic_stats.mean,
-        rank_ic_tstat=rank_ic_stats.tstat,
+        rank_ic_tstat=overlap_stats.confirmatory_hac_tstat,
         long_short_mean_bps=portfolio["long_short_mean_bps"],
         edge_cost_ratio=portfolio["edge_cost_ratio"],
     )
@@ -1085,7 +1121,27 @@ def _factor_evidence_row(
         "ic_mean": ic_stats.mean,
         "ic_tstat": ic_stats.tstat,
         "rank_ic_mean": rank_ic_stats.mean,
-        "rank_ic_tstat": rank_ic_stats.tstat,
+        "rank_ic_tstat": overlap_stats.confirmatory_hac_tstat,
+        "naive_rank_ic_tstat": rank_ic_stats.tstat,
+        "hac_rank_ic_tstat_horizon_half": overlap_stats.hac_tstat_horizon_half,
+        "hac_rank_ic_tstat_horizon": overlap_stats.hac_tstat_horizon,
+        "hac_rank_ic_tstat_horizon_double": overlap_stats.hac_tstat_horizon_double,
+        "hac_rank_ic_tstat_auto": overlap_stats.hac_tstat_auto,
+        "hac_bandwidth_horizon_half": overlap_stats.hac_bandwidth_horizon_half,
+        "hac_bandwidth_horizon": overlap_stats.hac_bandwidth_horizon,
+        "hac_bandwidth_horizon_double": overlap_stats.hac_bandwidth_horizon_double,
+        "hac_bandwidth_auto": overlap_stats.hac_bandwidth_auto,
+        "non_overlapping_rank_ic_mean": overlap_stats.non_overlapping_mean,
+        "non_overlapping_rank_ic_tstat": overlap_stats.non_overlapping_tstat,
+        "non_overlapping_period_count": overlap_stats.non_overlapping_count,
+        "block_bootstrap_rank_ic_ci_low": overlap_stats.block_bootstrap_ci_low,
+        "block_bootstrap_rank_ic_ci_high": overlap_stats.block_bootstrap_ci_high,
+        "permutation_empirical_pvalue": overlap_stats.permutation_empirical_pvalue,
+        "raw_pvalue": overlap_stats.raw_pvalue,
+        "holm_adjusted_pvalue": 1.0,
+        "bh_fdr_qvalue": 1.0,
+        "multiple_testing_count": 0,
+        "statistical_method": "newey_west_horizon_primary",
         "ic_period_count": max(ic_stats.period_count, rank_ic_stats.period_count),
         "top_quantile": top_quantile,
         **portfolio,
@@ -1196,13 +1252,11 @@ def _factor_decision(
         return "KILL", score, reasons, warnings
     if (
         coverage >= 0.80
-        and rank_ic_mean > 0.0
-        and rank_ic_tstat >= 1.0
-        and long_short_mean_bps > 0
-        and edge_cost_ratio > 1.0
+        and rank_ic_mean > 0.03
+        and rank_ic_tstat >= 2.0
     ):
-        reasons.append("positive_rank_ic_after_cost_spread")
-        return "PAPER_READY", score, reasons, warnings
+        reasons.append("development_signal_requires_confirmatory_trial")
+        return "SIGNAL_CANDIDATE", score, reasons, warnings
     if rank_ic_mean > 0.0 or long_short_mean_bps > 0:
         reasons.append("positive_but_not_paper_ready")
         return "KEEP_SHADOW", score, reasons, warnings
@@ -1324,6 +1378,7 @@ def _recommended_action(decision: str) -> str:
         "KILL": "drop_or_quarantine",
         "RESEARCH": "research_only",
         "KEEP_SHADOW": "keep_shadow",
+        "SIGNAL_CANDIDATE": "confirmatory_research_only",
         "PAPER_READY": "paper_review_only",
     }.get(decision, "research_only")
 
@@ -1482,6 +1537,42 @@ def _dedupe(values: list[str]) -> list[str]:
         seen.add(value)
         deduped.append(value)
     return deduped
+
+
+def _apply_multiple_testing(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    pvalues = {
+        _evidence_test_id(row): float(row.get("raw_pvalue") or 1.0) for row in rows
+    }
+    adjustments = adjust_multiple_testing(pvalues)
+    for row in rows:
+        adjustment = adjustments.get(_evidence_test_id(row))
+        if adjustment is None:
+            continue
+        row["holm_adjusted_pvalue"] = adjustment.holm_adjusted_pvalue
+        row["bh_fdr_qvalue"] = adjustment.bh_fdr_qvalue
+        row["multiple_testing_count"] = adjustment.test_count
+    return rows
+
+
+def _evidence_test_id(row: dict[str, Any]) -> str:
+    return "|".join(
+        str(row.get(column) or "")
+        for column in (
+            "as_of_date",
+            "factor_id",
+            "factor_version",
+            "timeframe",
+            "horizon_bars",
+            "decision_delay_bars",
+        )
+    )
+
+
+def _stable_seed(*values: str) -> int:
+    import hashlib
+
+    payload = "\x1f".join(values).encode("utf-8")
+    return int(hashlib.sha256(payload).hexdigest()[:8], 16)
 
 
 def _code_version() -> str:

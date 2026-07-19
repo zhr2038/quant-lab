@@ -210,7 +210,20 @@ def test_default_run_removes_legacy_auto_candidates_without_deleting_history(tmp
         legacy_enumeration=True,
     )
     legacy_candidates = read_parquet_dataset(lake / "gold" / "factor_candidate")
+    legacy_evidence = read_parquet_dataset(lake / "gold" / "factor_evidence")
     assert legacy_candidates["factor_id"].str.starts_with("auto.single.").any()
+    assert not legacy_candidates["candidate_state"].eq("PAPER_READY").any()
+    assert legacy_evidence["rank_ic_tstat"].equals(
+        legacy_evidence["hac_rank_ic_tstat_horizon"]
+    )
+    assert {
+        "naive_rank_ic_tstat",
+        "non_overlapping_rank_ic_tstat",
+        "block_bootstrap_rank_ic_ci_low",
+        "permutation_empirical_pvalue",
+        "holm_adjusted_pvalue",
+        "bh_fdr_qvalue",
+    }.issubset(legacy_evidence.columns)
 
     build_and_publish_factor_factory(
         lake,

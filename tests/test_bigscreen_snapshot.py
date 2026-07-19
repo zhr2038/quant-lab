@@ -1946,6 +1946,27 @@ def test_bigscreen_factor_research_kpis_are_hypothesis_and_trial_driven(tmp_path
         ),
         lake / "gold" / "factor_portfolio_validation",
     )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "evidence_id": "audit-low-vol",
+                    "audit_version": "Audit v2.2",
+                    "factor_id": "low_vol_20d",
+                    "signal_validity": "PASS",
+                    "portfolio_validity": "FAIL",
+                    "status": "REFERENCE_SIGNAL",
+                    "finding": "structural decomposition required",
+                    "historical_only": True,
+                    "eligible_for_promotion": False,
+                    "imported_at": created_at,
+                    "research_only": True,
+                    "live_order_effect": "none",
+                }
+            ]
+        ),
+        lake / "gold" / "factor_external_audit_evidence",
+    )
     generation_path = lake / "gold" / "factor_research_generation.json"
     generation_path.parent.mkdir(parents=True, exist_ok=True)
     generation_path.write_text(
@@ -1975,6 +1996,8 @@ def test_bigscreen_factor_research_kpis_are_hypothesis_and_trial_driven(tmp_path
     assert factor_research["residual_incremental_ic"] == pytest.approx(0.015)
     assert factor_research["mean_pbo"] == pytest.approx(0.25)
     assert factor_research["mean_dsr_probability"] == pytest.approx(0.62)
+    assert factor_research["external_audit_count"] == 1
+    assert factor_research["external_audit_evidence"][0]["eligible_for_promotion"] is False
 
 
 def test_bigscreen_snapshot_surfaces_legacy_web_anomalies(monkeypatch, tmp_path):

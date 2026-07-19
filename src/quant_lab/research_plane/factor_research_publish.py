@@ -23,12 +23,15 @@ from quant_lab.research.factor_research.contracts import (
 )
 from quant_lab.research.factor_research.outputs import FACTOR_RESEARCH_OUTPUT_SPECS
 from quant_lab.research.factor_research.registry import (
+    FACTOR_EXTERNAL_AUDIT_EVIDENCE_DATASET,
+    FACTOR_EXTERNAL_AUDIT_EVIDENCE_SCHEMA,
     FACTOR_RETIREMENT_DATASET,
     FACTOR_RETIREMENT_SCHEMA,
     HYPOTHESIS_REGISTRY_SCHEMA,
     RESEARCH_HYPOTHESIS_REGISTRY_DATASET,
     RESEARCH_TRIAL_LEDGER_DATASET,
     TRIAL_LEDGER_SCHEMA,
+    factor_external_audit_evidence_frame,
     factor_retirement_registry_frame,
 )
 from quant_lab.research_plane.atomic_publish import (
@@ -135,6 +138,9 @@ def publish_factor_research_generation(
     retirement = read_parquet_dataset(root / FACTOR_RETIREMENT_DATASET)
     if retirement.is_empty():
         retirement = factor_retirement_registry_frame(recorded_at=manifest.completed_at)
+    external_audit = read_parquet_dataset(root / FACTOR_EXTERNAL_AUDIT_EVIDENCE_DATASET)
+    if external_audit.is_empty():
+        external_audit = factor_external_audit_evidence_frame(imported_at=manifest.completed_at)
 
     generation_digest = _generation_digest(validated)
     generation_payload = {
@@ -183,6 +189,12 @@ def publish_factor_research_generation(
                 FACTOR_RETIREMENT_DATASET,
                 retirement,
                 FACTOR_RETIREMENT_SCHEMA,
+            ),
+            (
+                "factor_external_audit_evidence",
+                FACTOR_EXTERNAL_AUDIT_EVIDENCE_DATASET,
+                external_audit,
+                FACTOR_EXTERNAL_AUDIT_EVIDENCE_SCHEMA,
             ),
         )
         for index, (name, target, frame, schema) in enumerate(control_frames):
@@ -295,6 +307,7 @@ def verify_factor_research_generation(
         "research_hypothesis_registry": RESEARCH_HYPOTHESIS_REGISTRY_DATASET,
         "research_trial_ledger": RESEARCH_TRIAL_LEDGER_DATASET,
         "factor_retirement": FACTOR_RETIREMENT_DATASET,
+        "factor_external_audit_evidence": FACTOR_EXTERNAL_AUDIT_EVIDENCE_DATASET,
         **{spec.dataset_name: spec.relative_path for spec in FACTOR_RESEARCH_OUTPUT_SPECS},
     }
     if set(rows) != set(targets):

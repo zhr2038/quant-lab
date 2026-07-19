@@ -1,0 +1,611 @@
+{
+  "$defs": {
+    "BenchmarkPlan": {
+      "additionalProperties": false,
+      "properties": {
+        "benchmark_id": {
+          "maxLength": 180,
+          "minLength": 1,
+          "title": "Benchmark Id",
+          "type": "string"
+        },
+        "benchmarks": {
+          "items": {
+            "enum": [
+              "BTC",
+              "DYNAMIC_UNIVERSE_EQUAL_WEIGHT"
+            ],
+            "type": "string"
+          },
+          "maxItems": 2,
+          "minItems": 1,
+          "title": "Benchmarks",
+          "type": "array"
+        }
+      },
+      "required": [
+        "benchmark_id",
+        "benchmarks"
+      ],
+      "title": "BenchmarkPlan",
+      "type": "object"
+    },
+    "CostModelPlan": {
+      "additionalProperties": false,
+      "properties": {
+        "cost_model_id": {
+          "maxLength": 180,
+          "minLength": 1,
+          "title": "Cost Model Id",
+          "type": "string"
+        },
+        "proxy_can_support_deployment": {
+          "const": false,
+          "default": false,
+          "title": "Proxy Can Support Deployment",
+          "type": "boolean"
+        },
+        "require_point_in_time": {
+          "default": true,
+          "title": "Require Point In Time",
+          "type": "boolean"
+        },
+        "research_quantile": {
+          "default": "p75",
+          "enum": [
+            "p50",
+            "p75",
+            "p90"
+          ],
+          "title": "Research Quantile",
+          "type": "string"
+        }
+      },
+      "required": [
+        "cost_model_id"
+      ],
+      "title": "CostModelPlan",
+      "type": "object"
+    },
+    "DataRequirement": {
+      "additionalProperties": false,
+      "properties": {
+        "dataset_name": {
+          "maxLength": 180,
+          "minLength": 1,
+          "title": "Dataset Name",
+          "type": "string"
+        },
+        "min_history_days": {
+          "maximum": 1095,
+          "minimum": 1,
+          "title": "Min History Days",
+          "type": "integer"
+        },
+        "proxy_allowed": {
+          "const": false,
+          "default": false,
+          "title": "Proxy Allowed",
+          "type": "boolean"
+        },
+        "real_source_required": {
+          "default": true,
+          "title": "Real Source Required",
+          "type": "boolean"
+        },
+        "required_columns": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 64,
+          "minItems": 1,
+          "title": "Required Columns",
+          "type": "array"
+        }
+      },
+      "required": [
+        "dataset_name",
+        "required_columns",
+        "min_history_days"
+      ],
+      "title": "DataRequirement",
+      "type": "object"
+    },
+    "DiscoverySource": {
+      "enum": [
+        "HUMAN",
+        "AI_DRAFT",
+        "AUDIT_IMPORT"
+      ],
+      "title": "DiscoverySource",
+      "type": "string"
+    },
+    "FeatureRecipe": {
+      "additionalProperties": false,
+      "properties": {
+        "operation": {
+          "enum": [
+            "rolling_volatility",
+            "rolling_downside_volatility",
+            "volatility_change",
+            "beta_stability",
+            "liquidity_stability",
+            "crash_sensitivity",
+            "market_breadth",
+            "market_dispersion",
+            "funding_crowding",
+            "microstructure_liquidity"
+          ],
+          "title": "Operation",
+          "type": "string"
+        },
+        "parameters": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/RecipeParameter"
+          },
+          "maxItems": 16,
+          "title": "Parameters",
+          "type": "array"
+        },
+        "recipe_id": {
+          "maxLength": 180,
+          "minLength": 1,
+          "title": "Recipe Id",
+          "type": "string"
+        },
+        "source_fields": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 16,
+          "minItems": 1,
+          "title": "Source Fields",
+          "type": "array"
+        }
+      },
+      "required": [
+        "recipe_id",
+        "operation",
+        "source_fields"
+      ],
+      "title": "FeatureRecipe",
+      "type": "object"
+    },
+    "HypothesisStatus": {
+      "enum": [
+        "DRAFT",
+        "DATA_BLOCKED",
+        "APPROVED_FOR_RESEARCH",
+        "RUNNING",
+        "SIGNAL_VALID",
+        "PORTFOLIO_FAIL",
+        "PAPER_CANDIDATE",
+        "RETIRED",
+        "REJECTED",
+        "INCONCLUSIVE"
+      ],
+      "title": "HypothesisStatus",
+      "type": "string"
+    },
+    "NeutralizationPlan": {
+      "additionalProperties": false,
+      "properties": {
+        "controls": {
+          "default": [],
+          "items": {
+            "enum": [
+              "symbol_fixed_effect",
+              "market_beta",
+              "liquidity",
+              "long_run_volatility",
+              "momentum",
+              "regime"
+            ],
+            "type": "string"
+          },
+          "maxItems": 8,
+          "title": "Controls",
+          "type": "array"
+        },
+        "neutralization_id": {
+          "maxLength": 180,
+          "minLength": 1,
+          "title": "Neutralization Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "neutralization_id"
+      ],
+      "title": "NeutralizationPlan",
+      "type": "object"
+    },
+    "RecipeParameter": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "maxLength": 120,
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "value": {
+          "maxLength": 500,
+          "minLength": 1,
+          "title": "Value",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "value"
+      ],
+      "title": "RecipeParameter",
+      "type": "object"
+    },
+    "ResearchFamily": {
+      "enum": [
+        "DEFENSIVE_QUALITY",
+        "ABSOLUTE_TIMING_BREADTH",
+        "DERIVATIVES_CROWDING",
+        "LIQUIDITY_MICROSTRUCTURE"
+      ],
+      "title": "ResearchFamily",
+      "type": "string"
+    },
+    "StrategyFit": {
+      "enum": [
+        "cross_sectional_rank",
+        "absolute_timing",
+        "long_only_spot",
+        "market_neutral_research_only"
+      ],
+      "title": "StrategyFit",
+      "type": "string"
+    },
+    "UniverseDefinition": {
+      "additionalProperties": false,
+      "properties": {
+        "dynamic_source_dataset": {
+          "anyOf": [
+            {
+              "maxLength": 180,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Dynamic Source Dataset"
+        },
+        "exclusion_rule": {
+          "maxLength": 1000,
+          "minLength": 1,
+          "title": "Exclusion Rule",
+          "type": "string"
+        },
+        "inclusion_rule": {
+          "maxLength": 1000,
+          "minLength": 1,
+          "title": "Inclusion Rule",
+          "type": "string"
+        },
+        "symbols": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 200,
+          "title": "Symbols",
+          "type": "array"
+        },
+        "universe_id": {
+          "maxLength": 180,
+          "minLength": 1,
+          "title": "Universe Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "universe_id",
+        "inclusion_rule",
+        "exclusion_rule"
+      ],
+      "title": "UniverseDefinition",
+      "type": "object"
+    }
+  },
+  "$id": "https://schemas.hrhome.top/quant-lab/research_hypothesis.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "allowed_variants": {
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 3,
+      "minItems": 1,
+      "title": "Allowed Variants",
+      "type": "array"
+    },
+    "approved_at": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Approved At"
+    },
+    "approved_by": {
+      "anyOf": [
+        {
+          "maxLength": 180,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Approved By"
+    },
+    "automatic_promotion": {
+      "const": false,
+      "default": false,
+      "title": "Automatic Promotion",
+      "type": "boolean"
+    },
+    "available_data_confirmed": {
+      "title": "Available Data Confirmed",
+      "type": "boolean"
+    },
+    "benchmark_plan": {
+      "$ref": "#/$defs/BenchmarkPlan"
+    },
+    "blocked_missing_data": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 24,
+      "title": "Blocked Missing Data",
+      "type": "array"
+    },
+    "cost_model": {
+      "$ref": "#/$defs/CostModelPlan"
+    },
+    "created_at": {
+      "format": "date-time",
+      "title": "Created At",
+      "type": "string"
+    },
+    "data_requirements": {
+      "items": {
+        "$ref": "#/$defs/DataRequirement"
+      },
+      "maxItems": 12,
+      "minItems": 1,
+      "title": "Data Requirements",
+      "type": "array"
+    },
+    "discovery_source": {
+      "$ref": "#/$defs/DiscoverySource"
+    },
+    "economic_mechanism": {
+      "maxLength": 3000,
+      "minLength": 1,
+      "title": "Economic Mechanism",
+      "type": "string"
+    },
+    "expected_direction": {
+      "enum": [
+        -1,
+        1
+      ],
+      "title": "Expected Direction",
+      "type": "integer"
+    },
+    "expected_horizons": {
+      "items": {
+        "type": "integer"
+      },
+      "maxItems": 3,
+      "minItems": 1,
+      "title": "Expected Horizons",
+      "type": "array"
+    },
+    "factor_family": {
+      "$ref": "#/$defs/ResearchFamily"
+    },
+    "falsification_conditions": {
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 16,
+      "minItems": 1,
+      "title": "Falsification Conditions",
+      "type": "array"
+    },
+    "feature_recipes": {
+      "items": {
+        "$ref": "#/$defs/FeatureRecipe"
+      },
+      "maxItems": 3,
+      "minItems": 1,
+      "title": "Feature Recipes",
+      "type": "array"
+    },
+    "hypothesis_id": {
+      "maxLength": 180,
+      "minLength": 1,
+      "title": "Hypothesis Id",
+      "type": "string"
+    },
+    "hypothesis_version": {
+      "minimum": 1,
+      "title": "Hypothesis Version",
+      "type": "integer"
+    },
+    "known_overlap": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 24,
+      "title": "Known Overlap",
+      "type": "array"
+    },
+    "live_order_effect": {
+      "const": "none",
+      "default": "none",
+      "title": "Live Order Effect",
+      "type": "string"
+    },
+    "max_live_notional_usdt": {
+      "const": 0,
+      "default": 0,
+      "title": "Max Live Notional Usdt",
+      "type": "integer"
+    },
+    "neutralization_plan": {
+      "$ref": "#/$defs/NeutralizationPlan"
+    },
+    "related_existing_factors": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 32,
+      "title": "Related Existing Factors",
+      "type": "array"
+    },
+    "related_hypotheses": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 24,
+      "title": "Related Hypotheses",
+      "type": "array"
+    },
+    "research_only": {
+      "const": true,
+      "default": true,
+      "title": "Research Only",
+      "type": "boolean"
+    },
+    "research_thread_id": {
+      "maxLength": 180,
+      "minLength": 1,
+      "title": "Research Thread Id",
+      "type": "string"
+    },
+    "status": {
+      "$ref": "#/$defs/HypothesisStatus"
+    },
+    "stopping_conditions": {
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 16,
+      "minItems": 1,
+      "title": "Stopping Conditions",
+      "type": "array"
+    },
+    "strategy_fit": {
+      "items": {
+        "$ref": "#/$defs/StrategyFit"
+      },
+      "maxItems": 4,
+      "minItems": 1,
+      "title": "Strategy Fit",
+      "type": "array"
+    },
+    "success_conditions": {
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 16,
+      "minItems": 1,
+      "title": "Success Conditions",
+      "type": "array"
+    },
+    "title": {
+      "maxLength": 500,
+      "minLength": 1,
+      "title": "Title",
+      "type": "string"
+    },
+    "universe_definition": {
+      "$ref": "#/$defs/UniverseDefinition"
+    },
+    "updated_at": {
+      "format": "date-time",
+      "title": "Updated At",
+      "type": "string"
+    },
+    "variant_budget": {
+      "maximum": 3,
+      "minimum": 1,
+      "title": "Variant Budget",
+      "type": "integer"
+    },
+    "who_pays_the_edge": {
+      "maxLength": 2000,
+      "minLength": 1,
+      "title": "Who Pays The Edge",
+      "type": "string"
+    },
+    "why_edge_may_decay": {
+      "maxLength": 2000,
+      "minLength": 1,
+      "title": "Why Edge May Decay",
+      "type": "string"
+    },
+    "why_edge_may_persist": {
+      "maxLength": 2000,
+      "minLength": 1,
+      "title": "Why Edge May Persist",
+      "type": "string"
+    }
+  },
+  "required": [
+    "hypothesis_id",
+    "hypothesis_version",
+    "research_thread_id",
+    "title",
+    "factor_family",
+    "economic_mechanism",
+    "who_pays_the_edge",
+    "why_edge_may_persist",
+    "why_edge_may_decay",
+    "strategy_fit",
+    "data_requirements",
+    "available_data_confirmed",
+    "feature_recipes",
+    "expected_direction",
+    "expected_horizons",
+    "allowed_variants",
+    "variant_budget",
+    "universe_definition",
+    "neutralization_plan",
+    "benchmark_plan",
+    "cost_model",
+    "falsification_conditions",
+    "stopping_conditions",
+    "success_conditions",
+    "discovery_source",
+    "status",
+    "created_at",
+    "updated_at"
+  ],
+  "title": "ResearchHypothesis",
+  "type": "object"
+}

@@ -403,6 +403,7 @@ function drilldownContent(view: ViewKey, data: BigscreenSnapshot) {
     const attribution = safeRows(factorFactory.attribution);
     const portfolioValidation = safeRows(factorFactory.portfolio_validation);
     const retirement = safeRows(factorFactory.retirement);
+    const externalAudit = safeRows(factorFactory.external_audit_evidence);
     const generation = (factorFactory.generation ?? {}) as Record<string, unknown>;
     const nasTask = (factorFactory.nas_task ?? {}) as Record<string, unknown>;
     return {
@@ -432,6 +433,7 @@ function drilldownContent(view: ViewKey, data: BigscreenSnapshot) {
                 portfolio_fail_count: factorFactory.portfolio_fail_count,
                 paper_candidate_count: factorFactory.paper_candidate_count,
                 data_blocked_count: factorFactory.data_blocked_count,
+                historical_audit_evidence_count: factorFactory.external_audit_count,
                 factor_fixed_effect_share: factorFactory.factor_fixed_effect_share,
                 residual_incremental_ic: factorFactory.residual_incremental_ic,
                 mean_pbo: factorFactory.mean_pbo,
@@ -463,6 +465,11 @@ function drilldownContent(view: ViewKey, data: BigscreenSnapshot) {
             title="Factor retirement registry"
             rows={retirement}
             columns={["factor_id", "factor_family", "status", "enabled", "retirement_reason", "recorded_at"]}
+          />
+          <MiniTable
+            title="Historical external audit evidence"
+            rows={externalAudit}
+            columns={["audit_version", "factor_id", "signal_validity", "portfolio_validity", "status", "finding"]}
           />
           <MiniTable title="策略候选（只读）" rows={dedupeRowsByKeys(safeRows(data.strategy_flow.top_live_candidates).concat(candidates), ["symbol", "horizon_hours", "recommended_mode", "decision"]).slice(0, 8)} columns={["strategy_candidate", "symbol", "recommended_mode", "decision", "avg_net_bps", "p25_net_bps"]} />
           <MiniTable title="Alpha Factory" rows={alphaFactory} columns={["strategy_candidate", "promotion_state", "recommended_mode", "alpha_factory_score", "horizon_hours"]} />

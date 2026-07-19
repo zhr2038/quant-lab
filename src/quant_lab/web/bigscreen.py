@@ -301,6 +301,7 @@ def _snapshot_source_signature(root: Path) -> tuple[Any, ...]:
         _directory_signature(root / "gold" / "factor_attribution"),
         _directory_signature(root / "gold" / "factor_portfolio_validation"),
         _directory_signature(root / "gold" / "factor_retirement"),
+        _directory_signature(root / "gold" / "factor_external_audit_evidence"),
         _path_signature(root / "gold" / "factor_research_generation.json"),
         _directory_signature(root / "gold" / "ai_research_run"),
         _directory_signature(root / "gold" / "ai_research_finding"),
@@ -540,6 +541,7 @@ def _safe_strategy_summary(root: Path) -> dict[str, Any]:
         ("factor_attribution", "factor_attribution"),
         ("factor_portfolio_validation", "factor_portfolio_validation"),
         ("factor_retirement", "factor_retirement"),
+        ("factor_external_audit_evidence", "factor_external_audit_evidence"),
         ("paper_strategy_proposal", "paper_strategy_proposal"),
         ("paper_strategy_registry", "paper_strategy_registry"),
         ("paper_strategy_promotion_gate", "paper_strategy_promotion_gate"),
@@ -2128,6 +2130,7 @@ def _factor_factory_payload(
     attribution = _as_frame(strategy.get("factor_attribution"))
     portfolio_validation = _as_frame(strategy.get("factor_portfolio_validation"))
     retirement = _as_frame(strategy.get("factor_retirement"))
+    external_audit = _as_frame(strategy.get("factor_external_audit_evidence"))
     generation = strategy.get("factor_research_generation")
     if not isinstance(generation, dict):
         generation = {}
@@ -2263,6 +2266,8 @@ def _factor_factory_payload(
         "attribution": attribution_rows[:8],
         "portfolio_validation": portfolio_rows[:8],
         "retirement": _frame_rows(retirement, limit=8),
+        "external_audit_count": external_audit.height,
+        "external_audit_evidence": _frame_rows(external_audit, limit=16),
         "candidate_count": candidates.height,
         "evidence_count": evidence.height,
         "correlation_pair_count": correlations.height,

@@ -1,0 +1,399 @@
+{
+  "$defs": {
+    "ResearchOutputDataset": {
+      "additionalProperties": false,
+      "properties": {
+        "dataset_name": {
+          "maxLength": 180,
+          "minLength": 1,
+          "title": "Dataset Name",
+          "type": "string"
+        },
+        "empty_result_semantics": {
+          "enum": [
+            "clear_window",
+            "preserve"
+          ],
+          "title": "Empty Result Semantics",
+          "type": "string"
+        },
+        "primary_keys": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Primary Keys",
+          "type": "array"
+        },
+        "publish_mode": {
+          "enum": [
+            "window_upsert",
+            "window_replace"
+          ],
+          "title": "Publish Mode",
+          "type": "string"
+        },
+        "relative_path": {
+          "maxLength": 1024,
+          "minLength": 1,
+          "title": "Relative Path",
+          "type": "string"
+        },
+        "row_count": {
+          "minimum": 0,
+          "title": "Row Count",
+          "type": "integer"
+        },
+        "schema_fingerprint": {
+          "maxLength": 64,
+          "minLength": 64,
+          "title": "Schema Fingerprint",
+          "type": "string"
+        },
+        "sha256": {
+          "maxLength": 64,
+          "minLength": 64,
+          "title": "Sha256",
+          "type": "string"
+        },
+        "size_bytes": {
+          "minimum": 0,
+          "title": "Size Bytes",
+          "type": "integer"
+        },
+        "window_keys": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Window Keys",
+          "type": "array"
+        }
+      },
+      "required": [
+        "dataset_name",
+        "relative_path",
+        "schema_fingerprint",
+        "sha256",
+        "row_count",
+        "size_bytes",
+        "publish_mode",
+        "primary_keys",
+        "window_keys",
+        "empty_result_semantics"
+      ],
+      "title": "ResearchOutputDataset",
+      "type": "object"
+    },
+    "ResearchOutputFile": {
+      "additionalProperties": false,
+      "properties": {
+        "relative_path": {
+          "maxLength": 1024,
+          "minLength": 1,
+          "title": "Relative Path",
+          "type": "string"
+        },
+        "sha256": {
+          "maxLength": 64,
+          "minLength": 64,
+          "title": "Sha256",
+          "type": "string"
+        },
+        "size_bytes": {
+          "minimum": 0,
+          "title": "Size Bytes",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "relative_path",
+        "sha256",
+        "size_bytes"
+      ],
+      "title": "ResearchOutputFile",
+      "type": "object"
+    }
+  },
+  "$id": "https://schemas.hrhome.top/quant-lab/factor_research_result.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "anti_leakage_status": {
+      "const": "PASS",
+      "title": "Anti Leakage Status",
+      "type": "string"
+    },
+    "anti_leakage_violation_count": {
+      "const": 0,
+      "default": 0,
+      "title": "Anti Leakage Violation Count",
+      "type": "integer"
+    },
+    "as_of_date": {
+      "format": "date",
+      "title": "As Of Date",
+      "type": "string"
+    },
+    "automatic_promotion": {
+      "const": false,
+      "default": false,
+      "title": "Automatic Promotion",
+      "type": "boolean"
+    },
+    "cache_hit_bytes": {
+      "minimum": 0,
+      "title": "Cache Hit Bytes",
+      "type": "integer"
+    },
+    "completed_at": {
+      "format": "date-time",
+      "title": "Completed At",
+      "type": "string"
+    },
+    "compute_duration_seconds": {
+      "minimum": 0,
+      "title": "Compute Duration Seconds",
+      "type": "number"
+    },
+    "downloaded_bytes": {
+      "minimum": 0,
+      "title": "Downloaded Bytes",
+      "type": "integer"
+    },
+    "end_date": {
+      "format": "date",
+      "title": "End Date",
+      "type": "string"
+    },
+    "factor_research_schema_version": {
+      "maxLength": 80,
+      "minLength": 1,
+      "title": "Factor Research Schema Version",
+      "type": "string"
+    },
+    "generated_at": {
+      "format": "date-time",
+      "title": "Generated At",
+      "type": "string"
+    },
+    "generation_id": {
+      "maxLength": 180,
+      "minLength": 1,
+      "title": "Generation Id",
+      "type": "string"
+    },
+    "hypothesis_ids": {
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 6,
+      "minItems": 1,
+      "title": "Hypothesis Ids",
+      "type": "array"
+    },
+    "hypothesis_registry_digest": {
+      "maxLength": 64,
+      "minLength": 64,
+      "title": "Hypothesis Registry Digest",
+      "type": "string"
+    },
+    "input_bytes": {
+      "minimum": 0,
+      "title": "Input Bytes",
+      "type": "integer"
+    },
+    "live_order_effect": {
+      "const": "none",
+      "default": "none",
+      "title": "Live Order Effect",
+      "type": "string"
+    },
+    "max_history_days": {
+      "maximum": 1095,
+      "minimum": 1,
+      "title": "Max History Days",
+      "type": "integer"
+    },
+    "max_live_notional_usdt": {
+      "const": 0,
+      "default": 0,
+      "title": "Max Live Notional Usdt",
+      "type": "integer"
+    },
+    "multiple_testing_family": {
+      "maxLength": 180,
+      "minLength": 1,
+      "title": "Multiple Testing Family",
+      "type": "string"
+    },
+    "output_bytes": {
+      "minimum": 0,
+      "title": "Output Bytes",
+      "type": "integer"
+    },
+    "outputs": {
+      "items": {
+        "$ref": "#/$defs/ResearchOutputDataset"
+      },
+      "title": "Outputs",
+      "type": "array"
+    },
+    "peak_rss_bytes": {
+      "minimum": 0,
+      "title": "Peak Rss Bytes",
+      "type": "integer"
+    },
+    "quant_lab_commit": {
+      "maxLength": 40,
+      "minLength": 40,
+      "title": "Quant Lab Commit",
+      "type": "string"
+    },
+    "reports": {
+      "items": {
+        "$ref": "#/$defs/ResearchOutputFile"
+      },
+      "title": "Reports",
+      "type": "array"
+    },
+    "requires_cloud_validation": {
+      "const": true,
+      "default": true,
+      "title": "Requires Cloud Validation",
+      "type": "boolean"
+    },
+    "research_only": {
+      "const": true,
+      "default": true,
+      "title": "Research Only",
+      "type": "boolean"
+    },
+    "schema_version": {
+      "const": "quant_lab_factor_research_result.v1",
+      "default": "quant_lab_factor_research_result.v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "selected_v5_bundle_id": {
+      "maxLength": 512,
+      "minLength": 1,
+      "title": "Selected V5 Bundle Id",
+      "type": "string"
+    },
+    "signature": {
+      "minLength": 1,
+      "title": "Signature",
+      "type": "string"
+    },
+    "snapshot_id": {
+      "maxLength": 180,
+      "minLength": 1,
+      "title": "Snapshot Id",
+      "type": "string"
+    },
+    "snapshot_manifest_sha256": {
+      "maxLength": 64,
+      "minLength": 64,
+      "title": "Snapshot Manifest Sha256",
+      "type": "string"
+    },
+    "source_input_digest": {
+      "maxLength": 64,
+      "minLength": 64,
+      "title": "Source Input Digest",
+      "type": "string"
+    },
+    "start_date": {
+      "format": "date",
+      "title": "Start Date",
+      "type": "string"
+    },
+    "task_id": {
+      "maxLength": 180,
+      "minLength": 1,
+      "title": "Task Id",
+      "type": "string"
+    },
+    "task_type": {
+      "const": "factor_research",
+      "default": "factor_research",
+      "title": "Task Type",
+      "type": "string"
+    },
+    "test_count": {
+      "maximum": 54,
+      "minimum": 1,
+      "title": "Test Count",
+      "type": "integer"
+    },
+    "trial_ids": {
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 54,
+      "minItems": 1,
+      "title": "Trial Ids",
+      "type": "array"
+    },
+    "trial_ledger_digest": {
+      "maxLength": 64,
+      "minLength": 64,
+      "title": "Trial Ledger Digest",
+      "type": "string"
+    },
+    "warnings": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Warnings",
+      "type": "array"
+    },
+    "worker_commit": {
+      "maxLength": 40,
+      "minLength": 40,
+      "title": "Worker Commit",
+      "type": "string"
+    },
+    "worker_key_id": {
+      "maxLength": 120,
+      "minLength": 1,
+      "title": "Worker Key Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "task_id",
+    "snapshot_id",
+    "snapshot_manifest_sha256",
+    "selected_v5_bundle_id",
+    "quant_lab_commit",
+    "worker_commit",
+    "factor_research_schema_version",
+    "hypothesis_registry_digest",
+    "trial_ledger_digest",
+    "source_input_digest",
+    "as_of_date",
+    "start_date",
+    "end_date",
+    "max_history_days",
+    "hypothesis_ids",
+    "trial_ids",
+    "test_count",
+    "multiple_testing_family",
+    "generation_id",
+    "generated_at",
+    "completed_at",
+    "outputs",
+    "reports",
+    "anti_leakage_status",
+    "input_bytes",
+    "cache_hit_bytes",
+    "downloaded_bytes",
+    "output_bytes",
+    "peak_rss_bytes",
+    "compute_duration_seconds",
+    "worker_key_id",
+    "signature"
+  ],
+  "title": "FactorResearchResultManifest",
+  "type": "object"
+}

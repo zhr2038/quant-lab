@@ -9,10 +9,12 @@ from quant_lab.research.factor_research.contracts import (
     TrialStatus,
 )
 from quant_lab.research.factor_research.registry import (
+    FACTOR_EXTERNAL_AUDIT_EVIDENCE_DATASET,
     FACTOR_RETIREMENT_DATASET,
     RESEARCH_HYPOTHESIS_REGISTRY_DATASET,
     RESEARCH_TRIAL_LEDGER_DATASET,
     default_hypothesis_registry,
+    factor_external_audit_evidence_frame,
     factor_retirement_registry_frame,
     publish_hypothesis_registry,
     publish_trial_ledger,
@@ -21,6 +23,7 @@ from quant_lab.research.factor_research.registry import (
 
 __all__ = [
     "DiscoverySource",
+    "FACTOR_EXTERNAL_AUDIT_EVIDENCE_DATASET",
     "FACTOR_RETIREMENT_DATASET",
     "FactorResearchDecision",
     "HypothesisStatus",
@@ -32,6 +35,7 @@ __all__ = [
     "TrialKind",
     "TrialStatus",
     "default_hypothesis_registry",
+    "factor_external_audit_evidence_frame",
     "factor_retirement_registry_frame",
     "publish_hypothesis_registry",
     "publish_trial_ledger",

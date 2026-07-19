@@ -16,9 +16,11 @@ from quant_lab.research.factor_research.contracts import (
     TrialStatus,
 )
 from quant_lab.research.factor_research.registry import (
+    FACTOR_EXTERNAL_AUDIT_EVIDENCE_SCHEMA,
     RESEARCH_HYPOTHESIS_REGISTRY_DATASET,
     RESEARCH_TRIAL_LEDGER_DATASET,
     default_hypothesis_registry,
+    factor_external_audit_evidence_frame,
     hypotheses_from_registry,
     hypothesis_registry_digest,
     hypothesis_registry_frame,
@@ -209,3 +211,18 @@ def test_registry_rejects_incomplete_safety_columns() -> None:
 
     empty = prepare_factor_research_control_state(pl.DataFrame())
     assert empty.height == 4
+
+
+def test_external_audit_evidence_is_historical_and_cannot_promote() -> None:
+    frame = factor_external_audit_evidence_frame(
+        imported_at=datetime(2026, 7, 19, 8, 0, tzinfo=UTC)
+    )
+    assert frame.schema == pl.Schema(FACTOR_EXTERNAL_AUDIT_EVIDENCE_SCHEMA)
+    assert frame.get_column("evidence_id").n_unique() == frame.height
+    low_vol = frame.filter(pl.col("factor_id") == "low_vol_20d").row(0, named=True)
+    assert low_vol["signal_validity"] == "PASS"
+    assert low_vol["portfolio_validity"] == "FAIL"
+    assert frame.get_column("historical_only").all()
+    assert not frame.get_column("counts_toward_multiple_testing").any()
+    assert not frame.get_column("eligible_for_promotion").any()
+    assert set(frame.get_column("live_order_effect")) == {"none"}

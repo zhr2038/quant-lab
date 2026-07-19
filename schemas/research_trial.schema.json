@@ -1,0 +1,301 @@
+{
+  "$defs": {
+    "FactorResearchDecision": {
+      "enum": [
+        "DATA_BLOCKED",
+        "REJECTED_DATA_QUALITY",
+        "REJECTED_LEAKAGE",
+        "REJECTED_DUPLICATE",
+        "REJECTED_NO_SIGNAL",
+        "REJECTED_MULTIPLE_TESTING",
+        "REJECTED_OVERFIT",
+        "SIGNAL_CANDIDATE",
+        "SIGNAL_VALID",
+        "PORTFOLIO_FAIL",
+        "PAPER_CANDIDATE",
+        "FORWARD_RUNNING",
+        "PAPER_REVIEW_READY",
+        "RETIRED",
+        "INCONCLUSIVE",
+        "INCONCLUSIVE_OVERFIT_DIAGNOSTICS"
+      ],
+      "title": "FactorResearchDecision",
+      "type": "string"
+    },
+    "TrialKind": {
+      "enum": [
+        "EXPLORATORY",
+        "CONFIRMATORY"
+      ],
+      "title": "TrialKind",
+      "type": "string"
+    },
+    "TrialStatus": {
+      "enum": [
+        "SUBMITTED",
+        "RUNNING",
+        "COMPLETED",
+        "FAILED",
+        "CANCELLED",
+        "REJECTED",
+        "INVALIDATED"
+      ],
+      "title": "TrialStatus",
+      "type": "string"
+    }
+  },
+  "$id": "https://schemas.hrhome.top/quant-lab/research_trial.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "automatic_promotion": {
+      "const": false,
+      "default": false,
+      "title": "Automatic Promotion",
+      "type": "boolean"
+    },
+    "blind_invalidated": {
+      "default": false,
+      "title": "Blind Invalidated",
+      "type": "boolean"
+    },
+    "blind_opened_at": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Blind Opened At"
+    },
+    "blind_period_id": {
+      "maxLength": 180,
+      "minLength": 1,
+      "title": "Blind Period Id",
+      "type": "string"
+    },
+    "code_commit": {
+      "maxLength": 40,
+      "minLength": 40,
+      "title": "Code Commit",
+      "type": "string"
+    },
+    "cost_model_id": {
+      "maxLength": 180,
+      "minLength": 1,
+      "title": "Cost Model Id",
+      "type": "string"
+    },
+    "counts_toward_multiple_testing": {
+      "const": true,
+      "default": true,
+      "title": "Counts Toward Multiple Testing",
+      "type": "boolean"
+    },
+    "data_snapshot_id": {
+      "maxLength": 180,
+      "minLength": 1,
+      "title": "Data Snapshot Id",
+      "type": "string"
+    },
+    "decision": {
+      "$ref": "#/$defs/FactorResearchDecision"
+    },
+    "direction": {
+      "enum": [
+        -1,
+        1
+      ],
+      "title": "Direction",
+      "type": "integer"
+    },
+    "factor_formula_hash": {
+      "maxLength": 64,
+      "minLength": 64,
+      "title": "Factor Formula Hash",
+      "type": "string"
+    },
+    "failure_reason": {
+      "anyOf": [
+        {
+          "maxLength": 2000,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Failure Reason"
+    },
+    "feature_recipe_hash": {
+      "maxLength": 64,
+      "minLength": 64,
+      "title": "Feature Recipe Hash",
+      "type": "string"
+    },
+    "finished_at": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Finished At"
+    },
+    "horizon": {
+      "maximum": 26280,
+      "minimum": 1,
+      "title": "Horizon",
+      "type": "integer"
+    },
+    "hypothesis_id": {
+      "maxLength": 180,
+      "minLength": 1,
+      "title": "Hypothesis Id",
+      "type": "string"
+    },
+    "hypothesis_version": {
+      "minimum": 1,
+      "title": "Hypothesis Version",
+      "type": "integer"
+    },
+    "live_order_effect": {
+      "const": "none",
+      "default": "none",
+      "title": "Live Order Effect",
+      "type": "string"
+    },
+    "lookback": {
+      "maximum": 26280,
+      "minimum": 1,
+      "title": "Lookback",
+      "type": "integer"
+    },
+    "max_live_notional_usdt": {
+      "const": 0,
+      "default": 0,
+      "title": "Max Live Notional Usdt",
+      "type": "integer"
+    },
+    "nas_task_id": {
+      "maxLength": 180,
+      "minLength": 1,
+      "title": "Nas Task Id",
+      "type": "string"
+    },
+    "neutralization_id": {
+      "maxLength": 180,
+      "minLength": 1,
+      "title": "Neutralization Id",
+      "type": "string"
+    },
+    "parameter_locked_at": {
+      "format": "date-time",
+      "title": "Parameter Locked At",
+      "type": "string"
+    },
+    "portfolio_rule_id": {
+      "maxLength": 180,
+      "minLength": 1,
+      "title": "Portfolio Rule Id",
+      "type": "string"
+    },
+    "random_seed": {
+      "maximum": 2147483647,
+      "minimum": 0,
+      "title": "Random Seed",
+      "type": "integer"
+    },
+    "research_only": {
+      "const": true,
+      "default": true,
+      "title": "Research Only",
+      "type": "boolean"
+    },
+    "split_definition": {
+      "maxLength": 500,
+      "minLength": 1,
+      "title": "Split Definition",
+      "type": "string"
+    },
+    "started_at": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Started At"
+    },
+    "status": {
+      "$ref": "#/$defs/TrialStatus"
+    },
+    "submitted_at": {
+      "format": "date-time",
+      "title": "Submitted At",
+      "type": "string"
+    },
+    "test_family_id": {
+      "maxLength": 180,
+      "minLength": 1,
+      "title": "Test Family Id",
+      "type": "string"
+    },
+    "trial_id": {
+      "maxLength": 180,
+      "minLength": 1,
+      "title": "Trial Id",
+      "type": "string"
+    },
+    "trial_kind": {
+      "$ref": "#/$defs/TrialKind"
+    },
+    "universe_id": {
+      "maxLength": 180,
+      "minLength": 1,
+      "title": "Universe Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "trial_id",
+    "hypothesis_id",
+    "hypothesis_version",
+    "test_family_id",
+    "factor_formula_hash",
+    "feature_recipe_hash",
+    "direction",
+    "lookback",
+    "horizon",
+    "universe_id",
+    "neutralization_id",
+    "cost_model_id",
+    "portfolio_rule_id",
+    "split_definition",
+    "blind_period_id",
+    "random_seed",
+    "code_commit",
+    "data_snapshot_id",
+    "nas_task_id",
+    "trial_kind",
+    "parameter_locked_at",
+    "submitted_at",
+    "status",
+    "decision"
+  ],
+  "title": "ResearchTrial",
+  "type": "object"
+}

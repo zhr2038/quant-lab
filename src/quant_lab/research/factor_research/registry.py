@@ -35,6 +35,7 @@ from quant_lab.research.factor_research.contracts import (
 RESEARCH_HYPOTHESIS_REGISTRY_DATASET = Path("gold") / "research_hypothesis_registry"
 RESEARCH_TRIAL_LEDGER_DATASET = Path("gold") / "research_trial_ledger"
 FACTOR_RETIREMENT_DATASET = Path("gold") / "factor_retirement"
+FACTOR_EXTERNAL_AUDIT_EVIDENCE_DATASET = Path("gold") / "factor_external_audit_evidence"
 
 MAX_ACTIVE_HYPOTHESES_PER_FAMILY = 2
 MAX_ACTIVE_HYPOTHESES = 6
@@ -141,6 +142,25 @@ FACTOR_RETIREMENT_SCHEMA: dict[str, Any] = {
     "portfolio_validity": pl.Utf8,
     "source_audit": pl.Utf8,
     "recorded_at": pl.Datetime(time_zone="UTC"),
+    "research_only": pl.Boolean,
+    "live_order_effect": pl.Utf8,
+}
+
+FACTOR_EXTERNAL_AUDIT_EVIDENCE_SCHEMA: dict[str, Any] = {
+    "evidence_id": pl.Utf8,
+    "source_document": pl.Utf8,
+    "audit_version": pl.Utf8,
+    "factor_id": pl.Utf8,
+    "factor_family": pl.Utf8,
+    "signal_validity": pl.Utf8,
+    "portfolio_validity": pl.Utf8,
+    "status": pl.Utf8,
+    "finding": pl.Utf8,
+    "evidence_scope": pl.Utf8,
+    "imported_at": pl.Datetime(time_zone="UTC"),
+    "historical_only": pl.Boolean,
+    "counts_toward_multiple_testing": pl.Boolean,
+    "eligible_for_promotion": pl.Boolean,
     "research_only": pl.Boolean,
     "live_order_effect": pl.Utf8,
 }
@@ -670,6 +690,105 @@ def factor_retirement_registry_frame(*, recorded_at: datetime | None = None) -> 
     )
 
 
+def factor_external_audit_evidence_frame(
+    *, imported_at: datetime | None = None
+) -> pl.DataFrame:
+    """Preserve historical audit conclusions without pretending they are registered trials."""
+    observed_at = imported_at or datetime.now(UTC)
+    rows = [
+        _external_audit(
+            "audit-v2.2-low-vol-20d",
+            "Audit v2.2",
+            "low_vol_20d",
+            "defensive_quality",
+            signal_validity="PASS",
+            portfolio_validity="FAIL",
+            status="REFERENCE_SIGNAL",
+            finding=(
+                "signal survives basic audit but unconditional long-only portfolio fails; "
+                "structural and dynamic volatility must be separated"
+            ),
+        ),
+        _external_audit(
+            "audit-v2.2-rev-xs-20d",
+            "Audit v2.2",
+            "rev_xs_20d",
+            "reversal",
+            signal_validity="FAIL",
+            portfolio_validity="UNKNOWN",
+            status="RETIRED",
+            finding="cross-sectional reversal signal did not survive the historical audit",
+        ),
+        _external_audit(
+            "audit-v2.2-funding-fade",
+            "Audit v2.2",
+            "funding_fade",
+            "derivatives_crowding",
+            signal_validity="UNKNOWN",
+            portfolio_validity="UNKNOWN",
+            status="DATA_PENDING",
+            finding=(
+                "real multi-year funding, basis, and open-interest history is unavailable; "
+                "proxy evidence cannot support validation"
+            ),
+        ),
+        _external_audit(
+            "audit-v2.1-production-20d-momentum",
+            "Audit v2.1",
+            "production_20d_momentum",
+            "momentum",
+            signal_validity="FAIL",
+            portfolio_validity="UNKNOWN",
+            status="RETIRED",
+            finding="legacy momentum result failed independent audit and is disabled",
+        ),
+        _external_audit(
+            "audit-v2.1-vol-adjusted-momentum",
+            "Audit v2.1",
+            "vol_adjusted_momentum",
+            "momentum",
+            signal_validity="FAIL",
+            portfolio_validity="UNKNOWN",
+            status="RETIRED",
+            finding="volatility-adjusted momentum did not retain independent signal evidence",
+        ),
+        _external_audit(
+            "audit-v2-volume-dry-reversal",
+            "Audit v2",
+            "volume_dry_reversal",
+            "reversal",
+            signal_validity="FAIL",
+            portfolio_validity="UNKNOWN",
+            status="RETIRED",
+            finding="historical audit rejected the reversal overlay",
+        ),
+        _external_audit(
+            "audit-v2-pullback-uptrend",
+            "Audit v2",
+            "pullback_uptrend",
+            "timing",
+            signal_validity="FAIL",
+            portfolio_validity="UNKNOWN",
+            status="RETIRED",
+            finding="historical audit rejected the timing overlay",
+        ),
+        _external_audit(
+            "audit-v1-failed-alpha158-overlays",
+            "Audit v1",
+            "failed_alpha158_overlays",
+            "legacy_overlay",
+            signal_validity="FAIL",
+            portfolio_validity="UNKNOWN",
+            status="RETIRED",
+            finding="enumerated Alpha158 overlays failed multiple-testing governance",
+        ),
+    ]
+    return _schema_frame(
+        [{**row, "imported_at": observed_at} for row in rows],
+        FACTOR_EXTERNAL_AUDIT_EVIDENCE_SCHEMA,
+    )
+
+
 def _data_blocked_hypothesis(
     *,
     hypothesis_id: str,
@@ -815,6 +934,36 @@ def _retirement(
         "signal_validity": signal_validity,
         "portfolio_validity": "UNKNOWN",
         "source_audit": "factor_discovery_v2_migration",
+        "research_only": True,
+        "live_order_effect": "none",
+    }
+
+
+def _external_audit(
+    evidence_id: str,
+    audit_version: str,
+    factor_id: str,
+    factor_family: str,
+    *,
+    signal_validity: str,
+    portfolio_validity: str,
+    status: str,
+    finding: str,
+) -> dict[str, Any]:
+    return {
+        "evidence_id": evidence_id,
+        "source_document": "V5 Alpha design and quant-lab audit series",
+        "audit_version": audit_version,
+        "factor_id": factor_id,
+        "factor_family": factor_family,
+        "signal_validity": signal_validity,
+        "portfolio_validity": portfolio_validity,
+        "status": status,
+        "finding": finding,
+        "evidence_scope": "historical_external_audit_only",
+        "historical_only": True,
+        "counts_toward_multiple_testing": False,
+        "eligible_for_promotion": False,
         "research_only": True,
         "live_order_effect": "none",
     }

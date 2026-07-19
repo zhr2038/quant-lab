@@ -1,0 +1,521 @@
+{
+  "generated_from": "default_hypothesis_registry",
+  "hypotheses": [
+    {
+      "allowed_variants": [
+        "structural_low_vol_20d",
+        "dynamic_low_vol_change_20d"
+      ],
+      "approved_at": "2026-07-19T04:02:00Z",
+      "approved_by": "migration_audit_20260719",
+      "automatic_promotion": false,
+      "available_data_confirmed": true,
+      "benchmark_plan": {
+        "benchmark_id": "spot-btc-and-dynamic-ew-v1",
+        "benchmarks": [
+          "BTC",
+          "DYNAMIC_UNIVERSE_EQUAL_WEIGHT"
+        ]
+      },
+      "blocked_missing_data": [],
+      "cost_model": {
+        "cost_model_id": "research-point-in-time-p75-v1",
+        "proxy_can_support_deployment": false,
+        "require_point_in_time": true,
+        "research_quantile": "p75"
+      },
+      "created_at": "2026-07-19T04:02:00Z",
+      "data_requirements": [
+        {
+          "dataset_name": "silver/market_bar",
+          "min_history_days": 730,
+          "proxy_allowed": false,
+          "real_source_required": true,
+          "required_columns": [
+            "symbol",
+            "timeframe",
+            "ts",
+            "close",
+            "is_closed"
+          ]
+        },
+        {
+          "dataset_name": "gold/expanded_universe_quality",
+          "min_history_days": 30,
+          "proxy_allowed": false,
+          "real_source_required": true,
+          "required_columns": [
+            "symbol",
+            "as_of_date"
+          ]
+        },
+        {
+          "dataset_name": "gold/cost_bucket_daily",
+          "min_history_days": 30,
+          "proxy_allowed": false,
+          "real_source_required": true,
+          "required_columns": [
+            "symbol",
+            "day",
+            "total_cost_bps_p75"
+          ]
+        }
+      ],
+      "discovery_source": "AUDIT_IMPORT",
+      "economic_mechanism": "Separate persistent low-risk asset identity from a recent decline in each asset's own volatility before evaluating either as a return predictor.",
+      "expected_direction": -1,
+      "expected_horizons": [
+        24,
+        72
+      ],
+      "factor_family": "DEFENSIVE_QUALITY",
+      "falsification_conditions": [
+        "blind rank IC is not positive after multiple-testing adjustment",
+        "joint residual rank IC loses sign",
+        "performance is driven by one symbol"
+      ],
+      "feature_recipes": [
+        {
+          "operation": "rolling_volatility",
+          "parameters": [
+            {
+              "name": "lookback_bars",
+              "value": "480"
+            }
+          ],
+          "recipe_id": "structural_low_vol_20d",
+          "source_fields": [
+            "close"
+          ]
+        },
+        {
+          "operation": "volatility_change",
+          "parameters": [
+            {
+              "name": "current_lookback_bars",
+              "value": "480"
+            },
+            {
+              "name": "baseline_lookback_bars",
+              "value": "480"
+            }
+          ],
+          "recipe_id": "dynamic_low_vol_change_20d",
+          "source_fields": [
+            "close"
+          ]
+        }
+      ],
+      "hypothesis_id": "defensive.low_vol_decomposition",
+      "hypothesis_version": 1,
+      "known_overlap": [
+        "low_vol_20d",
+        "beta",
+        "liquidity",
+        "symbol_fixed_effect"
+      ],
+      "live_order_effect": "none",
+      "max_live_notional_usdt": 0,
+      "neutralization_plan": {
+        "controls": [
+          "symbol_fixed_effect",
+          "market_beta",
+          "liquidity",
+          "long_run_volatility",
+          "momentum",
+          "regime"
+        ],
+        "neutralization_id": "xs-core-controls-v1"
+      },
+      "related_existing_factors": [
+        "low_vol_20d"
+      ],
+      "related_hypotheses": [],
+      "research_only": true,
+      "research_thread_id": "factor-v2.defensive.low-vol",
+      "status": "APPROVED_FOR_RESEARCH",
+      "stopping_conditions": [
+        "research budget is exhausted",
+        "required point-in-time data becomes unavailable",
+        "leakage or provenance validation fails"
+      ],
+      "strategy_fit": [
+        "cross_sectional_rank",
+        "long_only_spot"
+      ],
+      "success_conditions": [
+        "confirmatory HAC t-stat is at least 3 or Holm-adjusted p is at most 0.05",
+        "non-overlapping and bootstrap evidence support the same sign",
+        "pre-registered long-only portfolio is positive after cost"
+      ],
+      "title": "Structural versus dynamic low-volatility effect",
+      "universe_definition": {
+        "dynamic_source_dataset": "gold/expanded_universe_quality",
+        "exclusion_rule": "exclude stale, untradeable, or insufficient-history symbols",
+        "inclusion_rule": "quality-qualified spot symbols with closed 1H market bars",
+        "symbols": [],
+        "universe_id": "spot-dynamic-quality-v1"
+      },
+      "updated_at": "2026-07-19T04:02:00Z",
+      "variant_budget": 2,
+      "who_pays_the_edge": "risk-seeking participants who overpay for volatile crypto exposure",
+      "why_edge_may_decay": "regime shifts and exchange-universe selection can erase the premium",
+      "why_edge_may_persist": "lottery preference and leverage constraints can be persistent"
+    },
+    {
+      "allowed_variants": [
+        "advance_ratio_24h",
+        "cross_sectional_dispersion_24h"
+      ],
+      "approved_at": "2026-07-19T04:02:00Z",
+      "approved_by": "migration_audit_20260719",
+      "automatic_promotion": false,
+      "available_data_confirmed": true,
+      "benchmark_plan": {
+        "benchmark_id": "spot-btc-and-dynamic-ew-v1",
+        "benchmarks": [
+          "BTC",
+          "DYNAMIC_UNIVERSE_EQUAL_WEIGHT"
+        ]
+      },
+      "blocked_missing_data": [],
+      "cost_model": {
+        "cost_model_id": "research-point-in-time-p75-v1",
+        "proxy_can_support_deployment": false,
+        "require_point_in_time": true,
+        "research_quantile": "p75"
+      },
+      "created_at": "2026-07-19T04:02:00Z",
+      "data_requirements": [
+        {
+          "dataset_name": "silver/market_bar",
+          "min_history_days": 730,
+          "proxy_allowed": false,
+          "real_source_required": true,
+          "required_columns": [
+            "symbol",
+            "timeframe",
+            "ts",
+            "close",
+            "is_closed"
+          ]
+        },
+        {
+          "dataset_name": "gold/market_regime_daily",
+          "min_history_days": 365,
+          "proxy_allowed": false,
+          "real_source_required": true,
+          "required_columns": [
+            "symbol",
+            "day"
+          ]
+        }
+      ],
+      "discovery_source": "HUMAN",
+      "economic_mechanism": "Broad participation may identify when long-only spot exposure is compensated, independently of cross-sectional coin ranking.",
+      "expected_direction": 1,
+      "expected_horizons": [
+        24,
+        72
+      ],
+      "factor_family": "ABSOLUTE_TIMING_BREADTH",
+      "falsification_conditions": [
+        "blind rank IC is not positive after multiple-testing adjustment",
+        "joint residual rank IC loses sign",
+        "performance is driven by one symbol"
+      ],
+      "feature_recipes": [
+        {
+          "operation": "market_breadth",
+          "parameters": [
+            {
+              "name": "return_lookback_bars",
+              "value": "24"
+            }
+          ],
+          "recipe_id": "advance_ratio_24h",
+          "source_fields": [
+            "close"
+          ]
+        },
+        {
+          "operation": "market_dispersion",
+          "parameters": [
+            {
+              "name": "return_lookback_bars",
+              "value": "24"
+            }
+          ],
+          "recipe_id": "cross_sectional_dispersion_24h",
+          "source_fields": [
+            "close"
+          ]
+        }
+      ],
+      "hypothesis_id": "timing.market_breadth",
+      "hypothesis_version": 1,
+      "known_overlap": [
+        "BTC trend",
+        "market beta",
+        "market regime"
+      ],
+      "live_order_effect": "none",
+      "max_live_notional_usdt": 0,
+      "neutralization_plan": {
+        "controls": [
+          "symbol_fixed_effect",
+          "market_beta",
+          "liquidity",
+          "long_run_volatility",
+          "momentum",
+          "regime"
+        ],
+        "neutralization_id": "xs-core-controls-v1"
+      },
+      "related_existing_factors": [],
+      "related_hypotheses": [
+        "defensive.low_vol_decomposition"
+      ],
+      "research_only": true,
+      "research_thread_id": "factor-v2.timing.market-breadth",
+      "status": "APPROVED_FOR_RESEARCH",
+      "stopping_conditions": [
+        "research budget is exhausted",
+        "required point-in-time data becomes unavailable",
+        "leakage or provenance validation fails"
+      ],
+      "strategy_fit": [
+        "absolute_timing",
+        "long_only_spot"
+      ],
+      "success_conditions": [
+        "confirmatory HAC t-stat is at least 3 or Holm-adjusted p is at most 0.05",
+        "non-overlapping and bootstrap evidence support the same sign",
+        "pre-registered long-only portfolio is positive after cost"
+      ],
+      "title": "Market breadth as absolute spot timing",
+      "universe_definition": {
+        "dynamic_source_dataset": "gold/expanded_universe_quality",
+        "exclusion_rule": "exclude stale, untradeable, or insufficient-history symbols",
+        "inclusion_rule": "quality-qualified spot symbols with closed 1H market bars",
+        "symbols": [],
+        "universe_id": "spot-dynamic-quality-v1"
+      },
+      "updated_at": "2026-07-19T04:02:00Z",
+      "variant_budget": 2,
+      "who_pays_the_edge": "late trend participants entering after breadth has already improved",
+      "why_edge_may_decay": "rapid common-factor repricing can make breadth contemporaneous",
+      "why_edge_may_persist": "slow diffusion across a fragmented crypto universe"
+    },
+    {
+      "allowed_variants": [
+        "derivatives.funding_crowding.v1"
+      ],
+      "approved_at": null,
+      "approved_by": null,
+      "automatic_promotion": false,
+      "available_data_confirmed": false,
+      "benchmark_plan": {
+        "benchmark_id": "spot-btc-and-dynamic-ew-v1",
+        "benchmarks": [
+          "BTC",
+          "DYNAMIC_UNIVERSE_EQUAL_WEIGHT"
+        ]
+      },
+      "blocked_missing_data": [
+        "audited multi-year funding history",
+        "basis",
+        "open interest"
+      ],
+      "cost_model": {
+        "cost_model_id": "research-point-in-time-p75-v1",
+        "proxy_can_support_deployment": false,
+        "require_point_in_time": true,
+        "research_quantile": "p75"
+      },
+      "created_at": "2026-07-19T04:02:00Z",
+      "data_requirements": [
+        {
+          "dataset_name": "silver/funding_rate",
+          "min_history_days": 730,
+          "proxy_allowed": false,
+          "real_source_required": true,
+          "required_columns": [
+            "symbol",
+            "ts",
+            "funding_rate"
+          ]
+        }
+      ],
+      "discovery_source": "AUDIT_IMPORT",
+      "economic_mechanism": "Crowding or execution pressure may predict subsequent relative returns.",
+      "expected_direction": -1,
+      "expected_horizons": [
+        24
+      ],
+      "factor_family": "DERIVATIVES_CROWDING",
+      "falsification_conditions": [
+        "no corrected out-of-sample signal"
+      ],
+      "feature_recipes": [
+        {
+          "operation": "funding_crowding",
+          "parameters": [],
+          "recipe_id": "derivatives.funding_crowding.v1",
+          "source_fields": [
+            "funding_rate"
+          ]
+        }
+      ],
+      "hypothesis_id": "derivatives.funding_crowding",
+      "hypothesis_version": 1,
+      "known_overlap": [],
+      "live_order_effect": "none",
+      "max_live_notional_usdt": 0,
+      "neutralization_plan": {
+        "controls": [
+          "symbol_fixed_effect",
+          "market_beta",
+          "liquidity",
+          "momentum"
+        ],
+        "neutralization_id": "xs-core-controls-v1"
+      },
+      "related_existing_factors": [],
+      "related_hypotheses": [],
+      "research_only": true,
+      "research_thread_id": "factor-v2.derivatives.funding",
+      "status": "DATA_BLOCKED",
+      "stopping_conditions": [
+        "required real dataset remains unavailable"
+      ],
+      "strategy_fit": [
+        "cross_sectional_rank"
+      ],
+      "success_conditions": [
+        "audited real source history reaches two years"
+      ],
+      "title": "Derivatives crowding and price-funding divergence",
+      "universe_definition": {
+        "dynamic_source_dataset": "gold/expanded_universe_quality",
+        "exclusion_rule": "exclude proxy-only or incomplete history",
+        "inclusion_rule": "quality-qualified symbols with audited source data",
+        "symbols": [],
+        "universe_id": "spot-dynamic-quality-v1"
+      },
+      "updated_at": "2026-07-19T04:02:00Z",
+      "variant_budget": 1,
+      "who_pays_the_edge": "overcrowded leveraged participants",
+      "why_edge_may_decay": "exchange structure and participant mix change",
+      "why_edge_may_persist": "positioning constraints can unwind slowly"
+    },
+    {
+      "allowed_variants": [
+        "microstructure.real_liquidity.v1"
+      ],
+      "approved_at": null,
+      "approved_by": null,
+      "automatic_promotion": false,
+      "available_data_confirmed": false,
+      "benchmark_plan": {
+        "benchmark_id": "spot-btc-and-dynamic-ew-v1",
+        "benchmarks": [
+          "BTC",
+          "DYNAMIC_UNIVERSE_EQUAL_WEIGHT"
+        ]
+      },
+      "blocked_missing_data": [
+        "audited depth history",
+        "order-book imbalance",
+        "aggressive flow"
+      ],
+      "cost_model": {
+        "cost_model_id": "research-point-in-time-p75-v1",
+        "proxy_can_support_deployment": false,
+        "require_point_in_time": true,
+        "research_quantile": "p75"
+      },
+      "created_at": "2026-07-19T04:02:00Z",
+      "data_requirements": [
+        {
+          "dataset_name": "silver/orderbook_snapshot",
+          "min_history_days": 730,
+          "proxy_allowed": false,
+          "real_source_required": true,
+          "required_columns": [
+            "symbol",
+            "ts",
+            "bid",
+            "ask"
+          ]
+        }
+      ],
+      "discovery_source": "AUDIT_IMPORT",
+      "economic_mechanism": "Crowding or execution pressure may predict subsequent relative returns.",
+      "expected_direction": -1,
+      "expected_horizons": [
+        24
+      ],
+      "factor_family": "LIQUIDITY_MICROSTRUCTURE",
+      "falsification_conditions": [
+        "no corrected out-of-sample signal"
+      ],
+      "feature_recipes": [
+        {
+          "operation": "microstructure_liquidity",
+          "parameters": [],
+          "recipe_id": "microstructure.real_liquidity.v1",
+          "source_fields": [
+            "bid",
+            "ask"
+          ]
+        }
+      ],
+      "hypothesis_id": "microstructure.real_liquidity",
+      "hypothesis_version": 1,
+      "known_overlap": [],
+      "live_order_effect": "none",
+      "max_live_notional_usdt": 0,
+      "neutralization_plan": {
+        "controls": [
+          "symbol_fixed_effect",
+          "market_beta",
+          "liquidity",
+          "momentum"
+        ],
+        "neutralization_id": "xs-core-controls-v1"
+      },
+      "related_existing_factors": [],
+      "related_hypotheses": [],
+      "research_only": true,
+      "research_thread_id": "factor-v2.microstructure.liquidity",
+      "status": "DATA_BLOCKED",
+      "stopping_conditions": [
+        "required real dataset remains unavailable"
+      ],
+      "strategy_fit": [
+        "cross_sectional_rank"
+      ],
+      "success_conditions": [
+        "audited real source history reaches two years"
+      ],
+      "title": "Real spread, depth and aggressive-flow liquidity",
+      "universe_definition": {
+        "dynamic_source_dataset": "gold/expanded_universe_quality",
+        "exclusion_rule": "exclude proxy-only or incomplete history",
+        "inclusion_rule": "quality-qualified symbols with audited source data",
+        "symbols": [],
+        "universe_id": "spot-dynamic-quality-v1"
+      },
+      "updated_at": "2026-07-19T04:02:00Z",
+      "variant_budget": 1,
+      "who_pays_the_edge": "overcrowded leveraged participants",
+      "why_edge_may_decay": "exchange structure and participant mix change",
+      "why_edge_may_persist": "positioning constraints can unwind slowly"
+    }
+  ],
+  "live_order_effect": "none",
+  "recorded_at": "2026-07-19T08:00:00+00:00",
+  "research_only": true,
+  "schema_version": "factor_research_hypothesis_seed.v1"
+}

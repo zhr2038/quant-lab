@@ -1,0 +1,11 @@
+[Unit]
+Description=Hourly integrity check for Quant Lab Forward Paper v2.2.1
+
+[Timer]
+OnCalendar=*-*-* *:10:00
+Persistent=true
+AccuracySec=1min
+Unit=quant-lab-forward-v221.service
+
+[Install]
+WantedBy=timers.target

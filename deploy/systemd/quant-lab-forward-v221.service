@@ -1,0 +1,28 @@
+[Unit]
+Description=Quant Lab Forward Paper v2.2.1
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=quantlab
+Group=quantlab
+WorkingDirectory=/opt/quant-lab-forward-v221
+EnvironmentFile=/etc/quant-lab/forward-v221.env
+ExecCondition=/usr/bin/test -f /var/lib/quant-lab/forward_v221/manifests/forward_v221_cutoff.json
+ExecStart=/opt/quant-lab-forward-v221/scripts/run_forward_v221_realtime.sh
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=6
+TimeoutStartSec=3600
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/quant-lab/forward_v221 /var/log/quant-lab-forward-v221
+StandardOutput=append:/var/log/quant-lab-forward-v221/runner.log
+StandardError=append:/var/log/quant-lab-forward-v221/runner-error.log
+
+[Install]
+WantedBy=multi-user.target

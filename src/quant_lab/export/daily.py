@@ -223,6 +223,49 @@ WEB_DERIVED_SNAPSHOT_DATASETS = (
     "cost_probe_fill_bill_match",
     "cost_probe_cost_disagreement",
 )
+# The frequent Web refresh must not materialize unrelated, unbounded research tables.
+WEB_DERIVED_SNAPSHOT_SOURCE_DATASETS = (
+    "alpha_discovery_board",
+    "alpha_factory_promotion_queue",
+    "alpha_factory_result",
+    "cost_bucket_daily",
+    "cost_health_daily",
+    "expanded_universe_candidate_maturity",
+    "factor_candidate",
+    "factor_correlation_daily",
+    "factor_evidence",
+    "factor_value",
+    "market_bar",
+    "market_regime_daily",
+    "okx_private_readonly_bills",
+    "okx_private_readonly_fills",
+    "orderbook_snapshot",
+    "orderbook_spread_1m",
+    "paper_slippage_coverage",
+    "paper_strategy_daily",
+    "paper_strategy_proposal",
+    "paper_strategy_runs",
+    "regime_strategy_advisory",
+    "research_portfolio_status",
+    "risk_permission",
+    "strategy_evidence",
+    "strategy_health_daily",
+    "trade_activity_1m",
+    "trade_print",
+    "v5_bundle_manifest",
+    "v5_candidate_event",
+    "v5_cost_probe_order_event",
+    "v5_cost_probe_roundtrip_event",
+    "v5_entry_quality_advisory",
+    "v5_gate_compliance_daily",
+    "v5_paper_slippage_coverage",
+    "v5_paper_strategy_daily",
+    "v5_paper_strategy_run",
+    "v5_quant_lab_enforcement_daily",
+    "v5_quant_lab_mode_daily",
+    "v5_risk_on_multi_buy_shadow",
+    "v5_trade_event",
+)
 SNAPSHOT_META_DATASETS = {
     "cost_bucket_daily",
     "cost_health_daily",
@@ -5294,9 +5337,19 @@ def _dependency_source_sha(frames: dict[str, pl.DataFrame], *, telemetry_latest_
     return digest.hexdigest()
 
 
-def _write_source_snapshot_metas(root: Path, frames: dict[str, pl.DataFrame]) -> list[str]:
+def _write_source_snapshot_metas(
+    root: Path,
+    frames: dict[str, pl.DataFrame],
+    *,
+    dataset_names: Iterable[str] | None = None,
+) -> list[str]:
     warnings: list[str] = []
-    for dataset_name in sorted(SNAPSHOT_META_DATASETS):
+    names = (
+        SNAPSHOT_META_DATASETS
+        if dataset_names is None
+        else SNAPSHOT_META_DATASETS.intersection(dataset_names)
+    )
+    for dataset_name in sorted(names):
         frame = frames.get(dataset_name, pl.DataFrame())
         dataset_path = root / readers.DATASET_PATHS.get(
             dataset_name,
@@ -5419,7 +5472,10 @@ def refresh_web_derived_snapshots(
 
     root = Path(lake_root)
     generated_at = generated_at or datetime.now(UTC)
-    snapshot = _load_snapshot(root)
+    snapshot = _load_snapshot(
+        root,
+        dataset_names=WEB_DERIVED_SNAPSHOT_SOURCE_DATASETS,
+    )
     snapshot = _publish_strategy_opportunity_advisory_snapshot(
         root,
         snapshot,
@@ -5466,7 +5522,11 @@ def refresh_web_derived_snapshots(
             ],
             transient_frames=snapshot.transient_frames,
         )
-    source_meta_warnings = _write_source_snapshot_metas(root, snapshot.frames)
+    source_meta_warnings = _write_source_snapshot_metas(
+        root,
+        snapshot.frames,
+        dataset_names=snapshot.frames,
+    )
     if source_meta_warnings:
         snapshot = _DatasetSnapshot(
             frames=snapshot.frames,
@@ -6218,11 +6278,19 @@ def _validation_result(
     )
 
 
-def _load_snapshot(lake_root: Path) -> _DatasetSnapshot:
+def _load_snapshot(
+    lake_root: Path,
+    *,
+    dataset_names: Iterable[str] | None = None,
+) -> _DatasetSnapshot:
     frames: dict[str, pl.DataFrame] = {}
     row_counts: dict[str, int] = {}
     warnings: list[str] = []
-    for name in sorted(readers.DATASET_PATHS):
+    names = sorted(set(dataset_names) if dataset_names is not None else readers.DATASET_PATHS)
+    unknown = [name for name in names if name not in readers.DATASET_PATHS]
+    if unknown:
+        raise ValueError(f"unknown snapshot datasets: {','.join(unknown)}")
+    for name in names:
         frame, row_count, warning = _load_export_frame(lake_root, name)
         frames[name] = frame
         row_counts[name] = row_count

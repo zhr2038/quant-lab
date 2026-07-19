@@ -578,8 +578,11 @@ def test_refresh_web_derived_snapshots_updates_export_backed_gold_tables(
     def row_counts(frames):
         return {name: frame.height for name, frame in frames.items()}
 
-    def fake_load(root):
+    def fake_load(root, *, dataset_names=None):
         assert root == lake_root
+        assert tuple(dataset_names or ()) == (
+            daily_export_module.WEB_DERIVED_SNAPSHOT_SOURCE_DATASETS
+        )
         calls.append("load")
         return seed_snapshot
 
@@ -671,6 +674,29 @@ def test_refresh_web_derived_snapshots_updates_export_backed_gold_tables(
     )
     assert bnb_meta["dataset"] == "v5_bnb_profit_lock_shadow"
     assert bnb_meta["row_count"] == 1
+
+
+def test_load_snapshot_reads_only_requested_web_sources(monkeypatch, tmp_path):
+    seen: list[str] = []
+
+    def fake_load_export_frame(root, dataset_name):
+        assert root == tmp_path
+        seen.append(dataset_name)
+        return pl.DataFrame({"dataset": [dataset_name]}), 1, None
+
+    monkeypatch.setattr(daily_export_module, "_load_export_frame", fake_load_export_frame)
+
+    snapshot = daily_export_module._load_snapshot(
+        tmp_path,
+        dataset_names=("risk_permission", "market_bar"),
+    )
+
+    assert seen == ["market_bar", "risk_permission"]
+    assert set(snapshot.frames) == {"market_bar", "risk_permission"}
+    assert snapshot.row_counts == {"market_bar": 1, "risk_permission": 1}
+
+    with pytest.raises(ValueError, match="unknown snapshot datasets"):
+        daily_export_module._load_snapshot(tmp_path, dataset_names=("not_a_dataset",))
 
 
 def test_research_validation_v3_reports_export_forward_and_cost_coverage(tmp_path):

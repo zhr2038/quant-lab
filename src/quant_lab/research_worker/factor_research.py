@@ -706,6 +706,7 @@ def _build_trial_samples(
         value_candidates=("current_regime", "regime_state", "market_regime", "state"),
         output_name="regime",
         numeric=False,
+        allow_global=True,
     )
     result: dict[str, pl.DataFrame] = {}
     for trial in trials:
@@ -794,13 +795,16 @@ def _normalize_daily_source(
     value_candidates: tuple[str, ...],
     output_name: str,
     numeric: bool = True,
+    allow_global: bool = False,
 ) -> pl.DataFrame:
     day_column = next(
         (name for name in ("day", "as_of_date", "date", "created_at") if name in frame.columns),
         None,
     )
     value_column = next((name for name in value_candidates if name in frame.columns), None)
-    if day_column is None or value_column is None or "symbol" not in frame.columns:
+    if day_column is None or value_column is None or (
+        "symbol" not in frame.columns and not allow_global
+    ):
         dtype = pl.Float64 if numeric else pl.Utf8
         return pl.DataFrame(schema={"symbol": pl.Utf8, "source_day": pl.Date, output_name: dtype})
     value = (
@@ -808,13 +812,18 @@ def _normalize_daily_source(
         if numeric
         else pl.col(value_column).cast(pl.Utf8, strict=False)
     )
-    return (
-        frame.select(
-            pl.col("symbol")
+    symbol = (
+        pl.col("symbol")
             .cast(pl.Utf8)
             .str.to_uppercase()
             .str.replace_all("/", "-")
-            .alias("symbol"),
+            .alias("symbol")
+        if "symbol" in frame.columns
+        else pl.lit("*").alias("symbol")
+    )
+    return (
+        frame.select(
+            symbol,
             pl.coalesce(
                 pl.col(day_column).cast(pl.Date, strict=False),
                 pl.col(day_column).cast(pl.Utf8, strict=False).str.to_date(strict=False),
@@ -844,6 +853,14 @@ def _join_point_in_time(
         ["symbol", "_decision_day"]
     )
     right = source.rename({"source_day": day_alias}).sort(["symbol", day_alias])
+    if right.get_column("symbol").unique().to_list() == ["*"]:
+        return left.sort("_decision_day").join_asof(
+            right.drop("symbol").sort(day_alias),
+            left_on="_decision_day",
+            right_on=day_alias,
+            strategy="backward",
+            check_sortedness=False,
+        )
     return left.join_asof(
         right,
         left_on="_decision_day",

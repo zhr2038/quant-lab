@@ -300,7 +300,7 @@ def default_hypothesis_registry() -> list[ResearchHypothesis]:
                 ),
                 DataRequirement(
                     dataset_name="gold/market_regime_daily",
-                    required_columns=("symbol", "day"),
+                    required_columns=("as_of_date", "current_regime"),
                     min_history_days=365,
                 ),
             ),

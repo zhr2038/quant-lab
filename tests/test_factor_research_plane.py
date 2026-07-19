@@ -86,8 +86,7 @@ def _write_source_data(root: Path, *, include_regime: bool = True) -> None:
         regime.mkdir(parents=True)
         pl.DataFrame(
             {
-                "day": [date(2024, 7, 18), date(2026, 7, 16)],
-                "symbol": ["SOL-USDT", "SOL-USDT"],
+                "as_of_date": [date(2024, 7, 18), date(2026, 7, 16)],
                 "current_regime": ["SIDEWAYS", "TREND_UP"],
             }
         ).write_parquet(regime / "part-regime.parquet")

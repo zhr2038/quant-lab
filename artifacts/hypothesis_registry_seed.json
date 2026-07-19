@@ -196,8 +196,8 @@
           "proxy_allowed": false,
           "real_source_required": true,
           "required_columns": [
-            "symbol",
-            "day"
+            "as_of_date",
+            "current_regime"
           ]
         }
       ],

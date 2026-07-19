@@ -106,7 +106,14 @@ FACTOR_RESEARCH_REQUIRED_REPORTS = frozenset(
 )
 FACTOR_RESEARCH_ALLOWED_DECISIONS = frozenset(item.value for item in FactorResearchDecision)
 FACTOR_RESEARCH_ALLOWED_CANDIDATE_STATES = frozenset(
-    {"PAPER_CANDIDATE", "REJECTED", "RESEARCH"}
+    {
+        "PAPER_CANDIDATE",
+        "SIGNAL_VALID",
+        "PORTFOLIO_FAIL",
+        "SIGNAL_CANDIDATE",
+        "REJECTED",
+        "RESEARCH",
+    }
 )
 
 
@@ -186,6 +193,20 @@ def validate_research_task_snapshot(
             raise ValueError("research_task_snapshot_second_stage_schema_mismatch")
         if task.template_registry_digest != snapshot.template_registry_digest:
             raise ValueError("research_task_snapshot_registry_digest_mismatch")
+        factor_binding_fields = (
+            "factor_generation_id",
+            "factor_generation_digest",
+            "factor_generation_as_of_date",
+            "factor_generation_published_at",
+            "hypothesis_registry_digest",
+            "trial_ledger_digest",
+            "factor_generation_fresh",
+            "factor_generation_hypothesis_ids",
+        )
+        if tuple(getattr(task, field) for field in factor_binding_fields) != tuple(
+            getattr(snapshot, field) for field in factor_binding_fields
+        ):
+            raise ValueError("research_task_snapshot_factor_generation_mismatch")
         if (
             task.as_of_date,
             task.lookback_days,
@@ -626,6 +647,21 @@ def _validate_alpha_factory_result_binding(
         raise ValueError("alpha_factory_result_task_second_stage_schema_mismatch")
     if manifest.template_registry_digest != task.template_registry_digest:
         raise ValueError("alpha_factory_result_registry_digest_mismatch")
+    factor_binding_fields = (
+        "factor_generation_id",
+        "factor_generation_digest",
+        "factor_generation_as_of_date",
+        "factor_generation_published_at",
+        "hypothesis_registry_digest",
+        "trial_ledger_digest",
+        "factor_generation_fresh",
+        "factor_generation_hypothesis_ids",
+    )
+    task_binding = tuple(getattr(task, field) for field in factor_binding_fields)
+    if tuple(getattr(snapshot, field) for field in factor_binding_fields) != task_binding:
+        raise ValueError("alpha_factory_snapshot_factor_generation_mismatch")
+    if tuple(getattr(manifest, field) for field in factor_binding_fields) != task_binding:
+        raise ValueError("alpha_factory_result_factor_generation_mismatch")
     if manifest.selected_v5_bundle_id != task.selected_v5_bundle_id:
         raise ValueError("alpha_factory_result_bundle_id_mismatch")
     if (
@@ -994,6 +1030,29 @@ def _validate_alpha_worker_report(
         "live_order_effect": "none",
         "automatic_promotion": False,
     }
+    if task.factor_generation_id is not None:
+        expected.update(
+            {
+                "factor_generation_id": task.factor_generation_id,
+                "factor_generation_digest": task.factor_generation_digest,
+                "factor_generation_as_of_date": (
+                    task.factor_generation_as_of_date.isoformat()
+                    if task.factor_generation_as_of_date is not None
+                    else None
+                ),
+                "factor_generation_published_at": (
+                    task.factor_generation_published_at.isoformat()
+                    if task.factor_generation_published_at is not None
+                    else None
+                ),
+                "hypothesis_registry_digest": task.hypothesis_registry_digest,
+                "trial_ledger_digest": task.trial_ledger_digest,
+                "factor_generation_fresh": task.factor_generation_fresh,
+                "factor_generation_hypothesis_ids": list(
+                    task.factor_generation_hypothesis_ids or ()
+                ),
+            }
+        )
     for field, value in expected.items():
         if report.get(field) != value:
             raise ValueError(f"alpha_factory_worker_report_mismatch:{field}")

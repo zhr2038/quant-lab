@@ -60,6 +60,22 @@ def compute_alpha_factory_from_snapshot(
     manifest: AlphaFactorySnapshotManifest,
     task: AlphaFactoryTask,
 ) -> AlphaFactoryWorkerComputeResult:
+    factor_binding_fields = (
+        "factor_generation_id",
+        "factor_generation_digest",
+        "factor_generation_as_of_date",
+        "factor_generation_published_at",
+        "hypothesis_registry_digest",
+        "trial_ledger_digest",
+        "factor_generation_fresh",
+        "factor_generation_hypothesis_ids",
+    )
+    task_binding = tuple(getattr(task, field) for field in factor_binding_fields)
+    snapshot_binding = tuple(getattr(manifest, field) for field in factor_binding_fields)
+    if task_binding != snapshot_binding:
+        raise ValueError("alpha_factory_worker_factor_generation_binding_mismatch")
+    if any(value is None for value in task_binding):
+        raise ValueError("alpha_factory_worker_factor_generation_binding_missing")
     root = Path(snapshot_root) / "files"
     registry = read_parquet_dataset(root / ALPHA_FACTORY_TEMPLATE_REGISTRY_DATASET)
     if alpha_factory_template_registry_digest(registry) != task.template_registry_digest:
@@ -73,6 +89,11 @@ def compute_alpha_factory_from_snapshot(
         max_candidates=task.max_candidates,
         registry=registry,
         generated_at=generated_at,
+        factor_generation_as_of_date=task.factor_generation_as_of_date,
+        factor_generation_hypothesis_ids=(
+            task.factor_generation_hypothesis_ids or ()
+        ),
+        factor_generation_fresh=bool(task.factor_generation_fresh),
     )
     compute_seconds = time.perf_counter() - started
     frames = _normalize_artifact_frames(artifacts)
@@ -96,6 +117,18 @@ def compute_alpha_factory_from_snapshot(
         "snapshot_id": task.snapshot_id,
         "quant_lab_commit": task.quant_lab_commit,
         "template_registry_digest": task.template_registry_digest,
+        "factor_generation_id": task.factor_generation_id,
+        "factor_generation_digest": task.factor_generation_digest,
+        "factor_generation_as_of_date": task.factor_generation_as_of_date.isoformat(),
+        "factor_generation_published_at": (
+            task.factor_generation_published_at.isoformat()
+        ),
+        "hypothesis_registry_digest": task.hypothesis_registry_digest,
+        "trial_ledger_digest": task.trial_ledger_digest,
+        "factor_generation_fresh": task.factor_generation_fresh,
+        "factor_generation_hypothesis_ids": list(
+            task.factor_generation_hypothesis_ids or ()
+        ),
         "as_of_date": task.as_of_date.isoformat(),
         "lookback_days": task.lookback_days,
         "max_candidates": task.max_candidates,

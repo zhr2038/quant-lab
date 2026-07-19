@@ -4,7 +4,7 @@ import csv
 import io
 import json
 import zipfile
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 import polars as pl
 import pytest
@@ -31,12 +31,24 @@ from quant_lab.research.second_stage_alpha_factory import (
     build_and_publish_second_stage_alpha_factory,
 )
 from quant_lab.research_plane.contracts import AlphaFactorySnapshotManifest
-from quant_lab.research_plane.queue import create_alpha_factory_task
+from quant_lab.research_plane.queue import create_alpha_factory_task as _create_alpha_factory_task
 from quant_lab.research_worker.alpha_factory import (
     build_alpha_factory_anti_leakage_report,
     compute_alpha_factory_from_snapshot,
 )
 from quant_lab.research_worker.result_writer import write_alpha_factory_result_bundle
+from tests.helpers.factor_research import seed_verified_factor_generation
+
+
+def create_alpha_factory_task(
+    lake_root,
+    queue_root,
+    **kwargs,
+):
+    as_of_date = kwargs.get("as_of_date")
+    assert isinstance(as_of_date, date)
+    seed_verified_factor_generation(lake_root, as_of_date=as_of_date)
+    return _create_alpha_factory_task(lake_root, queue_root, **kwargs)
 
 
 def test_second_stage_alpha_factory_publishes_into_research_chain(tmp_path):
@@ -456,6 +468,41 @@ def test_alpha_factory_snapshot_worker_compute_matches_direct_fixture(tmp_path):
         expected_bridge,
         actual_bridge,
     )
+
+
+def test_stale_factor_generation_forces_alpha_results_to_research(tmp_path):
+    lake = tmp_path / "lake"
+    queue = tmp_path / "queue"
+    _write_market(lake)
+    _write_expanded_labels(lake)
+    _write_exit_policy_inputs(lake)
+    _write_alt_impulse_evidence(lake)
+    seed_verified_factor_generation(lake, as_of_date=date(2026, 5, 1))
+    task, _ = _create_alpha_factory_task(
+        lake,
+        queue,
+        as_of_date=date(2026, 5, 24),
+        lookback_days=30,
+        max_candidates=200,
+        signing_key=Ed25519PrivateKey.generate(),
+        signature_key_id="cloud-research-v1",
+        quant_lab_commit="c" * 40,
+        selected_v5_bundle_id="v5-bundle-sha256:" + "d" * 64,
+    )
+    assert task.factor_generation_fresh is False
+    snapshot = AlphaFactorySnapshotManifest.model_validate_json(
+        (queue / "snapshots" / task.snapshot_id / "manifest.json").read_text("utf-8")
+    )
+    compute = compute_alpha_factory_from_snapshot(
+        queue / "snapshots" / task.snapshot_id,
+        snapshot,
+        task,
+    )
+    assert not compute.artifacts.alpha_factory_result.is_empty()
+    assert set(compute.artifacts.alpha_factory_result["decision"].to_list()) == {
+        "RESEARCH"
+    }
+    assert "factor_generation_stale_or_unbound_research_only" in compute.artifacts.warnings
 
 
 def test_alpha_factory_snapshot_worker_validates_nonempty_factor_bridge_report(tmp_path):

@@ -54,6 +54,7 @@ from quant_lab.research_plane.contracts import (
     ResearchWorkerReceipt,
 )
 from quant_lab.research_plane.factor_research_publish import (
+    current_factor_research_generation_binding,
     publish_factor_research_generation,
     verify_factor_research_generation,
 )
@@ -505,6 +506,13 @@ def _import_alpha_factory_result(
             != task.template_registry_digest
         ):
             raise ValueError("alpha_factory_result_superseded_by_registry_change")
+        current_factor_binding = current_factor_research_generation_binding(
+            lake,
+            alpha_as_of_date=task.as_of_date,
+        )
+        for field, current_value in current_factor_binding.items():
+            if getattr(task, field) != current_value:
+                raise ValueError("alpha_factory_result_superseded_by_factor_generation")
         parsed_manifest = _load_result_manifest(inbox)
         parsed_receipt = RESEARCH_RECEIPT_ADAPTER.validate_json(
             (inbox / "receipt.json").read_text("utf-8")

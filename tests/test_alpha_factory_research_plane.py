@@ -38,7 +38,7 @@ from quant_lab.research_plane.contracts import (
     ResearchTask,
 )
 from quant_lab.research_plane.importer import import_entry_quality_history_result
-from quant_lab.research_plane.queue import create_alpha_factory_task
+from quant_lab.research_plane.queue import create_alpha_factory_task as _create_alpha_factory_task
 from quant_lab.research_plane.result import (
     _validate_alpha_frame_safety,
     _validate_alpha_frame_scope,
@@ -56,11 +56,67 @@ from quant_lab.research_worker.alpha_factory import (
     compute_alpha_factory_from_snapshot,
 )
 from quant_lab.research_worker.result_writer import write_alpha_factory_result_bundle
+from tests.helpers.factor_research import seed_verified_factor_generation
 
 COMMIT = "c" * 40
 TASK_KEY_ID = "cloud-research-v1"
 WORKER_KEY_ID = "nas-research-v1"
 BUNDLE_ID = "v5-bundle-sha256:" + "d" * 64
+
+
+def create_alpha_factory_task(
+    lake_root: Path,
+    queue_root: Path,
+    **kwargs: object,
+):
+    as_of_date = kwargs.get("as_of_date")
+    assert isinstance(as_of_date, date)
+    seed_verified_factor_generation(lake_root, as_of_date=as_of_date)
+    return _create_alpha_factory_task(lake_root, queue_root, **kwargs)
+
+
+def test_alpha_factory_task_requires_validated_factor_generation(tmp_path: Path) -> None:
+    lake = tmp_path / "lake"
+    lake.mkdir()
+    with pytest.raises(RuntimeError, match="factor_research_generation_unavailable"):
+        _create_alpha_factory_task(
+            lake,
+            tmp_path / "queue",
+            as_of_date=date(2026, 7, 18),
+            signing_key=Ed25519PrivateKey.generate(),
+            signature_key_id=TASK_KEY_ID,
+            quant_lab_commit=COMMIT,
+            selected_v5_bundle_id=BUNDLE_ID,
+        )
+
+
+def test_alpha_factory_task_reuses_same_factor_generation(tmp_path: Path) -> None:
+    lake = tmp_path / "lake"
+    lake.mkdir()
+    seed_verified_factor_generation(lake, as_of_date=date(2026, 7, 18))
+    key = Ed25519PrivateKey.generate()
+    first, _ = _create_alpha_factory_task(
+        lake,
+        tmp_path / "queue",
+        as_of_date=date(2026, 7, 18),
+        signing_key=key,
+        signature_key_id=TASK_KEY_ID,
+        quant_lab_commit=COMMIT,
+        selected_v5_bundle_id=BUNDLE_ID,
+    )
+    second, _ = _create_alpha_factory_task(
+        lake,
+        tmp_path / "queue",
+        as_of_date=date(2026, 7, 19),
+        signing_key=key,
+        signature_key_id=TASK_KEY_ID,
+        quant_lab_commit=COMMIT,
+        selected_v5_bundle_id=BUNDLE_ID,
+    )
+    assert second.task_id == first.task_id
+    assert second.snapshot_id == first.snapshot_id
+    assert second.factor_generation_id == "factor-research-test-generation"
+    assert second.factor_generation_hypothesis_ids == ("hypothesis.test",)
 
 
 def test_research_task_discriminated_union_keeps_entry_v1_strict() -> None:
@@ -454,6 +510,33 @@ def test_alpha_factory_publish_failure_keeps_valid_result_retryable(
         expected_quant_lab_commit=COMMIT,
     )
     assert completed.state == "completed"
+
+
+def test_alpha_factory_import_rejects_superseded_factor_generation(
+    tmp_path: Path,
+) -> None:
+    lake, queue, task, task_key, worker_key = _stage_empty_alpha_result(tmp_path)
+    seed_verified_factor_generation(
+        lake,
+        as_of_date=date(2026, 7, 18),
+        hypothesis_ids=("hypothesis.next",),
+        generation_id="factor-research-next-generation",
+        generation_digest="f" * 64,
+    )
+    with pytest.raises(
+        ValueError,
+        match="alpha_factory_result_superseded_by_factor_generation",
+    ):
+        import_entry_quality_history_result(
+            lake,
+            queue,
+            task.task_id,
+            task_public_key=task_key.public_key(),
+            worker_public_key=worker_key.public_key(),
+            expected_task_key_id=TASK_KEY_ID,
+            expected_worker_key_id=WORKER_KEY_ID,
+            expected_quant_lab_commit=COMMIT,
+        )
 
 
 def test_atomic_publish_rolls_back_datasets_and_pointer_when_verification_fails(

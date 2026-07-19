@@ -237,12 +237,26 @@ ALPHA_FACTORY_COLUMN_PROJECTIONS: dict[str, tuple[str, ...]] = {
     "gold/strategy_evidence_sample": tuple(STRATEGY_EVIDENCE_SAMPLE_SCHEMA),
     "gold/factor_candidate": (
         "as_of_date",
+        "hypothesis_id",
+        "hypothesis_version",
+        "data_snapshot_id",
         "factor_id",
         "factor_family",
         "correlation_cluster_id",
         "candidate_state",
+        "signal_validity",
+        "portfolio_validity",
+        "deployment_readiness",
+        "research_only",
+        "live_order_effect",
+        "automatic_promotion",
+        "max_live_notional_usdt",
     ),
     "gold/factor_value": (
+        "hypothesis_id",
+        "hypothesis_version",
+        "feature_recipe_id",
+        "data_snapshot_id",
         "factor_id",
         "symbol",
         "timeframe",
@@ -260,6 +274,8 @@ ALPHA_FACTORY_COLUMN_PROJECTIONS: dict[str, tuple[str, ...]] = {
         "regime_state",
         "market_regime",
         "current_regime",
+        "research_only",
+        "live_order_effect",
     ),
     "gold/alpha_factory_template_registry": tuple(TEMPLATE_REGISTRY_SCHEMA),
 }
@@ -539,6 +555,7 @@ def seal_alpha_factory_snapshot(
     signing_key: Ed25519PrivateKey,
     signature_key_id: str,
     quant_lab_commit: str | None = None,
+    factor_generation_binding: dict[str, object] | None = None,
     max_input_bytes: int = 25 * 1024**3,
     max_input_rows: int = 50_000_000,
 ) -> AlphaFactorySnapshotManifest:
@@ -550,6 +567,19 @@ def seal_alpha_factory_snapshot(
     root = Path(lake_root).resolve()
     queue = ensure_research_queue_layout(queue_root)
     commit = quant_lab_commit or _git_commit()
+    binding = dict(factor_generation_binding or {})
+    expected_binding_fields = {
+        "factor_generation_id",
+        "factor_generation_digest",
+        "factor_generation_as_of_date",
+        "factor_generation_published_at",
+        "hypothesis_registry_digest",
+        "trial_ledger_digest",
+        "factor_generation_fresh",
+        "factor_generation_hypothesis_ids",
+    }
+    if binding and set(binding) != expected_binding_fields:
+        raise ValueError("alpha_factory_factor_generation_binding_incomplete")
     registry_digest = alpha_factory_template_registry_digest(effective_registry)
     day_start = datetime.combine(as_of_date, time.min, tzinfo=UTC)
     label_end = day_start + timedelta(days=1)
@@ -607,6 +637,10 @@ def seal_alpha_factory_snapshot(
             "alpha_factory_schema_version": ALPHA_FACTORY_SCHEMA_VERSION,
             "second_stage_schema_version": SECOND_STAGE_SCHEMA_VERSION,
             "template_registry_digest": registry_digest,
+            "factor_generation_binding": {
+                key: value.isoformat() if isinstance(value, (date, datetime)) else value
+                for key, value in sorted(binding.items())
+            },
             "source_input_digest": source_input_digest,
             "symbols": symbols,
             "expanded_quality_effective_day": (
@@ -670,6 +704,7 @@ def seal_alpha_factory_snapshot(
             alpha_factory_schema_version=ALPHA_FACTORY_SCHEMA_VERSION,
             second_stage_schema_version=SECOND_STAGE_SCHEMA_VERSION,
             template_registry_digest=registry_digest,
+            **binding,
             source_input_digest=source_input_digest,
             as_of_date=as_of_date,
             lookback_days=lookback_days,

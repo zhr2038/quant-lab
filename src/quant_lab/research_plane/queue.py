@@ -53,6 +53,9 @@ from quant_lab.research_plane.contracts import (
     ResearchTaskState,
     ResearchTaskStatus,
 )
+from quant_lab.research_plane.factor_research_publish import (
+    current_factor_research_generation_binding,
+)
 from quant_lab.research_plane.signatures import model_content_sha256, sign_model
 from quant_lab.research_plane.snapshot import (
     factor_research_source_identity,
@@ -269,25 +272,17 @@ def create_alpha_factory_task(
     existing_registry = read_parquet_dataset(root / ALPHA_FACTORY_TEMPLATE_REGISTRY_DATASET)
     effective_registry = prepare_alpha_factory_control_state(existing_registry)
     registry_digest = alpha_factory_template_registry_digest(effective_registry)
-    snapshot = seal_alpha_factory_snapshot(
+    factor_binding = current_factor_research_generation_binding(
         root,
-        queue,
-        as_of_date=parameters.as_of_date,
-        lookback_days=parameters.lookback_days,
-        max_candidates=parameters.max_candidates,
-        selected_v5_bundle_id=selected_bundle,
-        effective_registry=effective_registry,
-        signing_key=signing_key,
-        signature_key_id=signature_key_id,
-        quant_lab_commit=quant_lab_commit,
+        alpha_as_of_date=parameters.as_of_date,
     )
-    if snapshot.template_registry_digest != registry_digest:
-        raise RuntimeError("alpha_factory_snapshot_registry_digest_mismatch")
     task_seed = model_content_sha256(
         {
             "task_type": ALPHA_FACTORY_TASK_TYPE,
-            "snapshot_id": snapshot.snapshot_id,
-            "as_of_date": parameters.as_of_date.isoformat(),
+            "factor_generation_id": factor_binding["factor_generation_id"],
+            "factor_generation_digest": factor_binding["factor_generation_digest"],
+            "hypothesis_registry_digest": factor_binding["hypothesis_registry_digest"],
+            "trial_ledger_digest": factor_binding["trial_ledger_digest"],
             "lookback_days": parameters.lookback_days,
             "max_candidates": parameters.max_candidates,
             "template_registry_digest": registry_digest,
@@ -303,7 +298,21 @@ def create_alpha_factory_task(
             (queue / "status" / f"{task_id}.json").read_text("utf-8")
         )
         return task, status
-
+    snapshot = seal_alpha_factory_snapshot(
+        root,
+        queue,
+        as_of_date=parameters.as_of_date,
+        lookback_days=parameters.lookback_days,
+        max_candidates=parameters.max_candidates,
+        selected_v5_bundle_id=selected_bundle,
+        effective_registry=effective_registry,
+        signing_key=signing_key,
+        signature_key_id=signature_key_id,
+        quant_lab_commit=quant_lab_commit,
+        factor_generation_binding=factor_binding,
+    )
+    if snapshot.template_registry_digest != registry_digest:
+        raise RuntimeError("alpha_factory_snapshot_registry_digest_mismatch")
     requested_at = datetime.now(UTC)
     provisional = AlphaFactoryTask(
         task_id=task_id,
@@ -315,6 +324,7 @@ def create_alpha_factory_task(
         alpha_factory_schema_version=ALPHA_FACTORY_SCHEMA_VERSION,
         second_stage_schema_version=SECOND_STAGE_ALPHA_FACTORY_SCHEMA_VERSION,
         template_registry_digest=registry_digest,
+        **factor_binding,
         selected_v5_bundle_id=selected_bundle,
         snapshot_manifest_sha256=snapshot.manifest_sha256,
         requested_at=requested_at,

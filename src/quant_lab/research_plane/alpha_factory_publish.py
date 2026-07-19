@@ -83,6 +83,24 @@ def publish_alpha_factory_generation(
         "snapshot_id": manifest.snapshot_id,
         "commit": manifest.quant_lab_commit,
         "registry_digest": manifest.template_registry_digest,
+        "factor_generation_id": manifest.factor_generation_id,
+        "factor_generation_digest": manifest.factor_generation_digest,
+        "factor_generation_as_of_date": (
+            manifest.factor_generation_as_of_date.isoformat()
+            if manifest.factor_generation_as_of_date is not None
+            else None
+        ),
+        "factor_generation_published_at": (
+            manifest.factor_generation_published_at.isoformat()
+            if manifest.factor_generation_published_at is not None
+            else None
+        ),
+        "hypothesis_registry_digest": manifest.hypothesis_registry_digest,
+        "trial_ledger_digest": manifest.trial_ledger_digest,
+        "factor_generation_fresh": manifest.factor_generation_fresh,
+        "factor_generation_hypothesis_ids": list(
+            manifest.factor_generation_hypothesis_ids or ()
+        ),
         "as_of_date": manifest.as_of_date.isoformat(),
         "published_at": datetime.now(UTC).isoformat(),
         "research_only": True,
@@ -227,6 +245,18 @@ def verify_alpha_factory_generation(
         or pointer.get("automatic_promotion") is not False
     ):
         raise RuntimeError("alpha_factory_generation_safety_mismatch")
+    factor_binding = (
+        pointer.get("factor_generation_id"),
+        pointer.get("factor_generation_digest"),
+        pointer.get("factor_generation_as_of_date"),
+        pointer.get("factor_generation_published_at"),
+        pointer.get("hypothesis_registry_digest"),
+        pointer.get("trial_ledger_digest"),
+        pointer.get("factor_generation_fresh"),
+        pointer.get("factor_generation_hypothesis_ids"),
+    )
+    if any(value is None for value in factor_binding):
+        raise RuntimeError("alpha_factory_generation_factor_binding_missing")
     rows = {str(key): int(value) for key, value in dict(pointer.get("row_counts") or {}).items()}
     if expected_rows is not None and rows != expected_rows:
         raise RuntimeError("alpha_factory_generation_row_count_mismatch")

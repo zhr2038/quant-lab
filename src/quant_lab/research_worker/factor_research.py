@@ -1023,7 +1023,16 @@ def _candidate_frame(evidence: pl.DataFrame, *, generated_at: datetime) -> pl.Da
         if "PAPER_CANDIDATE" in decisions:
             state = "PAPER_CANDIDATE"
             action = "MANUAL_PAPER_REVIEW"
-        elif any(str(item).startswith("REJECTED") for item in decisions):
+        elif "SIGNAL_VALID" in decisions:
+            state = "SIGNAL_VALID"
+            action = "ALPHA_RESEARCH_ELIGIBLE"
+        elif "PORTFOLIO_FAIL" in decisions:
+            state = "PORTFOLIO_FAIL"
+            action = "RETAIN_SIGNAL_REJECT_PORTFOLIO"
+        elif "SIGNAL_CANDIDATE" in decisions:
+            state = "SIGNAL_CANDIDATE"
+            action = "KEEP_CONFIRMATORY_RESEARCH"
+        elif decisions and all(str(item).startswith("REJECTED") for item in decisions):
             state = "REJECTED"
             action = "RETAIN_AUDIT_ONLY"
         else:

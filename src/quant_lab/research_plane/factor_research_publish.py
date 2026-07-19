@@ -4,7 +4,7 @@ import hashlib
 import json
 import shutil
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -41,6 +41,71 @@ from quant_lab.research_plane.result import ValidatedFactorResearchResult
 FACTOR_RESEARCH_GENERATION_POINTER = Path("gold") / "factor_research_generation.json"
 FACTOR_RESEARCH_TRANSACTION_NAME = "factor_research"
 FACTOR_RESEARCH_SOURCE = "factor_research.nas.v2"
+FACTOR_RESEARCH_GENERATION_FRESH_DAYS = 7
+
+
+def current_factor_research_generation_binding(
+    lake_root: str | Path,
+    *,
+    alpha_as_of_date: date,
+) -> dict[str, Any]:
+    """Return one verified, immutable Factor Generation identity for Alpha research."""
+    root = Path(lake_root)
+    pointer_path = root / FACTOR_RESEARCH_GENERATION_POINTER
+    if not pointer_path.is_file():
+        raise RuntimeError("factor_research_generation_unavailable")
+    try:
+        pointer = json.loads(pointer_path.read_text("utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        raise RuntimeError("factor_research_generation_pointer_invalid") from exc
+    required = (
+        "generation_id",
+        "factor_generation_digest",
+        "hypothesis_registry_digest",
+        "trial_ledger_digest",
+        "as_of_date",
+        "published_at",
+        "hypothesis_ids",
+    )
+    missing = [field for field in required if not pointer.get(field)]
+    if missing:
+        raise RuntimeError(
+            "factor_research_generation_binding_incomplete:" + ",".join(missing)
+        )
+    generation_id = str(pointer["generation_id"])
+    for field in (
+        "factor_generation_digest",
+        "hypothesis_registry_digest",
+        "trial_ledger_digest",
+    ):
+        value = str(pointer[field])
+        if len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
+            raise RuntimeError(f"factor_research_generation_{field}_invalid")
+    try:
+        generation_as_of_date = date.fromisoformat(str(pointer["as_of_date"]))
+        published_at = datetime.fromisoformat(str(pointer["published_at"]).replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise RuntimeError("factor_research_generation_timestamp_invalid") from exc
+    if published_at.tzinfo is None or published_at.utcoffset() != UTC.utcoffset(published_at):
+        raise RuntimeError("factor_research_generation_published_at_not_utc")
+    if generation_as_of_date > alpha_as_of_date:
+        raise RuntimeError("factor_research_generation_from_future")
+    verify_factor_research_generation(root, generation_id)
+    return {
+        "factor_generation_id": generation_id,
+        "factor_generation_digest": str(pointer["factor_generation_digest"]),
+        "factor_generation_as_of_date": generation_as_of_date,
+        "factor_generation_published_at": published_at,
+        "hypothesis_registry_digest": str(pointer["hypothesis_registry_digest"]),
+        "trial_ledger_digest": str(pointer["trial_ledger_digest"]),
+        "factor_generation_fresh": (
+            alpha_as_of_date - generation_as_of_date
+        ).days
+        <= FACTOR_RESEARCH_GENERATION_FRESH_DAYS,
+        "factor_generation_hypothesis_ids": tuple(
+            sorted(str(item) for item in pointer["hypothesis_ids"])
+        ),
+    }
 
 
 def publish_factor_research_generation(
@@ -206,6 +271,16 @@ def verify_factor_research_generation(
     pointer = json.loads((root / FACTOR_RESEARCH_GENERATION_POINTER).read_text("utf-8"))
     if pointer.get("generation_id") != generation_id:
         raise RuntimeError("factor_research_generation_pointer_mismatch")
+    if pointer.get("schema_version") != "factor_research_generation.v1":
+        raise RuntimeError("factor_research_generation_schema_mismatch")
+    for field in (
+        "factor_generation_digest",
+        "hypothesis_registry_digest",
+        "trial_ledger_digest",
+    ):
+        value = str(pointer.get(field) or "")
+        if len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
+            raise RuntimeError(f"factor_research_generation_{field}_invalid")
     if (
         pointer.get("research_only") is not True
         or pointer.get("live_order_effect") != "none"
@@ -230,6 +305,11 @@ def verify_factor_research_generation(
         )
         if metadata.get("generation_id") != generation_id:
             raise RuntimeError(f"factor_research_dataset_generation_mismatch:{target}")
+        if (
+            metadata.get("factor_generation_digest")
+            != pointer.get("factor_generation_digest")
+        ):
+            raise RuntimeError(f"factor_research_dataset_digest_mismatch:{target}")
         if count_parquet_rows(root / target) != rows[dataset_name]:
             raise RuntimeError(f"factor_research_dataset_row_count_mismatch:{target}")
     return rows

@@ -212,6 +212,14 @@ class AlphaFactorySnapshotManifest(StrictModel):
     alpha_factory_schema_version: str = Field(min_length=1, max_length=80)
     second_stage_schema_version: str = Field(min_length=1, max_length=80)
     template_registry_digest: str = Field(min_length=64, max_length=64)
+    factor_generation_id: str | None = Field(default=None, min_length=1, max_length=180)
+    factor_generation_digest: str | None = Field(default=None, min_length=64, max_length=64)
+    factor_generation_as_of_date: date | None = None
+    factor_generation_published_at: datetime | None = None
+    hypothesis_registry_digest: str | None = Field(default=None, min_length=64, max_length=64)
+    trial_ledger_digest: str | None = Field(default=None, min_length=64, max_length=64)
+    factor_generation_fresh: bool | None = None
+    factor_generation_hypothesis_ids: tuple[str, ...] | None = None
     source_input_digest: str = Field(min_length=64, max_length=64)
     as_of_date: date
     lookback_days: int = Field(ge=1, le=180)
@@ -232,6 +240,7 @@ class AlphaFactorySnapshotManifest(StrictModel):
         _require_utc(self.generated_at, "generated_at")
         _require_commit(self.quant_lab_commit, "quant_lab_commit")
         _require_sha(self.template_registry_digest, "template_registry_digest")
+        _validate_optional_alpha_factor_generation(self)
         _require_sha(self.source_input_digest, "source_input_digest")
         _require_sha(self.manifest_sha256, "manifest_sha256")
         _require_identifier(self.signature_key_id, "signature_key_id")
@@ -261,6 +270,14 @@ class AlphaFactoryTask(StrictModel):
     alpha_factory_schema_version: str = Field(min_length=1, max_length=80)
     second_stage_schema_version: str = Field(min_length=1, max_length=80)
     template_registry_digest: str = Field(min_length=64, max_length=64)
+    factor_generation_id: str | None = Field(default=None, min_length=1, max_length=180)
+    factor_generation_digest: str | None = Field(default=None, min_length=64, max_length=64)
+    factor_generation_as_of_date: date | None = None
+    factor_generation_published_at: datetime | None = None
+    hypothesis_registry_digest: str | None = Field(default=None, min_length=64, max_length=64)
+    trial_ledger_digest: str | None = Field(default=None, min_length=64, max_length=64)
+    factor_generation_fresh: bool | None = None
+    factor_generation_hypothesis_ids: tuple[str, ...] | None = None
     selected_v5_bundle_id: str = Field(min_length=1, max_length=512)
     snapshot_manifest_sha256: str = Field(min_length=64, max_length=64)
     requested_at: datetime
@@ -278,6 +295,7 @@ class AlphaFactoryTask(StrictModel):
         _require_identifier(self.snapshot_id, "snapshot_id")
         _require_commit(self.quant_lab_commit, "quant_lab_commit")
         _require_sha(self.template_registry_digest, "template_registry_digest")
+        _validate_optional_alpha_factor_generation(self)
         _require_sha(self.snapshot_manifest_sha256, "snapshot_manifest_sha256")
         _require_utc(self.requested_at, "requested_at")
         _require_identifier(self.signature_key_id, "signature_key_id")
@@ -543,6 +561,14 @@ class AlphaFactoryResultManifest(StrictModel):
     alpha_factory_schema_version: str = Field(min_length=1, max_length=80)
     second_stage_schema_version: str = Field(min_length=1, max_length=80)
     template_registry_digest: str = Field(min_length=64, max_length=64)
+    factor_generation_id: str | None = Field(default=None, min_length=1, max_length=180)
+    factor_generation_digest: str | None = Field(default=None, min_length=64, max_length=64)
+    factor_generation_as_of_date: date | None = None
+    factor_generation_published_at: datetime | None = None
+    hypothesis_registry_digest: str | None = Field(default=None, min_length=64, max_length=64)
+    trial_ledger_digest: str | None = Field(default=None, min_length=64, max_length=64)
+    factor_generation_fresh: bool | None = None
+    factor_generation_hypothesis_ids: tuple[str, ...] | None = None
     as_of_date: date
     lookback_days: int = Field(ge=1, le=180)
     max_candidates: int = Field(ge=1, le=200)
@@ -574,6 +600,7 @@ class AlphaFactoryResultManifest(StrictModel):
         _require_identifier(self.generation_id, "generation_id")
         _require_sha(self.snapshot_manifest_sha256, "snapshot_manifest_sha256")
         _require_sha(self.template_registry_digest, "template_registry_digest")
+        _validate_optional_alpha_factor_generation(self)
         _require_commit(self.quant_lab_commit, "quant_lab_commit")
         _require_commit(self.worker_commit, "worker_commit")
         _require_utc(self.generated_at, "generated_at")
@@ -894,6 +921,39 @@ def _require_unique_identifiers(values: tuple[str, ...], field_name: str) -> Non
         raise ValueError(f"{field_name} must be unique")
     for value in values:
         _require_identifier(value, field_name)
+
+
+def _validate_optional_alpha_factor_generation(value: BaseModel) -> None:
+    field_names = (
+        "factor_generation_id",
+        "factor_generation_digest",
+        "factor_generation_as_of_date",
+        "factor_generation_published_at",
+        "hypothesis_registry_digest",
+        "trial_ledger_digest",
+        "factor_generation_fresh",
+        "factor_generation_hypothesis_ids",
+    )
+    observed = {field_name: getattr(value, field_name) for field_name in field_names}
+    if all(item is None for item in observed.values()):
+        return
+    missing = [field_name for field_name, item in observed.items() if item is None]
+    if missing:
+        raise ValueError(
+            "alpha factor generation binding must be complete: " + ",".join(missing)
+        )
+    _require_identifier(str(observed["factor_generation_id"]), "factor_generation_id")
+    _require_sha(str(observed["factor_generation_digest"]), "factor_generation_digest")
+    _require_sha(str(observed["hypothesis_registry_digest"]), "hypothesis_registry_digest")
+    _require_sha(str(observed["trial_ledger_digest"]), "trial_ledger_digest")
+    _require_utc(
+        observed["factor_generation_published_at"],
+        "factor_generation_published_at",
+    )
+    hypothesis_ids = observed["factor_generation_hypothesis_ids"]
+    if not hypothesis_ids:
+        raise ValueError("factor_generation_hypothesis_ids must not be empty")
+    _require_unique_identifiers(hypothesis_ids, "factor_generation_hypothesis_ids")
 
 
 def _require_sha(value: str, field_name: str) -> None:

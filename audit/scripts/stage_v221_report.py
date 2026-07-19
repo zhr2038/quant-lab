@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import html
 import json
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -18,8 +19,11 @@ from audit.auditlib.forward_v221 import (  # noqa: E402
     STRATEGY_ID,
     STRATEGY_VERSION,
     atomic_write_json,
+    composite_source_hash,
     sha256_file,
+    source_hash_entries,
 )
+from audit.scripts.stage_v221_init import REPORTING_SOURCE_FILES  # noqa: E402
 
 
 def _load(path: Path) -> dict[str, Any]:
@@ -32,6 +36,12 @@ def _load(path: Path) -> dict[str, Any]:
 def _write(path: Path, value: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(value.rstrip() + "\n", encoding="utf-8")
+
+
+def _git(repo: Path, *args: str) -> str:
+    return subprocess.check_output(
+        ["git", "-C", str(repo), *args], text=True, encoding="utf-8"
+    ).strip()
 
 
 def _pct(value: Any) -> str:
@@ -89,6 +99,7 @@ def _final_decisions(
             "next_legal_strategy_decision": status.get(
                 "next_legal_strategy_decision", ""
             ),
+            "next_timer_trigger": status.get("next_timer_trigger", ""),
             "formal_realtime_decision_count": int(
                 status.get("formal_realtime_decision_count", 0)
             ),
@@ -132,6 +143,7 @@ does not permit Live.
 - BTC trend: **60 days / 1440 hours**
 - Research node: `{status.get('research_node', '')}`
 - Timer installed/enabled/active: **{status.get('timer_installed', False)} / {status.get('timer_enabled', False)} / {status.get('timer_active', False)}**
+- Next timer trigger: `{status.get('next_timer_trigger', '')}`
 - Forward cutoff: `{status.get('forward_v221_cutoff', '')}`
 - Next legal strategy decision: `{status.get('next_legal_strategy_decision', '')}`
 - Schedule coverage: **{_pct(status.get('schedule_coverage', 0.0))}**
@@ -399,6 +411,7 @@ def _terminal_summary(status: dict[str, Any], lock: dict[str, Any]) -> str:
             "BTC趋势周期：60天 / 1440小时",
             f"研究节点：{status.get('research_node', '')}",
             f"systemd timer：{'active' if status.get('timer_active') else 'inactive'}",
+            f"下一次timer触发：{status.get('next_timer_trigger', '')}",
             f"下一次合法策略决策时间：{status.get('next_legal_strategy_decision', '')}",
             f"新Forward cutoff：{status.get('forward_v221_cutoff', '')}",
             f"正式实时决策数：{status.get('formal_realtime_decision_count', 0)}",
@@ -428,6 +441,7 @@ def _consistency(
         "next_legal_strategy_decision": str(
             status.get("next_legal_strategy_decision", "")
         ),
+        "next_timer_trigger": str(status.get("next_timer_trigger", "")),
         "paper_status": str(status["paper_status"]),
         "formal_realtime_decision_count": str(
             status.get("formal_realtime_decision_count", 0)
@@ -463,6 +477,7 @@ def _consistency(
         "formal_realtime_decision_count",
         "recovery_decision_count",
         "next_legal_strategy_decision",
+        "next_timer_trigger",
     ):
         if str(candidate.get(key)) != str(status.get(key)):
             errors.append(f"FINAL_JSON_MISMATCH:{key}")
@@ -488,12 +503,54 @@ def _consistency(
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", type=Path, required=True)
+    parser.add_argument("--repo", type=Path, default=Path(__file__).resolve().parents[2])
     args = parser.parse_args()
     root = args.root.resolve()
-    status = _load(root / "artifacts/forward_v221_status.json")
+    repo = args.repo.resolve()
+    canonical_status = _load(root / "artifacts/forward_v221_status.json")
     lock = _load(root / "manifests/parameter_lock_v221.json")
     v22 = _load(root / "artifacts/v22_consistency_check.json")
     deployment = _load(root / "manifests/systemd_deployment_v221.json")
+    health = _load(root / "state/forward_v221_health_latest.json")
+    changed_files = [
+        value
+        for value in _git(
+            repo, "diff", "--name-only", f"{lock['strategy_code_commit']}..HEAD"
+        ).splitlines()
+        if value
+    ]
+    disallowed = sorted(set(changed_files) - set(REPORTING_SOURCE_FILES))
+    if disallowed:
+        raise RuntimeError(f"post-lock change is not reporting-only: {disallowed}")
+    reporting_entries = source_hash_entries(repo, REPORTING_SOURCE_FILES)
+    current_reporting_hash = composite_source_hash(reporting_entries)
+    reporting_identity = {
+        "schema_version": "quant_lab_reporting_identity_v221.v1",
+        "strategy_code_commit": lock["strategy_code_commit"],
+        "strategy_code_hash": lock["strategy_code_hash"],
+        "parameter_lock_reporting_code_hash": lock["reporting_code_hash"],
+        "current_reporting_commit": _git(repo, "rev-parse", "HEAD"),
+        "current_reporting_code_hash": current_reporting_hash,
+        "reporting_only_changed_files": changed_files,
+        "strategy_checkout_deployment_unchanged": True,
+    }
+    atomic_write_json(
+        reporting_identity, root / "artifacts/reporting_identity_v221.json"
+    )
+    _write(
+        root / "manifests/reporting_code_hashes_v221.txt",
+        "\n".join(
+            f"{item['sha256']}  {item['path']}" for item in reporting_entries
+        ),
+    )
+    status = {
+        **canonical_status,
+        "next_timer_trigger": health.get(
+            "next_trigger", canonical_status.get("next_timer_trigger", "")
+        ),
+        "reporting_code_hash": current_reporting_hash,
+        "reporting_commit": reporting_identity["current_reporting_commit"],
+    }
     final = _final_decisions(status, lock, v22)
     atomic_write_json(final, root / "artifacts/final_decisions_v221.json")
     reports = {

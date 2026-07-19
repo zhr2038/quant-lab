@@ -632,7 +632,8 @@ html[data-web-v2-layout="fluid"] .page-strategy .market{height:auto;min-height:0
   grid-template-areas:"factor candidates" "opportunity candidates";
   align-items:start;
 }
-.page-strategy .factor-factory-mini{padding:12px 14px;margin:0;border-radius:18px;display:grid;grid-template-rows:auto auto minmax(0,1fr);align-content:start;min-height:0;overflow:hidden}
+.page-strategy .factor-factory-mini{padding:12px 14px;margin:0;border-radius:18px;display:grid;grid-template-rows:auto auto minmax(0,1fr) auto;row-gap:8px;align-content:start;min-height:0;overflow:hidden}
+.page-strategy .factor-factory-mini>.opportunity-cost-note{margin:0}
 .page-strategy .factor-factory-stats{gap:10px;margin:8px 0}
 .page-strategy .factor-factory-stats span{padding:6px 10px;border-radius:14px}
 .page-strategy .factor-factory-stats b{font-size:24px}

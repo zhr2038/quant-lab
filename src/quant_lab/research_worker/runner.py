@@ -27,6 +27,8 @@ from quant_lab.research_plane.contracts import (
     RESEARCH_TASK_ADAPTER,
     AlphaFactorySnapshotManifest,
     AlphaFactoryTask,
+    FactorResearchSnapshotManifest,
+    FactorResearchTask,
     ResearchTaskEnvelope,
     ResearchTaskLease,
     ResearchTaskState,
@@ -41,9 +43,11 @@ from quant_lab.research_worker.alpha_factory import compute_alpha_factory_from_s
 from quant_lab.research_worker.entry_quality_history import (
     compute_entry_quality_history_from_snapshot,
 )
+from quant_lab.research_worker.factor_research import compute_factor_research_result
 from quant_lab.research_worker.result_writer import (
     write_alpha_factory_result_bundle,
     write_entry_quality_history_result_bundle,
+    write_factor_research_result_bundle,
 )
 from quant_lab.transfer.snapshot_sync import sync_snapshot_blobs
 
@@ -403,6 +407,14 @@ def process_claimed_task(config: Config, task_id: str) -> None:
                     snapshot,
                     task,
                 )
+            elif isinstance(task, FactorResearchTask):
+                if not isinstance(snapshot, FactorResearchSnapshotManifest):
+                    raise ValueError("research_task_snapshot_type_mismatch")
+                compute = compute_factor_research_result(
+                    sync_result.snapshot_root,
+                    snapshot,
+                    task,
+                )
             else:
                 compute = compute_entry_quality_history_from_snapshot(
                     sync_result.snapshot_root,
@@ -422,6 +434,26 @@ def process_claimed_task(config: Config, task_id: str) -> None:
                 if not isinstance(snapshot, AlphaFactorySnapshotManifest):
                     raise ValueError("research_task_snapshot_type_mismatch")
                 result_root, manifest, receipt = write_alpha_factory_result_bundle(
+                    config.data_root / "results",
+                    task=task,
+                    snapshot=snapshot,
+                    compute=compute,
+                    worker_id=config.worker_id,
+                    worker_commit=config.worker_commit,
+                    worker_key_id=config.worker_key_id,
+                    worker_signing_key=signing_key,
+                    claimed_at=claimed_at,
+                    input_bytes=snapshot.total_input_bytes,
+                    cache_hit_bytes=status.cache_hit_bytes,
+                    downloaded_bytes=status.downloaded_bytes,
+                    peak_rss_bytes=peak_rss,
+                    compute_duration_seconds=time.perf_counter() - started,
+                    max_result_bytes=config.max_result_bytes,
+                )
+            elif isinstance(task, FactorResearchTask):
+                if not isinstance(snapshot, FactorResearchSnapshotManifest):
+                    raise ValueError("research_task_snapshot_type_mismatch")
+                result_root, manifest, receipt = write_factor_research_result_bundle(
                     config.data_root / "results",
                     task=task,
                     snapshot=snapshot,
@@ -490,6 +522,13 @@ def _task_status_dimensions(task: ResearchTaskEnvelope) -> tuple[Any, Any, str, 
             task.as_of_date,
             task.as_of_date,
             "alpha_factory",
+            "research",
+        )
+    if isinstance(task, FactorResearchTask):
+        return (
+            task.start_date,
+            task.end_date,
+            "factor_research",
             "research",
         )
     return (

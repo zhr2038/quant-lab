@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+import os
+import shutil
 from datetime import UTC, date, datetime
 from pathlib import Path
 
@@ -13,10 +16,16 @@ from quant_lab.research.factor_research.registry import (
     RESEARCH_TRIAL_LEDGER_DATASET,
 )
 from quant_lab.research_plane.contracts import FactorResearchSnapshotManifest
+from quant_lab.research_plane.factor_research_publish import (
+    FACTOR_RESEARCH_GENERATION_POINTER,
+)
+from quant_lab.research_plane.importer import import_entry_quality_history_result
 from quant_lab.research_plane.queue import create_factor_research_task
+from quant_lab.research_plane.result import validate_factor_research_result_bundle
 from quant_lab.research_plane.signatures import verify_payload
 from quant_lab.research_plane.snapshot import verify_factor_research_snapshot_manifest
 from quant_lab.research_worker.factor_research import compute_factor_research_result
+from quant_lab.research_worker.result_writer import write_factor_research_result_bundle
 
 COMMIT = "a" * 40
 TASK_KEY_ID = "cloud-research-v1"
@@ -133,6 +142,72 @@ def test_factor_research_task_is_content_addressed_signed_and_idempotent(tmp_pat
     assert compute.candidates.height == 4
     assert "PAPER_CANDIDATE" not in set(compute.candidates.get_column("candidate_state").to_list())
     assert compute.anti_leakage["status"] == "PASS"
+
+    worker_key = Ed25519PrivateKey.generate()
+    result_root, result_manifest, receipt = write_factor_research_result_bundle(
+        tmp_path / "worker-results",
+        task=first,
+        snapshot=manifest,
+        compute=compute,
+        worker_id="nas-research-worker-01",
+        worker_commit=COMMIT,
+        worker_key_id="nas-research-v1",
+        worker_signing_key=worker_key,
+        claimed_at=datetime(2026, 7, 19, 1, 0, tzinfo=UTC),
+        input_bytes=manifest.total_input_bytes,
+        cache_hit_bytes=manifest.total_input_bytes,
+        downloaded_bytes=0,
+        peak_rss_bytes=256 * 1024**2,
+        compute_duration_seconds=1.0,
+        max_result_bytes=256 * 1024**2,
+    )
+    validated = validate_factor_research_result_bundle(
+        result_root,
+        manifest=result_manifest,
+        receipt=receipt,
+        task=first,
+        snapshot=manifest,
+        worker_public_key=worker_key.public_key(),
+        expected_worker_key_id="nas-research-v1",
+        max_result_bytes=256 * 1024**2,
+        snapshot_root=snapshot_root,
+    )
+    assert set(validated.output_paths) == {
+        "factor_definition",
+        "factor_value",
+        "factor_evidence",
+        "factor_attribution",
+        "factor_portfolio_validation",
+        "factor_candidate",
+    }
+    assert result_manifest.research_only is True
+    assert result_manifest.live_order_effect == "none"
+    assert receipt.output_rows == sum(item.row_count for item in result_manifest.outputs)
+
+    os.replace(queue / "pending" / first.task_id, queue / "running" / first.task_id)
+    shutil.copytree(result_root, queue / "results" / "inbox" / first.task_id)
+    imported = import_entry_quality_history_result(
+        lake,
+        queue,
+        first.task_id,
+        task_public_key=key.public_key(),
+        worker_public_key=worker_key.public_key(),
+        expected_task_key_id=TASK_KEY_ID,
+        expected_worker_key_id="nas-research-v1",
+        expected_quant_lab_commit=COMMIT,
+    )
+    assert imported.state == "completed"
+    assert imported.idempotent is False
+    pointer = json.loads((lake / FACTOR_RESEARCH_GENERATION_POINTER).read_text("utf-8"))
+    assert pointer["generation_id"] == result_manifest.generation_id
+    assert pointer["research_only"] is True
+    assert pointer["live_order_effect"] == "none"
+    assert pointer["automatic_promotion"] is False
+    assert pointer["max_live_notional_usdt"] == 0
+    completed_ledger = read_parquet_dataset(lake / RESEARCH_TRIAL_LEDGER_DATASET)
+    assert set(completed_ledger.get_column("status").to_list()) == {"COMPLETED"}
+    assert (queue / "completed" / first.task_id).is_dir()
+    assert (queue / "results" / "imported" / first.task_id).is_dir()
 
 
 def test_factor_research_snapshot_projects_only_closed_one_hour_bars(tmp_path: Path) -> None:

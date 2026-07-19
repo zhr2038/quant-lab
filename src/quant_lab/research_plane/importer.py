@@ -20,6 +20,12 @@ from quant_lab.research.entry_quality import (
     EntryQualityHistoryArtifacts,
     publish_entry_quality_history_result,
 )
+from quant_lab.research.factor_research.registry import (
+    RESEARCH_HYPOTHESIS_REGISTRY_DATASET,
+    RESEARCH_TRIAL_LEDGER_DATASET,
+    hypothesis_registry_digest,
+    trial_ledger_digest,
+)
 from quant_lab.research_plane.alpha_factory_publish import (
     publish_alpha_factory_generation,
     verify_alpha_factory_generation,
@@ -34,6 +40,10 @@ from quant_lab.research_plane.contracts import (
     AlphaFactorySnapshotManifest,
     AlphaFactoryTask,
     AlphaFactoryWorkerReceipt,
+    FactorResearchResultManifest,
+    FactorResearchSnapshotManifest,
+    FactorResearchTask,
+    FactorResearchWorkerReceipt,
     ResearchResultManifest,
     ResearchSnapshotManifest,
     ResearchTask,
@@ -43,10 +53,15 @@ from quant_lab.research_plane.contracts import (
     ResearchValidationEvent,
     ResearchWorkerReceipt,
 )
+from quant_lab.research_plane.factor_research_publish import (
+    publish_factor_research_generation,
+    verify_factor_research_generation,
+)
 from quant_lab.research_plane.result import (
     ValidatedEntryQualityHistoryResult,
     validate_alpha_factory_result_bundle,
     validate_entry_quality_history_result_bundle,
+    validate_factor_research_result_bundle,
     validate_research_task_snapshot,
 )
 from quant_lab.research_plane.signatures import sha256_file
@@ -139,6 +154,27 @@ def validate_entry_quality_history_result_for_import(
             max_result_bytes=max_result_bytes,
         )
         output_rows = sum(item.row_count for item in validated_alpha.manifest.outputs)
+    elif isinstance(task, FactorResearchTask):
+        if not all(
+            (
+                isinstance(snapshot, FactorResearchSnapshotManifest),
+                isinstance(manifest, FactorResearchResultManifest),
+                isinstance(receipt, FactorResearchWorkerReceipt),
+            )
+        ):
+            raise ValueError("research_result_task_type_mismatch")
+        validated_factor = validate_factor_research_result_bundle(
+            inbox,
+            manifest=manifest,
+            receipt=receipt,
+            task=task,
+            snapshot=snapshot,
+            worker_public_key=worker_public_key,
+            expected_worker_key_id=expected_worker_key_id,
+            max_result_bytes=max_result_bytes,
+            snapshot_root=snapshot_root,
+        )
+        output_rows = sum(item.row_count for item in validated_factor.manifest.outputs)
     else:
         if not all(
             (
@@ -219,6 +255,19 @@ def import_entry_quality_history_result(
     task_envelope = _load_task_envelope(queue, task_id)
     if isinstance(task_envelope, AlphaFactoryTask):
         return _import_alpha_factory_result(
+            lake_root,
+            queue,
+            task_id,
+            task=task_envelope,
+            task_public_key=task_public_key,
+            worker_public_key=worker_public_key,
+            expected_task_key_id=expected_task_key_id,
+            expected_worker_key_id=expected_worker_key_id,
+            expected_quant_lab_commit=expected_quant_lab_commit,
+            max_result_bytes=max_result_bytes,
+        )
+    if isinstance(task_envelope, FactorResearchTask):
+        return _import_factor_research_result(
             lake_root,
             queue,
             task_id,
@@ -537,6 +586,168 @@ def _import_alpha_factory_result(
         raise
 
 
+def _import_factor_research_result(
+    lake_root: str | Path,
+    queue: Path,
+    task_id: str,
+    *,
+    task: FactorResearchTask,
+    task_public_key: Ed25519PublicKey,
+    worker_public_key: Ed25519PublicKey,
+    expected_task_key_id: str,
+    expected_worker_key_id: str,
+    expected_quant_lab_commit: str,
+    max_result_bytes: int,
+) -> ResearchImportResult:
+    lake = Path(lake_root)
+    inbox = queue / "results" / "inbox" / task_id
+    imported = queue / "results" / "imported" / task_id
+    if imported.is_dir() and inbox.is_dir():
+        if sha256_file(imported / "manifest.json") != sha256_file(inbox / "manifest.json"):
+            raise ValueError("research_result_duplicate_payload_conflict")
+        shutil.rmtree(inbox)
+    if imported.is_dir() and not inbox.exists():
+        manifest = _load_result_manifest(imported)
+        if not isinstance(manifest, FactorResearchResultManifest):
+            raise ValueError("research_result_task_type_mismatch")
+        published_rows = verify_factor_research_generation(lake, manifest.generation_id)
+        _finalize_committed_import(queue, task_id, manifest)
+        return ResearchImportResult(
+            task_id=task_id,
+            state="completed",
+            generation_id=manifest.generation_id,
+            published_rows=published_rows,
+            idempotent=True,
+        )
+    if not inbox.is_dir():
+        raise FileNotFoundError(f"research result inbox missing: {task_id}")
+    running = queue / "running" / task_id
+    if not running.is_dir():
+        raise ValueError("research_result_task_not_running")
+    snapshot_root = queue / "snapshots" / task.snapshot_id
+    snapshot = RESEARCH_SNAPSHOT_ADAPTER.validate_json(
+        (snapshot_root / "manifest.json").read_text("utf-8")
+    )
+    if not isinstance(snapshot, FactorResearchSnapshotManifest):
+        raise ValueError("research_result_task_type_mismatch")
+    status = read_research_status(queue, task_id) or _initial_import_status(task, snapshot)
+    publication_committed = False
+    strict_validation_passed = False
+    manifest: FactorResearchResultManifest | None = None
+    try:
+        status = status.model_copy(
+            update={
+                "state": ResearchTaskState.VALIDATING_ON_CLOUD,
+                "heartbeat_at": datetime.now(UTC),
+                "import_status": "validating",
+                "last_error": None,
+            }
+        )
+        write_research_status(queue, status)
+        (queue / "lease" / f"{task_id}.json").unlink(missing_ok=True)
+        validate_research_task_snapshot(
+            task,
+            snapshot,
+            task_public_key=task_public_key,
+            expected_key_id=expected_task_key_id,
+            expected_quant_lab_commit=expected_quant_lab_commit,
+            snapshot_root=snapshot_root,
+        )
+        if _task_is_superseded(queue, task):
+            raise ValueError("research_result_superseded_by_newer_snapshot")
+        parsed_manifest = _load_result_manifest(inbox)
+        parsed_receipt = RESEARCH_RECEIPT_ADAPTER.validate_json(
+            (inbox / "receipt.json").read_text("utf-8")
+        )
+        if not isinstance(parsed_manifest, FactorResearchResultManifest) or not isinstance(
+            parsed_receipt,
+            FactorResearchWorkerReceipt,
+        ):
+            raise ValueError("research_result_task_type_mismatch")
+        manifest = parsed_manifest
+        validated = validate_factor_research_result_bundle(
+            inbox,
+            manifest=manifest,
+            receipt=parsed_receipt,
+            task=task,
+            snapshot=snapshot,
+            worker_public_key=worker_public_key,
+            expected_worker_key_id=expected_worker_key_id,
+            max_result_bytes=max_result_bytes,
+            snapshot_root=snapshot_root,
+        )
+        strict_validation_passed = True
+        anti_leakage_check_count = len(
+            json.loads(
+                validated.reports["factor_research_anti_leakage.json"].decode("utf-8")
+            )["checks"]
+        )
+        _write_validation_event(
+            queue,
+            task_id,
+            "strict_factor_research_result_validation",
+            "PASS",
+            f"{anti_leakage_check_count} checks passed; "
+            "hypothesis and trial state remain cloud-owned",
+        )
+        status = status.model_copy(
+            update={
+                "state": ResearchTaskState.PUBLISHING,
+                "heartbeat_at": datetime.now(UTC),
+                "import_status": "publishing",
+                "output_rows": parsed_receipt.output_rows,
+                "output_bytes": manifest.output_bytes,
+                "peak_rss_bytes": manifest.peak_rss_bytes,
+                "compute_duration_seconds": manifest.compute_duration_seconds,
+                "anti_leakage_status": manifest.anti_leakage_status,
+            }
+        )
+        write_research_status(queue, status)
+        try:
+            published_rows = verify_factor_research_generation(
+                lake, manifest.generation_id
+            )
+        except (FileNotFoundError, RuntimeError, ValueError, json.JSONDecodeError) as exc:
+            current_registry = read_parquet_dataset(
+                lake / RESEARCH_HYPOTHESIS_REGISTRY_DATASET
+            )
+            current_ledger = read_parquet_dataset(lake / RESEARCH_TRIAL_LEDGER_DATASET)
+            if hypothesis_registry_digest(current_registry) != task.hypothesis_registry_digest:
+                raise ValueError(
+                    "factor_research_result_superseded_by_hypothesis_registry_change"
+                ) from exc
+            if trial_ledger_digest(current_ledger) != task.trial_ledger_digest:
+                raise ValueError(
+                    "factor_research_result_superseded_by_trial_ledger_change"
+                ) from exc
+            published_rows = publish_factor_research_generation(lake, validated)
+        publication_committed = True
+        verify_factor_research_generation(lake, manifest.generation_id, published_rows)
+        _finalize_committed_import(queue, task_id, manifest, status=status)
+        return ResearchImportResult(
+            task_id=task_id,
+            state=ResearchTaskState.COMPLETED.value,
+            generation_id=manifest.generation_id,
+            published_rows=published_rows,
+            idempotent=False,
+        )
+    except Exception as exc:
+        if publication_committed and manifest is not None:
+            _record_finalize_pending(queue, status, manifest.generation_id, exc)
+        elif strict_validation_passed and manifest is not None:
+            _record_publish_retry(queue, status, manifest.generation_id, exc)
+            return ResearchImportResult(
+                task_id=task_id,
+                state="publish_retry_pending",
+                generation_id=manifest.generation_id,
+                published_rows={},
+                idempotent=False,
+            )
+        else:
+            _reject_result(queue, task, status, inbox, running, exc)
+        raise
+
+
 def import_pending_entry_quality_history_results(
     lake_root: str | Path,
     queue_root: str | Path,
@@ -613,6 +824,12 @@ def _task_is_superseded(queue: Path, task: ResearchTaskEnvelope) -> bool:
                 continue
             if isinstance(task, AlphaFactoryTask) and isinstance(other, AlphaFactoryTask):
                 same_scope = other.as_of_date == task.as_of_date
+            elif isinstance(task, FactorResearchTask) and isinstance(
+                other, FactorResearchTask
+            ):
+                same_scope = bool(
+                    set(other.hypothesis_ids).intersection(task.hypothesis_ids)
+                )
             elif isinstance(task, ResearchTask) and isinstance(other, ResearchTask):
                 same_scope = other.mode == task.mode and other.cost_mode == task.cost_mode
             else:
@@ -677,7 +894,11 @@ def _generation_is_published(lake: Path, manifest: ResearchResultManifest) -> bo
 def _finalize_committed_import(
     queue: Path,
     task_id: str,
-    manifest: ResearchResultManifest | AlphaFactoryResultManifest,
+    manifest: (
+        ResearchResultManifest
+        | AlphaFactoryResultManifest
+        | FactorResearchResultManifest
+    ),
     *,
     status: ResearchTaskStatus | None = None,
 ) -> None:
@@ -782,7 +1003,9 @@ def _record_publish_retry(
     )
 
 
-def _load_result_manifest(root: Path) -> ResearchResultManifest | AlphaFactoryResultManifest:
+def _load_result_manifest(
+    root: Path,
+) -> ResearchResultManifest | AlphaFactoryResultManifest | FactorResearchResultManifest:
     return RESEARCH_RESULT_ADAPTER.validate_json(
         (root / "manifest.json").read_text("utf-8")
     )
@@ -799,12 +1022,21 @@ def _load_task_envelope(queue: Path, task_id: str) -> ResearchTaskEnvelope:
 
 def _initial_import_status(
     task: ResearchTaskEnvelope,
-    snapshot: ResearchSnapshotManifest | AlphaFactorySnapshotManifest,
+    snapshot: (
+        ResearchSnapshotManifest
+        | AlphaFactorySnapshotManifest
+        | FactorResearchSnapshotManifest
+    ),
 ) -> ResearchTaskStatus:
     if isinstance(task, AlphaFactoryTask):
         start_date = task.as_of_date
         end_date = task.as_of_date
         mode = "alpha_factory"
+        cost_mode = "research"
+    elif isinstance(task, FactorResearchTask):
+        start_date = task.start_date
+        end_date = task.end_date
+        mode = "factor_research"
         cost_mode = "research"
     else:
         start_date = task.start_date

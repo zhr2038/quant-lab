@@ -19,11 +19,9 @@ from quant_lab.research_plane.contracts import FactorResearchSnapshotManifest
 from quant_lab.research_plane.factor_research_publish import (
     FACTOR_RESEARCH_GENERATION_POINTER,
     FACTOR_RESEARCH_GENERATION_SCHEMA,
+    current_factor_research_generation_binding,
 )
-from quant_lab.research_plane.importer import (
-    _current_factor_research_trial_ledger_digest,
-    import_entry_quality_history_result,
-)
+from quant_lab.research_plane.importer import import_entry_quality_history_result
 from quant_lab.research_plane.queue import create_factor_research_task
 from quant_lab.research_plane.result import validate_factor_research_result_bundle
 from quant_lab.research_plane.signatures import verify_payload
@@ -139,11 +137,8 @@ def test_factor_research_task_is_content_addressed_signed_and_idempotent(tmp_pat
     assert manifest.trial_ids == first.trial_ids
     assert manifest.source_input_digest == first.source_input_digest
 
-    registry = read_parquet_dataset(lake / RESEARCH_HYPOTHESIS_REGISTRY_DATASET)
-    ledger = read_parquet_dataset(lake / RESEARCH_TRIAL_LEDGER_DATASET)
-    assert registry.height == 4
-    assert ledger.height == 8
-    assert ledger.get_column("nas_task_id").unique().to_list() == [first.task_id]
+    assert read_parquet_dataset(lake / RESEARCH_HYPOTHESIS_REGISTRY_DATASET).is_empty()
+    assert read_parquet_dataset(lake / RESEARCH_TRIAL_LEDGER_DATASET).is_empty()
 
     compute = compute_factor_research_result(snapshot_root, manifest, first)
     assert compute.definitions.height == 4
@@ -238,11 +233,14 @@ def test_factor_research_task_is_content_addressed_signed_and_idempotent(tmp_pat
     )
     assert next_task.task_id != first.task_id
     historical_ledger = read_parquet_dataset(lake / RESEARCH_TRIAL_LEDGER_DATASET)
-    assert historical_ledger.height == first.test_count + next_task.test_count
-    assert (
-        _current_factor_research_trial_ledger_digest(lake, next_task)
-        == next_task.trial_ledger_digest
-    )
+    assert historical_ledger.height == first.test_count
+    pointer_before_next_import = (
+        lake / FACTOR_RESEARCH_GENERATION_POINTER
+    ).read_bytes()
+    assert current_factor_research_generation_binding(
+        lake,
+        alpha_as_of_date=date(2026, 7, 19),
+    )["factor_generation_id"] == result_manifest.generation_id
     next_snapshot_root = queue / "snapshots" / next_task.snapshot_id
     next_manifest = FactorResearchSnapshotManifest.model_validate_json(
         (next_snapshot_root / "manifest.json").read_text("utf-8")
@@ -281,6 +279,10 @@ def test_factor_research_task_is_content_addressed_signed_and_idempotent(tmp_pat
     )
     assert next_imported.state == "completed"
     assert next_imported.idempotent is False
+    assert (lake / FACTOR_RESEARCH_GENERATION_POINTER).read_bytes() != pointer_before_next_import
+    final_ledger = read_parquet_dataset(lake / RESEARCH_TRIAL_LEDGER_DATASET)
+    assert final_ledger.height == first.test_count + next_task.test_count
+    assert set(final_ledger.get_column("status").to_list()) == {"COMPLETED"}
     final_registry = read_parquet_dataset(lake / RESEARCH_HYPOTHESIS_REGISTRY_DATASET)
     final_evaluated = final_registry.filter(
         pl.col("hypothesis_id").is_in(next_task.hypothesis_ids)
@@ -359,7 +361,13 @@ def test_factor_research_does_not_use_current_quality_snapshot_for_historical_un
         (queue / "snapshots" / task.snapshot_id / "manifest.json").read_text("utf-8")
     )
     assert all(item.dataset_name != "gold/expanded_universe_quality" for item in manifest.files)
-    registry = read_parquet_dataset(lake / RESEARCH_HYPOTHESIS_REGISTRY_DATASET)
+    registry = read_parquet_dataset(
+        queue
+        / "snapshots"
+        / task.snapshot_id
+        / "files"
+        / RESEARCH_HYPOTHESIS_REGISTRY_DATASET
+    )
     active = registry.filter(pl.col("status") == "APPROVED_FOR_RESEARCH")
     assert set(active.get_column("hypothesis_version").to_list()) == {2}
     assert all(

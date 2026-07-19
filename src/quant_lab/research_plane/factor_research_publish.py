@@ -33,6 +33,8 @@ from quant_lab.research.factor_research.registry import (
     TRIAL_LEDGER_SCHEMA,
     factor_external_audit_evidence_frame,
     factor_retirement_registry_frame,
+    hypothesis_registry_digest,
+    trial_ledger_digest,
 )
 from quant_lab.research_plane.atomic_publish import (
     AtomicPublishItem,
@@ -115,6 +117,8 @@ def current_factor_research_generation_binding(
 def publish_factor_research_generation(
     lake_root: str | Path,
     validated: ValidatedFactorResearchResult,
+    *,
+    snapshot_root: str | Path,
 ) -> dict[str, int]:
     """Atomically publish cloud-owned Factor Research v2 state and compute outputs."""
     root = Path(lake_root)
@@ -123,14 +127,35 @@ def publish_factor_research_generation(
     evidence = pl.read_parquet(validated.output_paths["factor_evidence"])
     existing_registry = read_parquet_dataset(root / RESEARCH_HYPOTHESIS_REGISTRY_DATASET)
     existing_ledger = read_parquet_dataset(root / RESEARCH_TRIAL_LEDGER_DATASET)
-    updated_registry = _updated_hypothesis_registry(
+    snapshot_files = Path(snapshot_root) / "files"
+    planned_registry = read_parquet_dataset(
+        snapshot_files / RESEARCH_HYPOTHESIS_REGISTRY_DATASET
+    )
+    planned_ledger = read_parquet_dataset(snapshot_files / RESEARCH_TRIAL_LEDGER_DATASET)
+    if hypothesis_registry_digest(planned_registry) != manifest.hypothesis_registry_digest:
+        raise ValueError("factor_research_snapshot_hypothesis_registry_digest_mismatch")
+    if trial_ledger_digest(planned_ledger) != manifest.trial_ledger_digest:
+        raise ValueError("factor_research_snapshot_trial_ledger_digest_mismatch")
+    registry_base = _upsert_control_rows(
         existing_registry,
+        planned_registry,
+        schema=HYPOTHESIS_REGISTRY_SCHEMA,
+        key_columns=("hypothesis_id", "hypothesis_version"),
+    )
+    ledger_base = _upsert_control_rows(
+        existing_ledger,
+        planned_ledger,
+        schema=TRIAL_LEDGER_SCHEMA,
+        key_columns=("trial_id",),
+    )
+    updated_registry = _updated_hypothesis_registry(
+        registry_base,
         evidence=evidence,
         hypothesis_ids=set(manifest.hypothesis_ids),
         completed_at=manifest.completed_at,
     )
     updated_ledger = _updated_trial_ledger(
-        existing_ledger,
+        ledger_base,
         evidence=evidence,
         trial_ids=set(manifest.trial_ids),
         started_at=manifest.generated_at,
@@ -363,6 +388,27 @@ def _updated_trial_ledger(
         .alias("finished_at"),
     ).drop("_result_decision")
     return _normalize_frame(updated, TRIAL_LEDGER_SCHEMA).sort("trial_id")
+
+
+def _upsert_control_rows(
+    existing: pl.DataFrame,
+    incoming: pl.DataFrame,
+    *,
+    schema: dict[str, pl.DataType],
+    key_columns: tuple[str, ...],
+) -> pl.DataFrame:
+    if incoming.is_empty():
+        raise ValueError("factor_research_snapshot_control_rows_missing")
+    replacement = _normalize_frame(incoming, schema)
+    if existing.is_empty():
+        return replacement
+    current = _normalize_frame(existing, schema)
+    retained = current.join(
+        replacement.select(key_columns),
+        on=list(key_columns),
+        how="anti",
+    )
+    return pl.concat([retained, replacement], how="vertical_relaxed").select(list(schema))
 
 
 def _updated_hypothesis_registry(

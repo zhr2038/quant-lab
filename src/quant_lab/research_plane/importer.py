@@ -54,6 +54,7 @@ from quant_lab.research_plane.contracts import (
     ResearchWorkerReceipt,
 )
 from quant_lab.research_plane.factor_research_publish import (
+    FACTOR_RESEARCH_GENERATION_POINTER,
     current_factor_research_generation_binding,
     publish_factor_research_generation,
     verify_factor_research_generation,
@@ -719,18 +720,29 @@ def _import_factor_research_result(
             current_registry = read_parquet_dataset(
                 lake / RESEARCH_HYPOTHESIS_REGISTRY_DATASET
             )
-            if hypothesis_registry_digest(current_registry) != task.hypothesis_registry_digest:
+            has_published_generation = (
+                lake / FACTOR_RESEARCH_GENERATION_POINTER
+            ).is_file()
+            if (
+                has_published_generation or not current_registry.is_empty()
+            ) and hypothesis_registry_digest(
+                current_registry
+            ) != task.hypothesis_registry_digest:
                 raise ValueError(
                     "factor_research_result_superseded_by_hypothesis_registry_change"
                 ) from exc
             if (
-                _current_factor_research_trial_ledger_digest(lake, task)
+                _snapshot_factor_research_trial_ledger_digest(snapshot_root, task)
                 != task.trial_ledger_digest
             ):
                 raise ValueError(
                     "factor_research_result_superseded_by_trial_ledger_change"
                 ) from exc
-            published_rows = publish_factor_research_generation(lake, validated)
+            published_rows = publish_factor_research_generation(
+                lake,
+                validated,
+                snapshot_root=snapshot_root,
+            )
         publication_committed = True
         verify_factor_research_generation(lake, manifest.generation_id, published_rows)
         _finalize_committed_import(queue, task_id, manifest, status=status)
@@ -758,12 +770,14 @@ def _import_factor_research_result(
             raise
 
 
-def _current_factor_research_trial_ledger_digest(
-    lake_root: str | Path,
+def _snapshot_factor_research_trial_ledger_digest(
+    snapshot_root: str | Path,
     task: FactorResearchTask,
 ) -> str:
-    """Bind publication to this task's trials while preserving historical ledger rows."""
-    ledger = read_parquet_dataset(Path(lake_root) / RESEARCH_TRIAL_LEDGER_DATASET)
+    """Bind publication to the immutable, signed trial plan for this task."""
+    ledger = read_parquet_dataset(
+        Path(snapshot_root) / "files" / RESEARCH_TRIAL_LEDGER_DATASET
+    )
     if ledger.is_empty() or "trial_id" not in ledger.columns:
         raise ValueError("factor_research_current_trial_ledger_missing")
     expected = set(task.trial_ids)

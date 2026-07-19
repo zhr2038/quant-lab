@@ -33,8 +33,6 @@ from quant_lab.research.factor_research.registry import (
     hypothesis_registry_digest,
     plan_factor_research_trials,
     prepare_factor_research_control_state,
-    publish_hypothesis_registry,
-    publish_trial_ledger,
     recover_retryable_data_quality_hypotheses,
     trial_ledger_digest,
     trial_ledger_frame,
@@ -189,8 +187,6 @@ def create_factor_research_task(
         )
         return task, status
 
-    publish_hypothesis_registry(root, hypotheses)
-    publish_trial_ledger(root, trials)
     requested_at = datetime.now(UTC)
     provisional = FactorResearchTask(
         task_id=task_id,

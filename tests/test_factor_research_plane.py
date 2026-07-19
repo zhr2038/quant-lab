@@ -212,11 +212,31 @@ def test_factor_research_task_is_content_addressed_signed_and_idempotent(tmp_pat
     assert pointer["max_live_notional_usdt"] == 0
     completed_ledger = read_parquet_dataset(lake / RESEARCH_TRIAL_LEDGER_DATASET)
     assert set(completed_ledger.get_column("status").to_list()) == {"COMPLETED"}
+    completed_registry = read_parquet_dataset(lake / RESEARCH_HYPOTHESIS_REGISTRY_DATASET)
+    evaluated = completed_registry.filter(
+        pl.col("hypothesis_id").is_in(first.hypothesis_ids)
+    )
+    assert set(evaluated.get_column("status").to_list()) == {"APPROVED_FOR_RESEARCH"}
     assert (queue / "completed" / first.task_id).is_dir()
     assert (queue / "results" / "imported" / first.task_id).is_dir()
+    completed_status = research_plane_status(queue)
+    assert completed_status["tasks"]["factor_research"]["state"] == "completed"
+    assert completed_status["tasks"]["factor_research"]["task"]["task_id"] == first.task_id
+
+    next_task, _ = create_factor_research_task(
+        lake,
+        queue,
+        as_of_date=date(2026, 7, 19),
+        start_date=date(2025, 7, 18),
+        signing_key=key,
+        signature_key_id=TASK_KEY_ID,
+        quant_lab_commit=COMMIT,
+        selected_v5_bundle_id=BUNDLE_ID,
+    )
+    assert next_task.task_id != first.task_id
     status = research_plane_status(queue)
-    assert status["tasks"]["factor_research"]["state"] == "completed"
-    assert status["tasks"]["factor_research"]["task"]["task_id"] == first.task_id
+    assert status["tasks"]["factor_research"]["state"] == "pending"
+    assert status["tasks"]["factor_research"]["task"]["task_id"] == next_task.task_id
 
 
 def test_factor_research_snapshot_projects_only_closed_one_hour_bars(tmp_path: Path) -> None:

@@ -462,6 +462,66 @@ def prepare_factor_research_control_state(existing: pl.DataFrame) -> pl.DataFram
     return hypothesis_registry_frame(hypotheses)
 
 
+def recover_retryable_data_quality_hypotheses(
+    registry: pl.DataFrame,
+    trial_ledger: pl.DataFrame,
+) -> pl.DataFrame:
+    """Repair hypotheses terminalized by the legacy data-quality status mapping.
+
+    A completed trial remains rejected. Only the hypothesis control row is restored to its
+    prior research approval when every recorded decision for that exact version is a
+    retryable data-availability or data-quality outcome. Economic or statistical failures
+    remain terminal and AI drafts are never made executable here.
+    """
+    canonical = prepare_factor_research_control_state(registry)
+    if canonical.is_empty() or trial_ledger.is_empty():
+        return canonical
+    hypotheses = hypotheses_from_registry(canonical)
+    trials = trials_from_ledger(trial_ledger)
+    retryable = {
+        FactorResearchDecision.DATA_BLOCKED,
+        FactorResearchDecision.REJECTED_DATA_QUALITY,
+    }
+    by_hypothesis: dict[tuple[str, int], list[ResearchTrial]] = {}
+    for trial in trials:
+        by_hypothesis.setdefault(
+            (trial.hypothesis_id, trial.hypothesis_version), []
+        ).append(trial)
+
+    recovered: list[ResearchHypothesis] = []
+    for hypothesis in hypotheses:
+        matching = by_hypothesis.get(
+            (hypothesis.hypothesis_id, hypothesis.hypothesis_version), []
+        )
+        decisions = {item.decision for item in matching if item.decision is not None}
+        eligible = (
+            hypothesis.status == HypothesisStatus.REJECTED
+            and hypothesis.discovery_source != DiscoverySource.AI_DRAFT
+            and hypothesis.approved_by is not None
+            and hypothesis.approved_at is not None
+            and hypothesis.available_data_confirmed
+            and not hypothesis.blocked_missing_data
+            and bool(matching)
+            and all(item.status == TrialStatus.COMPLETED for item in matching)
+            and bool(decisions)
+            and decisions.issubset(retryable)
+        )
+        if not eligible:
+            recovered.append(hypothesis)
+            continue
+        finished = [item.finished_at for item in matching if item.finished_at is not None]
+        updated_at = max([hypothesis.updated_at, *finished])
+        recovered.append(
+            hypothesis.model_copy(
+                update={
+                    "status": HypothesisStatus.APPROVED_FOR_RESEARCH,
+                    "updated_at": updated_at,
+                }
+            )
+        )
+    return hypothesis_registry_frame(recovered)
+
+
 def hypothesis_registry_digest(frame: pl.DataFrame) -> str:
     canonical = prepare_factor_research_control_state(frame)
     return _frame_digest(canonical, sort_by=["hypothesis_id", "hypothesis_version"])

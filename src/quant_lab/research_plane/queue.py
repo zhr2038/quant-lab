@@ -28,12 +28,14 @@ from quant_lab.research.factor_research.contracts import (
 from quant_lab.research.factor_research.registry import (
     EXECUTABLE_HYPOTHESIS_STATUSES,
     RESEARCH_HYPOTHESIS_REGISTRY_DATASET,
+    RESEARCH_TRIAL_LEDGER_DATASET,
     hypotheses_from_registry,
     hypothesis_registry_digest,
     plan_factor_research_trials,
     prepare_factor_research_control_state,
     publish_hypothesis_registry,
     publish_trial_ledger,
+    recover_retryable_data_quality_hypotheses,
     trial_ledger_digest,
     trial_ledger_frame,
 )
@@ -96,6 +98,10 @@ def create_factor_research_task(
         raise RuntimeError("selected_v5_bundle_id_unavailable")
     existing_registry = read_parquet_dataset(root / RESEARCH_HYPOTHESIS_REGISTRY_DATASET)
     effective_registry = prepare_factor_research_control_state(existing_registry)
+    effective_registry = recover_retryable_data_quality_hypotheses(
+        effective_registry,
+        read_parquet_dataset(root / RESEARCH_TRIAL_LEDGER_DATASET),
+    )
     hypotheses = hypotheses_from_registry(effective_registry)
     executable = [item for item in hypotheses if item.status in EXECUTABLE_HYPOTHESIS_STATUSES]
     if not executable:

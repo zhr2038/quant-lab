@@ -28,6 +28,7 @@ from quant_lab.research.factor_research.registry import (
     prepare_factor_research_control_state,
     publish_hypothesis_registry,
     publish_trial_ledger,
+    recover_retryable_data_quality_hypotheses,
     trial_ledger_digest,
     trial_ledger_frame,
     validate_hypothesis_budget,
@@ -174,6 +175,50 @@ def test_nonempty_registry_is_authoritative_and_not_reseeded() -> None:
     effective = prepare_factor_research_control_state(hypothesis_registry_frame([hypothesis]))
     assert effective.height == 1
     assert effective.item(0, "status") == "RETIRED"
+
+
+def test_only_data_quality_terminalization_is_recovered() -> None:
+    approved = next(
+        item
+        for item in default_hypothesis_registry()
+        if item.status == HypothesisStatus.APPROVED_FOR_RESEARCH
+    )
+    rejected = approved.model_copy(update={"status": HypothesisStatus.REJECTED})
+    now = datetime(2026, 7, 19, 8, 0, tzinfo=UTC)
+    planned = plan_factor_research_trials(
+        [approved],
+        start_date=date(2025, 7, 18),
+        end_date=date(2026, 7, 17),
+        code_commit="a" * 40,
+        data_snapshot_id="factor-input-" + "b" * 24,
+        nas_task_id="factor-research-" + "c" * 24,
+    )
+    data_quality_trials = [
+        item.model_copy(
+            update={
+                "status": TrialStatus.COMPLETED,
+                "decision": FactorResearchDecision.REJECTED_DATA_QUALITY,
+                "finished_at": now,
+            }
+        )
+        for item in planned
+    ]
+    recovered = recover_retryable_data_quality_hypotheses(
+        hypothesis_registry_frame([rejected]),
+        trial_ledger_frame(data_quality_trials),
+    )
+    assert recovered.item(0, "status") == "APPROVED_FOR_RESEARCH"
+    assert recovered.item(0, "updated_at") == now
+
+    signal_failure = data_quality_trials.copy()
+    signal_failure[0] = signal_failure[0].model_copy(
+        update={"decision": FactorResearchDecision.REJECTED_NO_SIGNAL}
+    )
+    not_recovered = recover_retryable_data_quality_hypotheses(
+        hypothesis_registry_frame([rejected]),
+        trial_ledger_frame(signal_failure),
+    )
+    assert not_recovered.item(0, "status") == "REJECTED"
 
 
 def test_trial_planner_is_bounded_deterministic_and_excludes_blocked_hypotheses() -> None:

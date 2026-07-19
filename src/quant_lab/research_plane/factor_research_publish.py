@@ -412,6 +412,13 @@ def _hypothesis_status(evidence: pl.DataFrame) -> str:
         return HypothesisStatus.RUNNING.value
     if decisions and decisions.issubset(
         {
+            FactorResearchDecision.DATA_BLOCKED.value,
+            FactorResearchDecision.REJECTED_DATA_QUALITY.value,
+        }
+    ):
+        return HypothesisStatus.APPROVED_FOR_RESEARCH.value
+    if decisions and decisions.issubset(
+        {
             FactorResearchDecision.INCONCLUSIVE.value,
             FactorResearchDecision.INCONCLUSIVE_OVERFIT_DIAGNOSTICS.value,
         }

@@ -2522,17 +2522,21 @@ def test_web_v2_uses_fluid_layout_and_truthful_pack_loading_state():
     assert "statusPending || generateMutation.isPending" in app_source
 
 
-def test_web_v2_factor_generation_status_uses_dedicated_responsive_grid():
+def test_web_v2_factor_generation_summary_does_not_compete_with_duplicate_list():
     strategy_flow = Path(
         "frontend-bigscreen/src/components/StrategyFlow.tsx"
     ).read_text(encoding="utf-8")
     styles = Path("frontend-bigscreen/src/styles.css").read_text(encoding="utf-8")
 
-    assert 'className="opportunity-cost-note factor-generation-note"' in strategy_flow
-    assert ".strategy-research-grid .factor-generation-note{" in styles
-    assert "grid-template-columns:minmax(190px,.82fr)" in styles
-    assert ".strategy-research-grid .factor-generation-note strong{text-align:right}" in styles
-    assert "grid-template-columns:1fr;align-items:start;row-gap:4px" in styles
+    assert 'data-testid="factor-generation-summary"' in strategy_flow
+    assert 'className="factor-generation-cell verdict"' in strategy_flow
+    assert 'className="factor-chip-grid"' not in strategy_flow
+    assert (
+        ".factor-generation-grid{display:grid;"
+        "grid-template-columns:repeat(3,minmax(0,1fr))"
+    ) in styles
+    assert ".factor-generation-cell.verdict" in styles
+    assert ".strategy-research-grid .factor-generation-note" not in styles
 
 
 def test_web_v2_ai_panel_keeps_current_legacy_stage2_outputs_visible():
@@ -2578,7 +2582,7 @@ def test_web_v2_uses_truthful_charts_and_readable_mid_width_layout():
     assert "spread-meter" in market
     assert "label: { show: false }" in costs
     assert "labelLine: { show: false }" in costs
-    assert "minmax(280px,1fr)" in styles
+    assert ".factor-generation-grid{grid-template-columns:1fr}" in styles
     assert "@media (min-width: 1101px) and (max-width: 1600px)" in styles
 
 

@@ -1,4 +1,4 @@
-import { FlaskConical, GitBranch, Rocket, Scale, Sparkles } from "lucide-react";
+import { FlaskConical, GitBranch, Rocket, Scale } from "lucide-react";
 import { bps, safeRows, shortNumber, stringValue } from "../lib/api";
 
 export function StrategyFlow({ flow }: { flow: Record<string, unknown> }) {
@@ -75,27 +75,29 @@ export function StrategyFlow({ flow }: { flow: Record<string, unknown> }) {
             <span><b>{shortNumber(factorFactory.active_hypothesis_count)}</b><em>活跃假设</em></span>
             <span><b>{shortNumber(factorFactory.trial_budget_usage_pct)}%</b><em>试验预算</em></span>
           </div>
-          <div className="factor-chip-grid">
-            {hypothesisRows.slice(0, 6).map((hypothesis, i) => (
-              <div className="factor-chip" key={`${hypothesis.hypothesis_id}-${i}`} title={stringValue(hypothesis.title, "hypothesis")}>
-                <Sparkles size={13} />
-                <span>{stringValue(hypothesis.hypothesis_id, "hypothesis")}</span>
-                <em>{stringValue(hypothesis.status, "DRAFT")}</em>
-                <strong>{shortNumber(hypothesis.variant_budget)} variants</strong>
-              </div>
-            ))}
-          </div>
-          {!hypothesisRows.length && <div className="factor-empty">暂无已登记研究假设</div>}
-          <div className="opportunity-cost-note factor-generation-note" title={[nasTaskId, generationId].filter(Boolean).join(" | ")}>
-            <span>NAS {stringValue(nasTask.state, "idle")} · {shortId(nasTaskId || generationId)}</span>
-            <em>
-              {stringValue(factorFactory.current_generation_verdict, "NO_CURRENT_TRIALS")}
-              {" · 当前 "}{shortNumber(factorFactory.current_trial_count)} 个试验
-            </em>
-            <strong>
-              数据质量拒绝 {shortNumber(factorFactory.current_data_quality_rejected_count)}
-              {" · FDR pass "}{shortNumber(factorFactory.multiple_testing_pass_count)}
-            </strong>
+          <div
+            className="factor-generation-grid"
+            data-testid="factor-generation-summary"
+            title={[nasTaskId, generationId].filter(Boolean).join(" | ")}
+          >
+            <div className="factor-generation-cell">
+              <span>NAS 任务</span>
+              <b>{researchTaskState(stringValue(nasTask.state, "idle"))}</b>
+              <em>{shortId(nasTaskId || generationId)}</em>
+            </div>
+            <div className="factor-generation-cell verdict">
+              <span>本轮结论</span>
+              <b>{researchVerdict(stringValue(factorFactory.current_generation_verdict, "NO_CURRENT_TRIALS"))}</b>
+              <em>{stringValue(factorFactory.current_generation_verdict, "NO_CURRENT_TRIALS")}</em>
+            </div>
+            <div className="factor-generation-cell">
+              <span>试验审查</span>
+              <b>{shortNumber(factorFactory.current_trial_count)} 个试验</b>
+              <em>
+                质量拒绝 {shortNumber(factorFactory.current_data_quality_rejected_count)}
+                {" · FDR 通过 "}{shortNumber(factorFactory.multiple_testing_pass_count)}
+              </em>
+            </div>
           </div>
         </div>
         <div className="candidate-list">
@@ -184,6 +186,26 @@ function shortId(value: string): string {
   if (!value) return "no-task";
   const compact = value.replace(/^factor-research-/, "");
   return compact.length > 10 ? `${compact.slice(0, 10)}…` : compact;
+}
+
+function researchTaskState(value: string): string {
+  const state = value.trim().toLowerCase();
+  if (state === "completed") return "计算完成";
+  if (state === "running" || state === "computing") return "计算中";
+  if (state === "pending" || state === "queued") return "等待计算";
+  if (state === "failed") return "计算失败";
+  return state === "idle" ? "暂无任务" : value;
+}
+
+function researchVerdict(value: string): string {
+  const verdicts: Record<string, string> = {
+    DATA_QUALITY_BLOCKED: "数据质量阻塞",
+    MULTIPLE_TESTING_BLOCKED: "统计检验阻塞",
+    NO_CURRENT_TRIALS: "暂无本轮试验",
+    RESEARCH_ONLY: "仅限研究",
+    READY_FOR_REVIEW: "等待人工复核"
+  };
+  return verdicts[value] ?? value.replace(/_/g, " ");
 }
 
 function dedupeCandidates(rows: Record<string, unknown>[]): Record<string, unknown>[] {

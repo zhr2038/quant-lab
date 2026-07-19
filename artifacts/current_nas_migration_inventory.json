@@ -1,0 +1,103 @@
+{
+  "schema_version": "quant_lab.current_nas_migration_inventory.v1",
+  "captured_at": "2026-07-19T04:02:00Z",
+  "source_truth": "live_ssh_systemd_docker_and_lake_inspection",
+  "commits": {
+    "github_quant_lab_main": "49ad71fb9d3043e4882546fd8b8d4ff0ba93106b",
+    "cloud_quant_lab": "49ad71fb9d3043e4882546fd8b8d4ff0ba93106b",
+    "nas_research_worker": "dcbfc22217d48bf80a0a2ea6e1aa55c42d047511",
+    "v5_prod_read_only": "3df1c67cc44cc8be364ec5d3798ea0d3595c0abc"
+  },
+  "capabilities": [
+    {"name": "expert_export", "state": "PRODUCTION_RESEARCH_RUNNING"},
+    {"name": "ai_research", "state": "PRODUCTION_RESEARCH_RUNNING"},
+    {"name": "entry_quality_history", "state": "PRODUCTION_RESEARCH_RUNNING"},
+    {
+      "name": "alpha_factory",
+      "state": "FAILED",
+      "reason": "current_cloud_worker_code_mismatch",
+      "task_id": "alpha-factory-2f9862f5951430b2a27724d2"
+    },
+    {
+      "name": "factor_research",
+      "state": "CODE_ONLY",
+      "reason": "cloud_factor_factory_exists_but_shared_research_plane_task_type_missing"
+    }
+  ],
+  "cloud": {
+    "host": "qyun2",
+    "root_disk_total_gib": 79,
+    "root_disk_used_gib": 38,
+    "root_disk_available_gib": 38,
+    "root_disk_used_percent": 51,
+    "memory_total_gib": 7.4,
+    "memory_available_gib": 6.4,
+    "lake_size_gib": 13,
+    "research_queue_size_mib": 75,
+    "cloud_heavy_factor_factory_still_scheduled": true
+  },
+  "nas": {
+    "host": "HR-Cloud",
+    "volume_total_gib": 916,
+    "volume_available_gib": 803,
+    "volume_used_percent": 13,
+    "memory_total_gib": 15,
+    "memory_available_gib": 9.9,
+    "research_worker": {
+      "container": "quant-research-worker",
+      "healthy": true,
+      "image_id": "sha256:4fa0bb11388a22d2a2a3d27718e8c8d39d6466cda8f30dca2e5ce5e6d24119d0",
+      "cpu_limit": 3.0,
+      "memory_limit_bytes": 8589934592,
+      "pid_limit": 256,
+      "read_only_root": true,
+      "run_once": false,
+      "observed_memory_mib": 142.4,
+      "heavy_job_lock_mount": "/runtime"
+    }
+  },
+  "latest_successful_tasks": [
+    {
+      "task_id": "entry-quality-history-8475bf67a8d388705332fbc2",
+      "task_type": "entry_quality_history",
+      "input_bytes": 7452309,
+      "downloaded_bytes": 7429118,
+      "cache_hit_bytes": 23191,
+      "output_rows": 2755,
+      "peak_rss_bytes": 245825536,
+      "compute_duration_seconds": 20.39588853297755,
+      "anti_leakage_status": "PASS",
+      "import_status": "imported"
+    },
+    {
+      "task_id": "alpha-factory-cb0df230d9639799882689da",
+      "task_type": "alpha_factory",
+      "input_bytes": 10710510,
+      "downloaded_bytes": 10617295,
+      "cache_hit_bytes": 93215,
+      "output_rows": 173947,
+      "peak_rss_bytes": 1003642880,
+      "compute_duration_seconds": 212.7271219259128,
+      "anti_leakage_status": "PASS",
+      "import_status": "imported"
+    },
+    {
+      "task_id": "alpha-factory-2eb57de8ba8734f0cff95bb6",
+      "task_type": "alpha_factory",
+      "input_bytes": 8640879,
+      "downloaded_bytes": 2651171,
+      "cache_hit_bytes": 5989708,
+      "output_rows": 179966,
+      "peak_rss_bytes": 1022083072,
+      "compute_duration_seconds": 223.12863351404667,
+      "anti_leakage_status": "PASS",
+      "import_status": "imported"
+    }
+  ],
+  "safety": {
+    "v5_modified": false,
+    "research_only": true,
+    "live_order_effect": "none",
+    "automatic_promotion": false
+  }
+}

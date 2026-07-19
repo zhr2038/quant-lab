@@ -2535,6 +2535,20 @@ def test_web_v2_factor_generation_status_uses_dedicated_responsive_grid():
     assert "grid-template-columns:1fr;align-items:start;row-gap:4px" in styles
 
 
+def test_web_v2_ai_panel_keeps_current_legacy_stage2_outputs_visible():
+    panel = Path("frontend-bigscreen/src/components/AIResearchPanel.tsx").read_text(
+        encoding="utf-8"
+    )
+
+    assert "const factorProposals = safeRows(research.factor_proposals);" in panel
+    assert "const experimentProposals = safeRows(research.experiment_proposals);" in panel
+    assert 'usesFactorProposalFallback ? "本轮因子草案"' in panel
+    assert 'usesExperimentProposalFallback ? "验证实验草案"' in panel
+    assert 'title="因子研究草案" rows={factorProposals}' in panel
+    assert 'title="验证实验草案" rows={experimentProposals}' in panel
+    assert "function metricCount(value: unknown, fallback: number): number" in panel
+
+
 def test_web_v2_legacy_hashes_open_ops_drilldowns():
     app_source = Path("frontend-bigscreen/src/App.tsx").read_text(encoding="utf-8")
 

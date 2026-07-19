@@ -16,6 +16,7 @@ from quant_lab.research_plane.contracts import FactorResearchSnapshotManifest
 from quant_lab.research_plane.queue import create_factor_research_task
 from quant_lab.research_plane.signatures import verify_payload
 from quant_lab.research_plane.snapshot import verify_factor_research_snapshot_manifest
+from quant_lab.research_worker.factor_research import compute_factor_research_result
 
 COMMIT = "a" * 40
 TASK_KEY_ID = "cloud-research-v1"
@@ -125,6 +126,13 @@ def test_factor_research_task_is_content_addressed_signed_and_idempotent(tmp_pat
     assert registry.height == 4
     assert ledger.height == 8
     assert ledger.get_column("nas_task_id").unique().to_list() == [first.task_id]
+
+    compute = compute_factor_research_result(snapshot_root, manifest, first)
+    assert compute.definitions.height == 4
+    assert compute.evidence.height == 8
+    assert compute.candidates.height == 4
+    assert "PAPER_CANDIDATE" not in set(compute.candidates.get_column("candidate_state").to_list())
+    assert compute.anti_leakage["status"] == "PASS"
 
 
 def test_factor_research_snapshot_projects_only_closed_one_hour_bars(tmp_path: Path) -> None:

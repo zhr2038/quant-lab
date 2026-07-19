@@ -13,7 +13,8 @@ from quant_lab.research.factor_research.contracts import StrictModel
 
 class PortfolioRule(StrictModel):
     portfolio_rule_id: str = Field(min_length=1, max_length=180)
-    top_n: Literal[1, 3, 5]
+    selection_mode: Literal["cross_sectional_rank", "absolute_timing"] = "cross_sectional_rank"
+    top_n: int = Field(ge=1, le=200)
     weighting: Literal["equal", "score"]
     holding_period_bars: int = Field(ge=1, le=1095 * 24)
     initial_capital_usdt: float = Field(gt=0, le=1_000_000)
@@ -141,9 +142,7 @@ def compute_factor_portfolio(
         symbol_contribution_json=json.dumps(contributions, sort_keys=True, separators=(",", ":")),
         concentration_hhi=sum(share * share for share in shares.values()),
         max_symbol_contribution_share=max_share,
-        average_cash_residual=_mean(
-            [float(row["cash_residual"]) for row in period_results]
-        ),
+        average_cash_residual=_mean([float(row["cash_residual"]) for row in period_results]),
         validation_net_return=validation_net,
         blind_net_return=blind_net,
         portfolio_validity=portfolio_validity,
@@ -154,7 +153,11 @@ def compute_factor_portfolio(
 
 
 def _portfolio_period(group: pl.DataFrame, *, rule: PortfolioRule) -> dict[str, object]:
-    ranked = group.sort("alpha_score", descending=True).head(rule.top_n)
+    if rule.selection_mode == "absolute_timing":
+        signal = _float(group.get_column("alpha_score").drop_nulls().mean()) or 0.0
+        ranked = group if signal > 0 else group.head(0)
+    else:
+        ranked = group.sort("alpha_score", descending=True).head(rule.top_n)
     rows = ranked.to_dicts()
     raw_weights = _raw_weights(rows, rule=rule)
     contributions: dict[str, float] = {}
@@ -203,6 +206,8 @@ def _portfolio_period(group: pl.DataFrame, *, rule: PortfolioRule) -> dict[str, 
 def _raw_weights(rows: list[dict[str, object]], *, rule: PortfolioRule) -> list[float]:
     if not rows:
         return []
+    if rule.selection_mode == "absolute_timing":
+        return [1.0 / len(rows) for _ in rows]
     if rule.weighting == "equal":
         return [1.0 / rule.top_n for _ in rows]
     positive_scores = [max(_float(row.get("alpha_score")) or 0.0, 0.0) for row in rows]
@@ -284,8 +289,7 @@ def _beta(values: list[float], benchmark: list[float]) -> float:
     if variance <= 0:
         return 0.0
     covariance = sum(
-        (value - value_mean) * (reference - benchmark_mean)
-        for value, reference in pairs
+        (value - value_mean) * (reference - benchmark_mean) for value, reference in pairs
     )
     return covariance / variance
 

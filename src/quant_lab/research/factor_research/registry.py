@@ -467,6 +467,24 @@ def trial_ledger_digest(frame: pl.DataFrame) -> str:
     return _frame_digest(frame.select(list(TRIAL_LEDGER_SCHEMA)), sort_by=["trial_id"])
 
 
+def trials_from_ledger(frame: pl.DataFrame) -> list[ResearchTrial]:
+    if frame.is_empty():
+        return []
+    missing = sorted(set(TRIAL_LEDGER_SCHEMA) - set(frame.columns))
+    if missing:
+        raise ValueError(f"trial ledger missing columns: {','.join(missing)}")
+    model_fields = set(ResearchTrial.model_fields)
+    trials: list[ResearchTrial] = []
+    for row in frame.select(list(TRIAL_LEDGER_SCHEMA)).to_dicts():
+        trial = ResearchTrial.model_validate(
+            {key: value for key, value in row.items() if key in model_fields}
+        )
+        if trial.identity_digest != row["identity_digest"]:
+            raise ValueError("trial ledger identity digest mismatch")
+        trials.append(trial)
+    return sorted(trials, key=lambda item: item.trial_id)
+
+
 def plan_factor_research_trials(
     hypotheses: Iterable[ResearchHypothesis],
     *,

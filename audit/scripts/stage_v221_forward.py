@@ -80,7 +80,6 @@ from audit.auditlib.forward_v221 import (  # noqa: E402
     validate_hash_chain,
     validate_parameter_lock,
 )
-from audit.auditlib.portfolio_backtest import _capped_weights  # noqa: E402
 from audit.auditlib.universe import UNIVERSES, build_daily_universe  # noqa: E402
 
 BAR_COLUMNS = ["symbol", "ts", "open", "high", "low", "close", "volume", "quote_volume"]
@@ -316,6 +315,41 @@ def _decision_candidates(
     return missing[-1:] if missing else []
 
 
+def _locked_capped_score_weights(
+    scores: np.ndarray,
+    top_n: int = 3,
+    max_weight: float = 0.50,
+) -> np.ndarray:
+    """Exact v2.2 score-weight formula, isolated from optional SciPy modules."""
+    order = np.argsort(-scores, kind="mergesort")[:top_n]
+    if order.size == 0:
+        return np.empty(0)
+    selected = scores[order]
+    raw = selected - np.min(selected) + 1e-12
+    weights = raw / raw.sum()
+    cap = max(float(max_weight), 1.0 / order.size)
+    fixed = np.zeros(order.size, dtype=bool)
+    for _ in range(order.size + 1):
+        over = (~fixed) & (weights > cap + 1e-14)
+        if not over.any():
+            break
+        weights[over] = cap
+        fixed |= over
+        free = ~fixed
+        remaining = 1.0 - weights[fixed].sum()
+        if not free.any():
+            break
+        free_total = weights[free].sum()
+        weights[free] = (
+            remaining / free.sum()
+            if free_total <= 0
+            else remaining * weights[free] / free_total
+        )
+    out = np.zeros(scores.size, dtype=float)
+    out[order] = weights
+    return out
+
+
 def create_decisions(
     *,
     effective_mode: str,
@@ -372,7 +406,7 @@ def create_decisions(
             else factor.head(0)
         )
         weights = (
-            _capped_weights(target["signal"].to_numpy(), 3, 0.50, "score")
+            _locked_capped_score_weights(target["signal"].to_numpy(), 3, 0.50)
             if target.height == 3
             else np.asarray([], dtype=float)
         )

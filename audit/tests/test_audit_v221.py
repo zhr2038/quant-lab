@@ -11,6 +11,7 @@ from argparse import Namespace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import numpy as np
 import polars as pl
 import pytest
 
@@ -41,10 +42,20 @@ from audit.auditlib.forward_v221 import (
     source_hash_entries,
     timer_slot,
 )
+from audit.auditlib.portfolio_backtest import _capped_weights
 from audit.scripts.stage_v221_deployment import create_cutoff
-from audit.scripts.stage_v221_forward import finalize_cycles
+from audit.scripts.stage_v221_forward import _locked_capped_score_weights, finalize_cycles
 
 NOW = datetime(2026, 7, 19, 2, 10, tzinfo=UTC)
+
+
+def test_locked_score_weight_formula_is_numerically_identical_to_v22() -> None:
+    rng = np.random.default_rng(20260719)
+    for _ in range(100):
+        scores = rng.normal(size=3)
+        expected = _capped_weights(scores, 3, 0.50, "score")
+        actual = _locked_capped_score_weights(scores, 3, 0.50)
+        np.testing.assert_array_equal(actual, expected)
 
 
 def _minimal_lock() -> dict[str, object]:

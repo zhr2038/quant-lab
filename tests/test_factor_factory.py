@@ -86,7 +86,7 @@ def test_factor_factory_builds_definitions_values_evidence_and_candidates(tmp_pa
     assert len(definition["expression_hash"]) == 64
     assert definition["factor_hash"] == definition["expression_hash"]
     assert definition["formula_hash"] == definition["factor_formula_hash"]
-    assert definition["independence_weight"] == 0.5
+    assert definition["independence_weight"] == 1.0
 
     value = values.filter(pl.col("factor_id") == "core.close_return_24").sort("ts").to_dicts()[0]
     assert value["event_time"] == value["ts"]
@@ -97,7 +97,9 @@ def test_factor_factory_builds_definitions_values_evidence_and_candidates(tmp_pa
     assert value["expression_hash"] == definition["expression_hash"]
     assert value["factor_hash"] == definition["factor_hash"]
     assert value["formula_hash"] == definition["formula_hash"]
-    assert value["independence_weight"] == 0.5
+    assert value["independence_weight"] == 1.0
+    assert not definitions["factor_id"].str.starts_with("auto.single.").any()
+    assert result.legacy_enumeration_enabled is False
     assert {
         "factor_hash",
         "canonical_factor_id",
@@ -191,6 +193,38 @@ def test_factor_values_are_cross_sectionally_normalized(tmp_path):
     assert slice_df.height == 4
     assert slice_df.filter(pl.col("normalized_value").is_not_null()).height >= 3
     assert slice_df.filter(pl.col("rank_value").is_not_null()).height >= 3
+
+
+def test_default_run_removes_legacy_auto_candidates_without_deleting_history(tmp_path):
+    lake = tmp_path / "lake"
+    symbols = ["BTC-USDT", "ETH-USDT", "SOL-USDT", "BNB-USDT"]
+    _write_bars(lake, symbols=symbols, count=180)
+    _write_costs(lake)
+    publish_features(lake, symbols=symbols)
+
+    build_and_publish_factor_factory(
+        lake,
+        as_of_date="2026-05-20",
+        horizon_bars=(4,),
+        min_samples=20,
+        legacy_enumeration=True,
+    )
+    legacy_candidates = read_parquet_dataset(lake / "gold" / "factor_candidate")
+    assert legacy_candidates["factor_id"].str.starts_with("auto.single.").any()
+
+    build_and_publish_factor_factory(
+        lake,
+        as_of_date="2026-05-20",
+        horizon_bars=(4,),
+        min_samples=20,
+    )
+
+    current_candidates = read_parquet_dataset(lake / "gold" / "factor_candidate")
+    definitions = read_parquet_dataset(lake / "gold" / "factor_definition")
+    values = read_parquet_dataset(lake / "gold" / "factor_value")
+    assert not current_candidates["factor_id"].str.starts_with("auto.single.").any()
+    assert definitions["factor_id"].str.starts_with("auto.single.").any()
+    assert values["factor_id"].str.starts_with("auto.single.").any()
 
 
 def test_factor_factory_v2_dedupes_and_builds_review_outputs():

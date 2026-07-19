@@ -215,6 +215,7 @@ class FactorPublishResult(BaseModel):
     published_value_rows: int = Field(ge=0)
     factor_ids: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
+    legacy_enumeration_enabled: bool = False
 
 
 class FactorEvidenceBuildResult(BaseModel):
@@ -242,6 +243,7 @@ class FactorFactoryBuildResult(BaseModel):
     correlation_rows: int = Field(ge=0)
     decision_counts: dict[str, int] = Field(default_factory=dict)
     warnings: list[str] = Field(default_factory=list)
+    legacy_enumeration_enabled: bool = False
     diagnostic_only: bool = True
     live_order_effect: str = "none_read_only_research"
 
@@ -279,6 +281,7 @@ def build_and_publish_factor_factory(
     min_samples: int = 100,
     top_quantile: float = 0.2,
     cost_quantile: str = "p75",
+    legacy_enumeration: bool = False,
     dry_run: bool = False,
 ) -> FactorFactoryBuildResult:
     if dry_run:
@@ -295,6 +298,7 @@ def build_and_publish_factor_factory(
             min_samples=min_samples,
             top_quantile=top_quantile,
             cost_quantile=cost_quantile,
+            legacy_enumeration=legacy_enumeration,
         )
     published = publish_factor_values(
         lake_root,
@@ -303,6 +307,7 @@ def build_and_publish_factor_factory(
         factor_version=factor_version,
         timeframe=timeframe,
         max_factors=max_factors,
+        legacy_enumeration=legacy_enumeration,
         dry_run=dry_run,
     )
     evidence = evaluate_and_publish_factor_evidence(
@@ -315,6 +320,7 @@ def build_and_publish_factor_factory(
         min_samples=min_samples,
         top_quantile=top_quantile,
         cost_quantile=cost_quantile,
+        legacy_enumeration=legacy_enumeration,
         dry_run=dry_run,
     )
     return FactorFactoryBuildResult(
@@ -328,6 +334,7 @@ def build_and_publish_factor_factory(
         correlation_rows=evidence.correlation_rows,
         decision_counts=evidence.decision_counts,
         warnings=_dedupe([*published.warnings, *evidence.warnings]),
+        legacy_enumeration_enabled=legacy_enumeration,
     )
 
 
@@ -345,6 +352,7 @@ def _build_factor_factory_dry_run(
     min_samples: int,
     top_quantile: float,
     cost_quantile: str,
+    legacy_enumeration: bool,
 ) -> FactorFactoryBuildResult:
     source_root = Path(lake_root)
     with tempfile.TemporaryDirectory(prefix="quant_lab_factor_factory_") as tmp:
@@ -366,6 +374,7 @@ def _build_factor_factory_dry_run(
             min_samples=min_samples,
             top_quantile=top_quantile,
             cost_quantile=cost_quantile,
+            legacy_enumeration=legacy_enumeration,
             dry_run=False,
         )
     return result.model_copy(
@@ -407,6 +416,7 @@ def publish_factor_values(
     factor_version: str = "v0.1",
     timeframe: str = "1H",
     max_factors: int = 200,
+    legacy_enumeration: bool = False,
     dry_run: bool = False,
 ) -> FactorPublishResult:
     root = Path(lake_root)
@@ -434,6 +444,7 @@ def publish_factor_values(
             feature_rows=0,
             published_value_rows=0,
             warnings=_dedupe(warnings),
+            legacy_enumeration_enabled=legacy_enumeration,
         )
 
     available_features = sorted(features["feature_name"].drop_nulls().unique().to_list())
@@ -444,7 +455,10 @@ def publish_factor_values(
         factor_version=factor_version,
         timeframe=timeframe,
         max_factors=max_factors,
+        include_legacy_enumeration=legacy_enumeration,
     )
+    if not legacy_enumeration:
+        warnings.append("legacy_auto_single_enumeration_disabled")
     now = datetime.now(UTC)
     definitions_rows = publish_factor_definitions(root, specs, created_at=now, dry_run=dry_run)
     values = _build_factor_value_frame(features, specs, created_at=now)
@@ -464,6 +478,7 @@ def publish_factor_values(
             published_value_rows=0,
             factor_ids=[spec.factor_id for spec in specs],
             warnings=_dedupe(warnings),
+            legacy_enumeration_enabled=legacy_enumeration,
         )
 
     if dry_run:
@@ -488,6 +503,7 @@ def publish_factor_values(
         published_value_rows=0 if dry_run else values.height,
         factor_ids=[spec.factor_id for spec in specs],
         warnings=_dedupe(warnings),
+        legacy_enumeration_enabled=legacy_enumeration,
     )
 
 
@@ -502,6 +518,7 @@ def evaluate_and_publish_factor_evidence(
     min_samples: int = 100,
     top_quantile: float = 0.2,
     cost_quantile: str = "p75",
+    legacy_enumeration: bool = False,
     dry_run: bool = False,
 ) -> FactorEvidenceBuildResult:
     if decision_delay_bars < 1:
@@ -516,6 +533,7 @@ def evaluate_and_publish_factor_evidence(
         factor_version=factor_version,
         timeframe=timeframe,
         warnings=warnings,
+        include_legacy_enumeration=legacy_enumeration,
     )
     market_bars = _load_market_bars(root, timeframe=timeframe, warnings=warnings)
     if values.is_empty() or market_bars.is_empty():
@@ -594,33 +612,20 @@ def evaluate_and_publish_factor_evidence(
         candidate_rows = read_parquet_dataset(root / FACTOR_CANDIDATE_DATASET).height
         correlation_rows = read_parquet_dataset(root / FACTOR_CORRELATION_DAILY_DATASET).height
     else:
-        evidence_rows = upsert_parquet_dataset(
+        evidence_rows = _replace_as_of_date_dataset(
             evidence,
             root / FACTOR_EVIDENCE_DATASET,
-            key_columns=[
-                "as_of_date",
-                "factor_id",
-                "factor_version",
-                "timeframe",
-                "horizon_bars",
-                "decision_delay_bars",
-            ],
+            day=day,
         )
-        candidate_rows = upsert_parquet_dataset(
+        candidate_rows = _replace_as_of_date_dataset(
             candidates,
             root / FACTOR_CANDIDATE_DATASET,
-            key_columns=["as_of_date", "factor_id", "factor_version", "timeframe"],
+            day=day,
         )
-        correlation_rows = upsert_parquet_dataset(
+        correlation_rows = _replace_as_of_date_dataset(
             correlations,
             root / FACTOR_CORRELATION_DAILY_DATASET,
-            key_columns=[
-                "as_of_date",
-                "factor_id_left",
-                "factor_id_right",
-                "factor_version",
-                "timeframe",
-            ],
+            day=day,
         )
 
     return FactorEvidenceBuildResult(
@@ -638,6 +643,7 @@ def build_and_publish_factor_candidates(
     lake_root: str | Path,
     *,
     as_of_date: str | date | None = "auto",
+    legacy_enumeration: bool = False,
     dry_run: bool = False,
 ) -> FactorEvidenceBuildResult:
     root = Path(lake_root)
@@ -645,15 +651,17 @@ def build_and_publish_factor_candidates(
     evidence = read_parquet_dataset(root / FACTOR_EVIDENCE_DATASET)
     if not evidence.is_empty() and "as_of_date" in evidence.columns:
         evidence = evidence.filter(pl.col("as_of_date") == day.isoformat())
+    if not legacy_enumeration and not evidence.is_empty() and "factor_id" in evidence.columns:
+        evidence = evidence.filter(~pl.col("factor_id").str.starts_with("auto.single."))
     now = datetime.now(UTC)
     candidates = _candidate_frame_from_evidence(evidence, as_of_date=day, created_at=now)
     if dry_run:
         candidate_rows = read_parquet_dataset(root / FACTOR_CANDIDATE_DATASET).height
     else:
-        candidate_rows = upsert_parquet_dataset(
+        candidate_rows = _replace_as_of_date_dataset(
             candidates,
             root / FACTOR_CANDIDATE_DATASET,
-            key_columns=["as_of_date", "factor_id", "factor_version", "timeframe"],
+            day=day,
         )
     return FactorEvidenceBuildResult(
         lake_root=str(root),
@@ -730,6 +738,7 @@ def _load_factor_values(
     factor_version: str,
     timeframe: str,
     warnings: list[str],
+    include_legacy_enumeration: bool = False,
 ) -> pl.DataFrame:
     df = read_parquet_dataset(root / FACTOR_VALUE_DATASET)
     if df.is_empty():
@@ -739,9 +748,36 @@ def _load_factor_values(
     if missing:
         warnings.append(f"factor_value missing columns: {','.join(missing)}")
         return pl.DataFrame()
-    return _normalize_datetime(df, "ts").filter(
+    filtered = _normalize_datetime(df, "ts").filter(
         (pl.col("factor_version") == factor_version) & (pl.col("timeframe") == timeframe)
     )
+    if not include_legacy_enumeration:
+        filtered = filtered.filter(~pl.col("factor_id").str.starts_with("auto.single."))
+    return filtered
+
+
+def _replace_as_of_date_dataset(
+    incoming: pl.DataFrame,
+    dataset_path: Path,
+    *,
+    day: date,
+) -> int:
+    existing = read_parquet_dataset(dataset_path)
+    if not existing.is_empty() and "as_of_date" not in existing.columns:
+        raise ValueError(f"{dataset_path} lacks as_of_date for bounded replacement")
+    retained = (
+        existing.filter(pl.col("as_of_date") != day.isoformat())
+        if not existing.is_empty()
+        else existing
+    )
+    if retained.is_empty():
+        combined = incoming
+    elif incoming.is_empty():
+        combined = retained
+    else:
+        combined = pl.concat([retained, incoming], how="diagonal_relaxed")
+    write_parquet_dataset(combined, dataset_path)
+    return combined.height
 
 
 def _load_market_bars(root: Path, *, timeframe: str, warnings: list[str]) -> pl.DataFrame:

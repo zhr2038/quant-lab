@@ -353,6 +353,7 @@ def discover_factor_specs(
     factor_version: str = "v0.1",
     timeframe: str = "1H",
     max_factors: int = 200,
+    include_legacy_enumeration: bool = False,
 ) -> list[FactorSpec]:
     available = {str(name).strip() for name in available_features if str(name).strip()}
     specs: list[FactorSpec] = []
@@ -367,6 +368,9 @@ def discover_factor_specs(
             specs.append(item)
 
     existing_ids = {item.factor_id for item in specs}
+    if not include_legacy_enumeration:
+        return apply_factor_semantic_lineage(specs[:max_factors])
+
     for feature_name in sorted(available):
         factor_id = f"auto.single.{feature_name}"
         if factor_id in existing_ids:

@@ -1616,6 +1616,13 @@ def build_factor_factory_command(
     min_samples: Annotated[int, typer.Option("--min-samples", min=1)] = 100,
     top_quantile: Annotated[float, typer.Option("--top-quantile", min=0.01, max=0.50)] = 0.2,
     cost_quantile: Annotated[str, typer.Option("--cost-quantile")] = "p75",
+    legacy_enumeration: Annotated[
+        bool,
+        typer.Option(
+            "--legacy-enumeration/--no-legacy-enumeration",
+            help="Explicitly restore retired auto.single.* feature enumeration for audit runs.",
+        ),
+    ] = False,
     dry_run: Annotated[bool, typer.Option("--dry-run/--apply")] = False,
 ) -> None:
     parsed_horizons = tuple(int(item.strip()) for item in horizon_bars.split(",") if item.strip())
@@ -1635,6 +1642,7 @@ def build_factor_factory_command(
             min_samples=min_samples,
             top_quantile=top_quantile,
             cost_quantile=cost_quantile,
+            legacy_enumeration=legacy_enumeration,
             dry_run=dry_run,
         ),
     )

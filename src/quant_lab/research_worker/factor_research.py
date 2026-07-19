@@ -68,9 +68,9 @@ from quant_lab.research_plane.contracts import (
 
 SOURCE = "factor_research.nas.v2"
 MARKET_DATASET = Path("silver") / "market_bar"
-QUALITY_DATASET = Path("gold") / "expanded_universe_quality"
 COST_DATASET = Path("gold") / "cost_bucket_daily"
 REGIME_DATASET = Path("gold") / "market_regime_daily"
+MIN_PRIOR_DAY_CLOSED_BARS = 18
 
 FACTOR_RESEARCH_ANTI_LEAKAGE_CHECKS = (
     "source_snapshot_identity_matches",
@@ -82,7 +82,7 @@ FACTOR_RESEARCH_ANTI_LEAKAGE_CHECKS = (
     "label_horizon_complete",
     "label_end_within_snapshot_boundary",
     "chronological_split_locked",
-    "quality_not_from_future",
+    "universe_membership_not_from_future",
     "regime_not_from_future",
     "cost_not_from_future",
     "multiple_testing_family_complete",
@@ -577,6 +577,40 @@ def _market_controls(market: pl.DataFrame) -> pl.DataFrame:
     )
 
 
+def _point_in_time_market_universe(market: pl.DataFrame) -> pl.DataFrame:
+    """Build next-day membership only from the preceding completed UTC day."""
+    eligible = market
+    if "timeframe" in eligible.columns:
+        eligible = eligible.filter(
+            pl.col("timeframe").cast(pl.Utf8).str.to_lowercase() == "1h"
+        )
+    if "is_closed" in eligible.columns:
+        eligible = eligible.filter(pl.col("is_closed").fill_null(False))
+    daily = (
+        eligible.filter((pl.col("close") > 0) & pl.col("ts").is_not_null())
+        .with_columns(pl.col("ts").dt.date().alias("_bar_day"))
+        .group_by(["symbol", "_bar_day"])
+        .agg(
+            pl.len().alias("_closed_bar_count"),
+            pl.col("quote_volume").fill_null(0.0).sum().alias("_quote_volume_24h"),
+        )
+        .filter(
+            (pl.col("_closed_bar_count") >= MIN_PRIOR_DAY_CLOSED_BARS)
+            & (pl.col("_quote_volume_24h") > 0)
+        )
+        .with_columns(
+            (pl.col("_bar_day") + timedelta(days=1)).alias("source_day"),
+            (pl.col("_closed_bar_count") / 24.0).clip(upper_bound=1.0).alias(
+                "universe_quality_score"
+            ),
+        )
+        .select("symbol", "source_day", "universe_quality_score")
+        .unique(["symbol", "source_day"], keep="last")
+        .sort(["symbol", "source_day"])
+    )
+    return daily
+
+
 def _volatility_feature(
     market: pl.DataFrame,
     *,
@@ -656,11 +690,7 @@ def _build_trial_samples(
     market = _market_controls(
         _normalized_market(read_parquet_dataset(snapshot_lake_root / MARKET_DATASET))
     )
-    quality = _normalize_daily_source(
-        read_parquet_dataset(snapshot_lake_root / QUALITY_DATASET),
-        value_candidates=("quality_score", "symbol_quality_score"),
-        output_name="quality_score",
-    )
+    universe = _point_in_time_market_universe(market)
     costs = _normalize_daily_source(
         read_parquet_dataset(snapshot_lake_root / COST_DATASET),
         value_candidates=(
@@ -703,11 +733,21 @@ def _build_trial_samples(
         samples = samples.with_columns(pl.col("available_time").alias("decision_ts")).filter(
             (pl.col("decision_ts") >= start) & (pl.col("decision_ts") < end)
         )
-        samples = _join_point_in_time(samples, quality, value_column="quality_score")
+        samples = _join_point_in_time(
+            samples,
+            universe,
+            value_column="universe_quality_score",
+        )
         samples = _join_point_in_time(samples, costs, value_column="cost_bps")
         samples = _join_point_in_time(samples, regimes, value_column="regime")
         samples = samples.with_columns(
-            pl.col("quality_score").is_not_null().alias("tradable"),
+            (
+                pl.col("universe_quality_score").is_not_null()
+                & (
+                    pl.col("_universe_quality_score_source_day")
+                    == pl.col("decision_ts").dt.date()
+                )
+            ).alias("tradable"),
             pl.col("regime")
             .replace_strict(
                 {
@@ -1163,7 +1203,10 @@ def _anti_leakage_report(
         )
     )
     for check_name, source_day in (
-        ("quality_not_from_future", "_quality_score_source_day"),
+        (
+            "universe_membership_not_from_future",
+            "_universe_quality_score_source_day",
+        ),
         ("regime_not_from_future", "_regime_source_day"),
         ("cost_not_from_future", "_cost_bps_source_day"),
     ):

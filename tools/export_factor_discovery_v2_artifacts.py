@@ -30,23 +30,23 @@ def write_artifacts(output_root: Path) -> None:
 
     retirement.write_csv(output_root / "factor_retirement_registry.csv")
     audit.write_csv(output_root / "audit_evidence_import.csv")
-    (output_root / "hypothesis_registry_seed.json").write_text(
-        json.dumps(
-            {
-                "schema_version": "factor_research_hypothesis_seed.v1",
-                "generated_from": "default_hypothesis_registry",
-                "recorded_at": MIGRATION_RECORDED_AT.isoformat(),
-                "research_only": True,
-                "live_order_effect": "none",
-                "hypotheses": [item.model_dump(mode="json") for item in hypotheses],
-            },
-            ensure_ascii=True,
-            indent=2,
-            sort_keys=True,
-        )
-        + "\n",
-        encoding="utf-8",
+    hypothesis_seed = json.dumps(
+        {
+            "schema_version": "factor_research_hypothesis_seed.v1",
+            "generated_from": "default_hypothesis_registry",
+            "recorded_at": MIGRATION_RECORDED_AT.isoformat(),
+            "research_only": True,
+            "live_order_effect": "none",
+            "hypotheses": [item.model_dump(mode="json") for item in hypotheses],
+        },
+        ensure_ascii=True,
+        indent=2,
+        sort_keys=True,
     )
+    with (output_root / "hypothesis_registry_seed.json").open(
+        "w", encoding="utf-8", newline="\n"
+    ) as handle:
+        handle.write(hypothesis_seed + "\n")
 
     historical_trials = audit.select(
         "audit_version",

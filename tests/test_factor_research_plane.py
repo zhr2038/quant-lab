@@ -26,7 +26,10 @@ from quant_lab.research_plane.result import validate_factor_research_result_bund
 from quant_lab.research_plane.signatures import verify_payload
 from quant_lab.research_plane.snapshot import verify_factor_research_snapshot_manifest
 from quant_lab.research_plane.status import research_plane_status
-from quant_lab.research_worker.factor_research import compute_factor_research_result
+from quant_lab.research_worker.factor_research import (
+    _point_in_time_market_universe,
+    compute_factor_research_result,
+)
 from quant_lab.research_worker.result_writer import write_factor_research_result_bundle
 
 COMMIT = "a" * 40
@@ -252,3 +255,63 @@ def test_factor_research_request_fails_closed_when_required_source_is_missing(
             quant_lab_commit=COMMIT,
             selected_v5_bundle_id=BUNDLE_ID,
         )
+
+
+def test_factor_research_does_not_use_current_quality_snapshot_for_historical_universe(
+    tmp_path: Path,
+) -> None:
+    lake = tmp_path / "lake"
+    queue = tmp_path / "queue"
+    _write_source_data(lake)
+    quality_path = lake / "gold" / "expanded_universe_quality" / "part-quality.parquet"
+    pl.DataFrame(
+        {
+            "as_of_date": [date(2026, 7, 19)],
+            "symbol": ["SOL-USDT"],
+            "quality_score": [0.9],
+        }
+    ).write_parquet(quality_path)
+
+    task, _ = create_factor_research_task(
+        lake,
+        queue,
+        as_of_date=date(2026, 7, 19),
+        signing_key=Ed25519PrivateKey.generate(),
+        signature_key_id=TASK_KEY_ID,
+        quant_lab_commit=COMMIT,
+        selected_v5_bundle_id=BUNDLE_ID,
+    )
+
+    manifest = FactorResearchSnapshotManifest.model_validate_json(
+        (queue / "snapshots" / task.snapshot_id / "manifest.json").read_text("utf-8")
+    )
+    assert all(item.dataset_name != "gold/expanded_universe_quality" for item in manifest.files)
+    registry = read_parquet_dataset(lake / RESEARCH_HYPOTHESIS_REGISTRY_DATASET)
+    active = registry.filter(pl.col("status") == "APPROVED_FOR_RESEARCH")
+    assert set(active.get_column("hypothesis_version").to_list()) == {2}
+    assert all(
+        '"dynamic_source_dataset":"silver/market_bar"' in value
+        for value in active.get_column("universe_definition_json").to_list()
+    )
+
+
+def test_point_in_time_market_universe_uses_only_previous_complete_day() -> None:
+    bars = pl.DataFrame(
+        {
+            "symbol": ["SOL-USDT"] * 24 + ["ETH-USDT"] * 17,
+            "timeframe": ["1h"] * 41,
+            "ts": [
+                datetime(2026, 7, 15, hour, tzinfo=UTC) for hour in range(24)
+            ]
+            + [datetime(2026, 7, 15, hour, tzinfo=UTC) for hour in range(17)],
+            "close": [100.0] * 41,
+            "quote_volume": [1_000.0] * 41,
+            "is_closed": [True] * 41,
+        }
+    )
+
+    universe = _point_in_time_market_universe(bars)
+
+    assert universe.height == 1
+    assert universe.item(0, "symbol") == "SOL-USDT"
+    assert universe.item(0, "source_day") == date(2026, 7, 16)

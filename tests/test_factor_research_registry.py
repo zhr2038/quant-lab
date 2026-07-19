@@ -71,8 +71,10 @@ def test_hypothesis_definition_change_requires_new_version(tmp_path) -> None:
     changed = original.model_copy(update={"expected_horizons": (24,)})
     with pytest.raises(ValueError, match="new version"):
         publish_hypothesis_registry(root, [changed])
-    version_two = changed.model_copy(update={"hypothesis_version": 2})
-    assert publish_hypothesis_registry(root, [version_two]) == 2
+    next_version = changed.model_copy(
+        update={"hypothesis_version": original.hypothesis_version + 1}
+    )
+    assert publish_hypothesis_registry(root, [next_version]) == 2
     frame = read_parquet_dataset(root / RESEARCH_HYPOTHESIS_REGISTRY_DATASET)
     assert frame.height == 2
 
@@ -199,7 +201,7 @@ def test_trial_planner_is_bounded_deterministic_and_excludes_blocked_hypotheses(
 
 def test_multiple_active_versions_fail_closed() -> None:
     original = default_hypothesis_registry()[0]
-    second = original.model_copy(update={"hypothesis_version": 2})
+    second = original.model_copy(update={"hypothesis_version": original.hypothesis_version + 1})
     with pytest.raises(ValueError, match="multiple active versions"):
         prepare_factor_research_control_state(hypothesis_registry_frame([original, second]))
 

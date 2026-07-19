@@ -169,10 +169,16 @@ FACTOR_EXTERNAL_AUDIT_EVIDENCE_SCHEMA: dict[str, Any] = {
 def default_hypothesis_registry() -> list[ResearchHypothesis]:
     recorded_at = datetime(2026, 7, 19, 4, 2, tzinfo=UTC)
     market_universe = UniverseDefinition(
-        universe_id="spot-dynamic-quality-v1",
-        dynamic_source_dataset="gold/expanded_universe_quality",
-        inclusion_rule="quality-qualified spot symbols with closed 1H market bars",
-        exclusion_rule="exclude stale, untradeable, or insufficient-history symbols",
+        universe_id="spot-prior-closed-bars-v1",
+        dynamic_source_dataset="silver/market_bar",
+        inclusion_rule=(
+            "symbols with at least 18 positive-price closed 1H bars and positive quote volume "
+            "during the immediately preceding complete UTC day"
+        ),
+        exclusion_rule=(
+            "exclude symbols without a complete prior-day point-in-time membership record; "
+            "do not backfill membership from the current operational quality snapshot"
+        ),
     )
     common_neutralization = NeutralizationPlan(
         neutralization_id="xs-core-controls-v1",
@@ -210,7 +216,7 @@ def default_hypothesis_registry() -> list[ResearchHypothesis]:
     return [
         ResearchHypothesis(
             hypothesis_id="defensive.low_vol_decomposition",
-            hypothesis_version=1,
+            hypothesis_version=2,
             research_thread_id="factor-v2.defensive.low-vol",
             title="Structural versus dynamic low-volatility effect",
             factor_family=ResearchFamily.DEFENSIVE_QUALITY,
@@ -229,11 +235,6 @@ def default_hypothesis_registry() -> list[ResearchHypothesis]:
                     dataset_name="silver/market_bar",
                     required_columns=("symbol", "timeframe", "ts", "close", "is_closed"),
                     min_history_days=730,
-                ),
-                DataRequirement(
-                    dataset_name="gold/expanded_universe_quality",
-                    required_columns=("symbol", "as_of_date"),
-                    min_history_days=30,
                 ),
                 DataRequirement(
                     dataset_name="gold/cost_bucket_daily",
@@ -279,7 +280,7 @@ def default_hypothesis_registry() -> list[ResearchHypothesis]:
         ),
         ResearchHypothesis(
             hypothesis_id="timing.market_breadth",
-            hypothesis_version=1,
+            hypothesis_version=2,
             research_thread_id="factor-v2.timing.market-breadth",
             title="Market breadth as absolute spot timing",
             factor_family=ResearchFamily.ABSOLUTE_TIMING_BREADTH,

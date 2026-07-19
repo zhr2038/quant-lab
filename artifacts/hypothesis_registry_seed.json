@@ -40,16 +40,6 @@
           ]
         },
         {
-          "dataset_name": "gold/expanded_universe_quality",
-          "min_history_days": 30,
-          "proxy_allowed": false,
-          "real_source_required": true,
-          "required_columns": [
-            "symbol",
-            "as_of_date"
-          ]
-        },
-        {
           "dataset_name": "gold/cost_bucket_daily",
           "min_history_days": 30,
           "proxy_allowed": false,
@@ -107,7 +97,7 @@
         }
       ],
       "hypothesis_id": "defensive.low_vol_decomposition",
-      "hypothesis_version": 1,
+      "hypothesis_version": 2,
       "known_overlap": [
         "low_vol_20d",
         "beta",
@@ -150,11 +140,11 @@
       ],
       "title": "Structural versus dynamic low-volatility effect",
       "universe_definition": {
-        "dynamic_source_dataset": "gold/expanded_universe_quality",
-        "exclusion_rule": "exclude stale, untradeable, or insufficient-history symbols",
-        "inclusion_rule": "quality-qualified spot symbols with closed 1H market bars",
+        "dynamic_source_dataset": "silver/market_bar",
+        "exclusion_rule": "exclude symbols without a complete prior-day point-in-time membership record; do not backfill membership from the current operational quality snapshot",
+        "inclusion_rule": "symbols with at least 18 positive-price closed 1H bars and positive quote volume during the immediately preceding complete UTC day",
         "symbols": [],
-        "universe_id": "spot-dynamic-quality-v1"
+        "universe_id": "spot-prior-closed-bars-v1"
       },
       "updated_at": "2026-07-19T04:02:00Z",
       "variant_budget": 2,
@@ -253,7 +243,7 @@
         }
       ],
       "hypothesis_id": "timing.market_breadth",
-      "hypothesis_version": 1,
+      "hypothesis_version": 2,
       "known_overlap": [
         "BTC trend",
         "market beta",
@@ -295,11 +285,11 @@
       ],
       "title": "Market breadth as absolute spot timing",
       "universe_definition": {
-        "dynamic_source_dataset": "gold/expanded_universe_quality",
-        "exclusion_rule": "exclude stale, untradeable, or insufficient-history symbols",
-        "inclusion_rule": "quality-qualified spot symbols with closed 1H market bars",
+        "dynamic_source_dataset": "silver/market_bar",
+        "exclusion_rule": "exclude symbols without a complete prior-day point-in-time membership record; do not backfill membership from the current operational quality snapshot",
+        "inclusion_rule": "symbols with at least 18 positive-price closed 1H bars and positive quote volume during the immediately preceding complete UTC day",
         "symbols": [],
-        "universe_id": "spot-dynamic-quality-v1"
+        "universe_id": "spot-prior-closed-bars-v1"
       },
       "updated_at": "2026-07-19T04:02:00Z",
       "variant_budget": 2,

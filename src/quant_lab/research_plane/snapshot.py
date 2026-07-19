@@ -282,7 +282,6 @@ ALPHA_FACTORY_COLUMN_PROJECTIONS: dict[str, tuple[str, ...]] = {
 
 FACTOR_RESEARCH_DATA_DATASETS = (
     MARKET_BAR_DATASET,
-    EXPANDED_QUALITY_DATASET,
     COST_BUCKET_DAILY_DATASET,
     MARKET_REGIME_DATASET,
 )
@@ -307,20 +306,6 @@ FACTOR_RESEARCH_COLUMN_PROJECTIONS: dict[str, tuple[str, ...]] = {
         "quote_volume",
         "is_closed",
         "ingest_ts",
-    ),
-    "gold/expanded_universe_quality": (
-        "as_of_date",
-        "created_at",
-        "symbol",
-        "symbol_quality_score",
-        "quality_score",
-        "status",
-        "reader_ready",
-        "market_data_ready",
-        "avg_spread_bps",
-        "spread_bps_p75",
-        "volume_24h_usdt",
-        "quote_volume_24h",
     ),
     "gold/cost_bucket_daily": (
         "as_of_date",
@@ -1011,13 +996,16 @@ def _select_factor_research_inputs(
             start - timedelta(hours=max_lookback),
             end + timedelta(hours=max_horizon),
         ),
-        "gold/expanded_universe_quality": (start, end),
         "gold/cost_bucket_daily": (start, end),
         "gold/market_regime_daily": (start, end),
     }
     required_paths = tuple(Path(name) for name in sorted(executable_requirements))
     index = _load_required_file_index(root, required_paths)
-    selected = _select_indexed_files(root, index, windows)
+    selected = [
+        item
+        for item in _select_indexed_files(root, index, windows)
+        if item[0] in executable_requirements
+    ]
     selected_by_dataset: dict[str, list[Path]] = {}
     for dataset, source, _min_ts, _max_ts in selected:
         selected_by_dataset.setdefault(dataset, []).append(source)

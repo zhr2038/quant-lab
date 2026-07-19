@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import hashlib
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
+import polars as pl
 import pytest
 
 from quant_lab.data.lake import read_parquet_dataset
@@ -18,8 +19,15 @@ from quant_lab.research.factor_research.registry import (
     RESEARCH_HYPOTHESIS_REGISTRY_DATASET,
     RESEARCH_TRIAL_LEDGER_DATASET,
     default_hypothesis_registry,
+    hypotheses_from_registry,
+    hypothesis_registry_digest,
+    hypothesis_registry_frame,
+    plan_factor_research_trials,
+    prepare_factor_research_control_state,
     publish_hypothesis_registry,
     publish_trial_ledger,
+    trial_ledger_digest,
+    trial_ledger_frame,
     validate_hypothesis_budget,
 )
 
@@ -143,3 +151,61 @@ def test_post_hoc_confirmatory_change_invalidates_blind() -> None:
     }
     with pytest.raises(ValueError, match="INVALIDATED"):
         ResearchTrial(**fields)
+
+
+def test_registry_round_trip_and_digest_are_canonical() -> None:
+    hypotheses = default_hypothesis_registry()
+    frame = hypothesis_registry_frame(reversed(hypotheses))
+    restored = hypotheses_from_registry(frame)
+    assert [item.hypothesis_id for item in restored] == sorted(
+        item.hypothesis_id for item in hypotheses
+    )
+    assert hypothesis_registry_digest(frame) == hypothesis_registry_digest(frame.reverse())
+
+
+def test_nonempty_registry_is_authoritative_and_not_reseeded() -> None:
+    hypothesis = default_hypothesis_registry()[0].model_copy(
+        update={"status": HypothesisStatus.RETIRED}
+    )
+    effective = prepare_factor_research_control_state(hypothesis_registry_frame([hypothesis]))
+    assert effective.height == 1
+    assert effective.item(0, "status") == "RETIRED"
+
+
+def test_trial_planner_is_bounded_deterministic_and_excludes_blocked_hypotheses() -> None:
+    hypotheses = default_hypothesis_registry()
+    kwargs = {
+        "start_date": date(2024, 7, 20),
+        "end_date": date(2026, 7, 19),
+        "code_commit": "a" * 40,
+        "data_snapshot_id": "factor-input-" + "b" * 24,
+        "nas_task_id": "factor-research-" + "c" * 24,
+    }
+    first = plan_factor_research_trials(hypotheses, **kwargs)
+    second = plan_factor_research_trials(reversed(hypotheses), **kwargs)
+    assert [item.trial_id for item in first] == [item.trial_id for item in second]
+    assert len(first) == 8
+    assert {item.hypothesis_id for item in first} == {
+        "defensive.low_vol_decomposition",
+        "timing.market_breadth",
+    }
+    assert all(item.trial_kind == TrialKind.CONFIRMATORY for item in first)
+    assert all(item.counts_toward_multiple_testing for item in first)
+    frame = trial_ledger_frame(first)
+    assert trial_ledger_digest(frame) == trial_ledger_digest(frame.reverse())
+
+
+def test_multiple_active_versions_fail_closed() -> None:
+    original = default_hypothesis_registry()[0]
+    second = original.model_copy(update={"hypothesis_version": 2})
+    with pytest.raises(ValueError, match="multiple active versions"):
+        prepare_factor_research_control_state(hypothesis_registry_frame([original, second]))
+
+
+def test_registry_rejects_incomplete_safety_columns() -> None:
+    frame = hypothesis_registry_frame(default_hypothesis_registry()).drop("live_order_effect")
+    with pytest.raises(ValueError, match="missing columns"):
+        hypotheses_from_registry(frame)
+
+    empty = prepare_factor_research_control_state(pl.DataFrame())
+    assert empty.height == 4

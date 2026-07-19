@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import shutil
 import uuid
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -22,30 +22,220 @@ from quant_lab.research.entry_quality import (
     latest_entry_quality_bundle_id,
     normalize_entry_quality_history_request,
 )
+from quant_lab.research.factor_research.contracts import (
+    SCHEMA_VERSION as FACTOR_RESEARCH_SCHEMA_VERSION,
+)
+from quant_lab.research.factor_research.registry import (
+    EXECUTABLE_HYPOTHESIS_STATUSES,
+    RESEARCH_HYPOTHESIS_REGISTRY_DATASET,
+    hypotheses_from_registry,
+    hypothesis_registry_digest,
+    plan_factor_research_trials,
+    prepare_factor_research_control_state,
+    publish_hypothesis_registry,
+    publish_trial_ledger,
+    trial_ledger_digest,
+    trial_ledger_frame,
+)
 from quant_lab.research.second_stage_alpha_factory import (
     SCHEMA_VERSION as SECOND_STAGE_ALPHA_FACTORY_SCHEMA_VERSION,
 )
 from quant_lab.research_plane.contracts import (
     ALPHA_FACTORY_TASK_TYPE,
     ENTRY_QUALITY_HISTORY_TASK_TYPE,
+    FACTOR_RESEARCH_TASK_TYPE,
     RESEARCH_TASK_SCHEMA,
     AlphaFactoryTask,
     AlphaFactoryTaskParameters,
     EntryQualityHistoryTaskParameters,
+    FactorResearchTask,
     ResearchTask,
     ResearchTaskState,
     ResearchTaskStatus,
 )
 from quant_lab.research_plane.signatures import model_content_sha256, sign_model
 from quant_lab.research_plane.snapshot import (
+    factor_research_source_identity,
     seal_alpha_factory_snapshot,
     seal_entry_quality_history_snapshot,
+    seal_factor_research_snapshot,
 )
 from quant_lab.research_plane.status import (
     ensure_research_queue_layout,
     find_research_task_directory,
     write_research_status,
 )
+
+
+def create_factor_research_task(
+    lake_root: str | Path,
+    queue_root: str | Path,
+    *,
+    as_of_date: date,
+    signing_key: Ed25519PrivateKey,
+    signature_key_id: str,
+    quant_lab_commit: str,
+    start_date: date | None = None,
+    end_date: date | None = None,
+    max_history_days: int = 730,
+    selected_v5_bundle_id: str | None = None,
+    lease_seconds: int = 4 * 60 * 60,
+    max_attempts: int = 3,
+) -> tuple[FactorResearchTask, ResearchTaskStatus]:
+    """Create one bounded, deterministic factor-research task from cloud control state."""
+    queue = ensure_research_queue_layout(queue_root)
+    root = Path(lake_root)
+    selected_bundle = selected_v5_bundle_id
+    if selected_bundle is None:
+        selected_bundle = latest_entry_quality_bundle_id(root)
+    selected_bundle = str(selected_bundle or "").strip()
+    if not selected_bundle:
+        raise RuntimeError("selected_v5_bundle_id_unavailable")
+    existing_registry = read_parquet_dataset(root / RESEARCH_HYPOTHESIS_REGISTRY_DATASET)
+    effective_registry = prepare_factor_research_control_state(existing_registry)
+    hypotheses = hypotheses_from_registry(effective_registry)
+    executable = [item for item in hypotheses if item.status in EXECUTABLE_HYPOTHESIS_STATUSES]
+    if not executable:
+        raise RuntimeError("no_approved_factor_research_hypotheses")
+    minimum_history_days = max(
+        requirement.min_history_days
+        for hypothesis in executable
+        for requirement in hypothesis.data_requirements
+    )
+    if max_history_days < minimum_history_days:
+        raise ValueError("factor_research_history_shorter_than_hypothesis_requirement")
+    max_horizon_hours = max(
+        horizon for hypothesis in executable for horizon in hypothesis.expected_horizons
+    )
+    latest_complete_end = as_of_date - timedelta(days=(max_horizon_hours + 23) // 24)
+    resolved_end = end_date or latest_complete_end
+    if resolved_end > latest_complete_end:
+        raise ValueError("factor_research_label_horizon_incomplete")
+    resolved_start = start_date or (resolved_end - timedelta(days=max_history_days - 1))
+    if resolved_end < resolved_start or (resolved_end - resolved_start).days >= max_history_days:
+        raise ValueError("factor_research_window_out_of_range")
+    registry_digest = hypothesis_registry_digest(effective_registry)
+    source_input_digest, data_snapshot_id = factor_research_source_identity(
+        root,
+        start_date=resolved_start,
+        end_date=resolved_end,
+        hypotheses=executable,
+    )
+    task_seed = model_content_sha256(
+        {
+            "schema_version": "quant_lab_factor_research_task_identity.v1",
+            "task_type": FACTOR_RESEARCH_TASK_TYPE,
+            "as_of_date": as_of_date.isoformat(),
+            "start_date": resolved_start.isoformat(),
+            "end_date": resolved_end.isoformat(),
+            "max_history_days": max_history_days,
+            "hypothesis_registry_digest": registry_digest,
+            "source_input_digest": source_input_digest,
+            "hypotheses": [
+                [item.hypothesis_id, item.hypothesis_version, item.definition_digest]
+                for item in executable
+            ],
+            "quant_lab_commit": quant_lab_commit,
+            "selected_v5_bundle_id": selected_bundle,
+        }
+    )[:24]
+    task_id = f"factor-research-{task_seed}"
+    trials = plan_factor_research_trials(
+        hypotheses,
+        start_date=resolved_start,
+        end_date=resolved_end,
+        code_commit=quant_lab_commit,
+        data_snapshot_id=data_snapshot_id,
+        nas_task_id=task_id,
+    )
+    ledger = trial_ledger_frame(trials)
+    ledger_digest = trial_ledger_digest(ledger)
+    snapshot = seal_factor_research_snapshot(
+        root,
+        queue,
+        as_of_date=as_of_date,
+        start_date=resolved_start,
+        end_date=resolved_end,
+        max_history_days=max_history_days,
+        selected_v5_bundle_id=selected_bundle,
+        effective_registry=effective_registry,
+        trial_ledger=ledger,
+        hypotheses=executable,
+        signing_key=signing_key,
+        signature_key_id=signature_key_id,
+        quant_lab_commit=quant_lab_commit,
+        expected_source_input_digest=source_input_digest,
+    )
+    if (
+        snapshot.hypothesis_registry_digest != registry_digest
+        or snapshot.trial_ledger_digest != ledger_digest
+        or snapshot.source_input_digest != source_input_digest
+    ):
+        raise RuntimeError("factor_research_snapshot_control_identity_mismatch")
+    existing = find_research_task_directory(queue, task_id)
+    if existing is not None:
+        task = FactorResearchTask.model_validate_json((existing / "task.json").read_text("utf-8"))
+        status = ResearchTaskStatus.model_validate_json(
+            (queue / "status" / f"{task_id}.json").read_text("utf-8")
+        )
+        return task, status
+
+    publish_hypothesis_registry(root, hypotheses)
+    publish_trial_ledger(root, trials)
+    requested_at = datetime.now(UTC)
+    provisional = FactorResearchTask(
+        task_id=task_id,
+        snapshot_id=snapshot.snapshot_id,
+        as_of_date=as_of_date,
+        start_date=resolved_start,
+        end_date=resolved_end,
+        max_history_days=max_history_days,
+        hypothesis_ids=snapshot.hypothesis_ids,
+        trial_ids=snapshot.trial_ids,
+        test_count=snapshot.test_count,
+        quant_lab_commit=quant_lab_commit,
+        factor_research_schema_version=FACTOR_RESEARCH_SCHEMA_VERSION,
+        hypothesis_registry_digest=registry_digest,
+        trial_ledger_digest=ledger_digest,
+        source_input_digest=source_input_digest,
+        selected_v5_bundle_id=selected_bundle,
+        snapshot_manifest_sha256=snapshot.manifest_sha256,
+        requested_at=requested_at,
+        lease_seconds=lease_seconds,
+        max_attempts=max_attempts,
+        signature_key_id=signature_key_id,
+        signature="pending",
+    )
+    task = provisional.model_copy(update={"signature": sign_model(provisional, signing_key)})
+    temporary = queue / "pending" / f".{task_id}.{uuid.uuid4().hex}.partial"
+    final = queue / "pending" / task_id
+    temporary.mkdir(parents=True, exist_ok=False)
+    try:
+        (temporary / "task.json").write_text(task.model_dump_json(indent=2), encoding="utf-8")
+        (temporary / "snapshot_id").write_text(snapshot.snapshot_id + "\n", encoding="ascii")
+        for path in (temporary / "task.json", temporary / "snapshot_id"):
+            path.chmod(0o660)
+        temporary.chmod(0o2770)
+        os.replace(temporary, final)
+    except Exception:
+        shutil.rmtree(temporary, ignore_errors=True)
+        raise
+    status = ResearchTaskStatus(
+        task_id=task_id,
+        snapshot_id=snapshot.snapshot_id,
+        task_type=FACTOR_RESEARCH_TASK_TYPE,
+        start_date=resolved_start,
+        end_date=resolved_end,
+        mode=FACTOR_RESEARCH_TASK_TYPE,
+        cost_mode="research_point_in_time_p75",
+        state=ResearchTaskState.PENDING,
+        requested_at=requested_at,
+        max_attempts=max_attempts,
+        input_bytes=snapshot.total_input_bytes,
+        import_status="waiting_for_nas",
+    )
+    write_research_status(queue, status)
+    return task, status
 
 
 def create_alpha_factory_task(
@@ -76,9 +266,7 @@ def create_alpha_factory_task(
         max_candidates=max_candidates,
     )
     root = Path(lake_root)
-    existing_registry = read_parquet_dataset(
-        root / ALPHA_FACTORY_TEMPLATE_REGISTRY_DATASET
-    )
+    existing_registry = read_parquet_dataset(root / ALPHA_FACTORY_TEMPLATE_REGISTRY_DATASET)
     effective_registry = prepare_alpha_factory_control_state(existing_registry)
     registry_digest = alpha_factory_template_registry_digest(effective_registry)
     snapshot = seal_alpha_factory_snapshot(
@@ -110,9 +298,7 @@ def create_alpha_factory_task(
     task_id = f"alpha-factory-{task_seed}"
     existing = find_research_task_directory(queue, task_id)
     if existing is not None:
-        task = AlphaFactoryTask.model_validate_json(
-            (existing / "task.json").read_text("utf-8")
-        )
+        task = AlphaFactoryTask.model_validate_json((existing / "task.json").read_text("utf-8"))
         status = ResearchTaskStatus.model_validate_json(
             (queue / "status" / f"{task_id}.json").read_text("utf-8")
         )

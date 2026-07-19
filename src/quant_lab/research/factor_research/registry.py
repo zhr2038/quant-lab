@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Iterable
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +15,7 @@ from quant_lab.research.factor_research.contracts import (
     CostModelPlan,
     DataRequirement,
     DiscoverySource,
+    FactorResearchDecision,
     FeatureRecipe,
     HypothesisStatus,
     NeutralizationPlan,
@@ -21,8 +24,12 @@ from quant_lab.research.factor_research.contracts import (
     ResearchHypothesis,
     ResearchTrial,
     StrategyFit,
+    TrialKind,
+    TrialStatus,
     UniverseDefinition,
+    build_trial_id,
     canonical_json,
+    utc_midnight,
 )
 
 RESEARCH_HYPOTHESIS_REGISTRY_DATASET = Path("gold") / "research_hypothesis_registry"
@@ -31,6 +38,18 @@ FACTOR_RETIREMENT_DATASET = Path("gold") / "factor_retirement"
 
 MAX_ACTIVE_HYPOTHESES_PER_FAMILY = 2
 MAX_ACTIVE_HYPOTHESES = 6
+MAX_TRIALS_PER_HYPOTHESIS = 9
+MAX_RESEARCH_TRIALS = 54
+
+EXECUTABLE_HYPOTHESIS_STATUSES = frozenset(
+    {
+        HypothesisStatus.APPROVED_FOR_RESEARCH,
+        HypothesisStatus.RUNNING,
+        HypothesisStatus.SIGNAL_VALID,
+        HypothesisStatus.PORTFOLIO_FAIL,
+        HypothesisStatus.PAPER_CANDIDATE,
+    }
+)
 
 HYPOTHESIS_REGISTRY_SCHEMA: dict[str, Any] = {
     "hypothesis_id": pl.Utf8,
@@ -327,14 +346,7 @@ def validate_hypothesis_budget(hypotheses: Iterable[ResearchHypothesis]) -> None
     keys = [(item.hypothesis_id, item.hypothesis_version) for item in materialized]
     if len(keys) != len(set(keys)):
         raise ValueError("duplicate hypothesis identity")
-    active_statuses = {
-        HypothesisStatus.APPROVED_FOR_RESEARCH,
-        HypothesisStatus.RUNNING,
-        HypothesisStatus.SIGNAL_VALID,
-        HypothesisStatus.PORTFOLIO_FAIL,
-        HypothesisStatus.PAPER_CANDIDATE,
-    }
-    active = [item for item in materialized if item.status in active_statuses]
+    active = [item for item in materialized if item.status in EXECUTABLE_HYPOTHESIS_STATUSES]
     if len(active) > MAX_ACTIVE_HYPOTHESES:
         raise ValueError("RESEARCH_BUDGET_EXCEEDED:active_hypotheses")
     family_counts: dict[ResearchFamily, int] = {}
@@ -343,6 +355,214 @@ def validate_hypothesis_budget(hypotheses: Iterable[ResearchHypothesis]) -> None
     exceeded = [family.value for family, count in family_counts.items() if count > 2]
     if exceeded:
         raise ValueError(f"RESEARCH_BUDGET_EXCEEDED:families:{','.join(sorted(exceeded))}")
+
+
+def hypothesis_registry_frame(hypotheses: Iterable[ResearchHypothesis]) -> pl.DataFrame:
+    """Return the canonical, schema-locked representation of the control registry."""
+    materialized = list(hypotheses)
+    validate_hypothesis_budget(materialized)
+    return _schema_frame(
+        [_hypothesis_row(item) for item in materialized],
+        HYPOTHESIS_REGISTRY_SCHEMA,
+    ).sort(["hypothesis_id", "hypothesis_version"])
+
+
+def hypotheses_from_registry(frame: pl.DataFrame) -> list[ResearchHypothesis]:
+    """Parse the authoritative Gold registry without inventing missing control fields."""
+    if frame.is_empty():
+        return []
+    missing = sorted(set(HYPOTHESIS_REGISTRY_SCHEMA) - set(frame.columns))
+    if missing:
+        raise ValueError(f"hypothesis registry missing columns: {','.join(missing)}")
+    hypotheses: list[ResearchHypothesis] = []
+    for row in frame.select(list(HYPOTHESIS_REGISTRY_SCHEMA)).to_dicts():
+        if (
+            row.get("research_only") is not True
+            or row.get("live_order_effect") != "none"
+            or row.get("automatic_promotion") is not False
+            or float(row.get("max_live_notional_usdt") or 0.0) != 0.0
+        ):
+            raise ValueError("hypothesis registry violates research-only safety boundary")
+        hypothesis = ResearchHypothesis(
+            hypothesis_id=row["hypothesis_id"],
+            hypothesis_version=row["hypothesis_version"],
+            research_thread_id=row["research_thread_id"],
+            title=row["title"],
+            factor_family=row["factor_family"],
+            economic_mechanism=row["economic_mechanism"],
+            who_pays_the_edge=row["who_pays_the_edge"],
+            why_edge_may_persist=row["why_edge_may_persist"],
+            why_edge_may_decay=row["why_edge_may_decay"],
+            strategy_fit=_json_value(row, "strategy_fit_json"),
+            data_requirements=_json_value(row, "data_requirements_json"),
+            available_data_confirmed=row["available_data_confirmed"],
+            blocked_missing_data=_json_value(row, "blocked_missing_data_json"),
+            feature_recipes=_json_value(row, "feature_recipes_json"),
+            expected_direction=row["expected_direction"],
+            expected_horizons=_json_value(row, "expected_horizons_json"),
+            allowed_variants=_json_value(row, "allowed_variants_json"),
+            variant_budget=row["variant_budget"],
+            universe_definition=_json_value(row, "universe_definition_json"),
+            neutralization_plan=_json_value(row, "neutralization_plan_json"),
+            benchmark_plan=_json_value(row, "benchmark_plan_json"),
+            cost_model=_json_value(row, "cost_model_json"),
+            falsification_conditions=_json_value(row, "falsification_conditions_json"),
+            stopping_conditions=_json_value(row, "stopping_conditions_json"),
+            success_conditions=_json_value(row, "success_conditions_json"),
+            known_overlap=_json_value(row, "known_overlap_json"),
+            related_hypotheses=_json_value(row, "related_hypotheses_json"),
+            related_existing_factors=_json_value(row, "related_existing_factors_json"),
+            discovery_source=row["discovery_source"],
+            status=row["status"],
+            approved_by=row.get("approved_by"),
+            approved_at=row.get("approved_at"),
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+        )
+        if hypothesis.definition_digest != row["definition_digest"]:
+            raise ValueError("hypothesis registry definition digest mismatch")
+        hypotheses.append(hypothesis)
+    validate_hypothesis_budget(hypotheses)
+    return hypotheses
+
+
+def prepare_factor_research_control_state(existing: pl.DataFrame) -> pl.DataFrame:
+    """Seed defaults only on an empty lake; otherwise preserve operator control state."""
+    if existing.is_empty():
+        return hypothesis_registry_frame(default_hypothesis_registry())
+    hypotheses = hypotheses_from_registry(existing)
+    active_versions: dict[str, int] = {}
+    for item in hypotheses:
+        if item.status not in EXECUTABLE_HYPOTHESIS_STATUSES:
+            continue
+        if item.hypothesis_id in active_versions:
+            raise ValueError("multiple active versions for one research hypothesis")
+        active_versions[item.hypothesis_id] = item.hypothesis_version
+    return hypothesis_registry_frame(hypotheses)
+
+
+def hypothesis_registry_digest(frame: pl.DataFrame) -> str:
+    canonical = prepare_factor_research_control_state(frame)
+    return _frame_digest(canonical, sort_by=["hypothesis_id", "hypothesis_version"])
+
+
+def trial_ledger_frame(trials: Iterable[ResearchTrial]) -> pl.DataFrame:
+    materialized = list(trials)
+    ids = [item.trial_id for item in materialized]
+    if len(ids) != len(set(ids)):
+        raise ValueError("duplicate trial_id")
+    if len(materialized) > MAX_RESEARCH_TRIALS:
+        raise ValueError("RESEARCH_BUDGET_EXCEEDED:trials")
+    return _schema_frame([_trial_row(item) for item in materialized], TRIAL_LEDGER_SCHEMA).sort(
+        "trial_id"
+    )
+
+
+def trial_ledger_digest(frame: pl.DataFrame) -> str:
+    if frame.is_empty():
+        raise ValueError("factor research trial ledger must not be empty")
+    missing = sorted(set(TRIAL_LEDGER_SCHEMA) - set(frame.columns))
+    if missing:
+        raise ValueError(f"trial ledger missing columns: {','.join(missing)}")
+    return _frame_digest(frame.select(list(TRIAL_LEDGER_SCHEMA)), sort_by=["trial_id"])
+
+
+def plan_factor_research_trials(
+    hypotheses: Iterable[ResearchHypothesis],
+    *,
+    start_date: date,
+    end_date: date,
+    code_commit: str,
+    data_snapshot_id: str,
+    nas_task_id: str,
+) -> list[ResearchTrial]:
+    """Pre-register the bounded variant/horizon grid before NAS sees any outcomes."""
+    materialized = list(hypotheses)
+    validate_hypothesis_budget(materialized)
+    executable = [item for item in materialized if item.status in EXECUTABLE_HYPOTHESIS_STATUSES]
+    if not executable:
+        raise ValueError("no approved factor research hypotheses")
+    locked_at = utc_midnight(end_date)
+    split_definition = (
+        f"chronological_v1:start={start_date.isoformat()};end={end_date.isoformat()};"
+        "research=60%;validation=20%;blind=20%;embargo=max_horizon"
+    )
+    blind_period_id = f"blind-{start_date.isoformat()}-{end_date.isoformat()}"
+    trials: list[ResearchTrial] = []
+    for hypothesis in sorted(
+        executable, key=lambda item: (item.hypothesis_id, item.hypothesis_version)
+    ):
+        if not hypothesis.available_data_confirmed or hypothesis.blocked_missing_data:
+            raise ValueError(f"hypothesis data blocked: {hypothesis.hypothesis_id}")
+        if hypothesis.discovery_source == DiscoverySource.AI_DRAFT:
+            raise ValueError("AI draft cannot be scheduled as factor research")
+        recipes = {item.recipe_id: item for item in hypothesis.feature_recipes}
+        selected_recipes = [recipes[item] for item in hypothesis.allowed_variants]
+        if len(selected_recipes) * len(hypothesis.expected_horizons) > MAX_TRIALS_PER_HYPOTHESIS:
+            raise ValueError("RESEARCH_BUDGET_EXCEEDED:trials_per_hypothesis")
+        for recipe in selected_recipes:
+            feature_recipe_hash = _json_digest(recipe.model_dump(mode="json"))
+            lookback = max(
+                [int(item.value) for item in recipe.parameters if item.value.isdigit()] or [1]
+            )
+            portfolio_rule_id = (
+                "long_only_market_timing_equal_weight_v1"
+                if StrategyFit.ABSOLUTE_TIMING in hypothesis.strategy_fit
+                else "long_only_top3_equal_weight_v1"
+            )
+            for horizon in hypothesis.expected_horizons:
+                formula_payload = {
+                    "hypothesis_definition_digest": hypothesis.definition_digest,
+                    "recipe": recipe.model_dump(mode="json"),
+                    "direction": hypothesis.expected_direction,
+                }
+                factor_formula_hash = _json_digest(formula_payload)
+                test_family_id = (
+                    f"{hypothesis.factor_family.value.lower()}."
+                    f"{hypothesis.hypothesis_id}.v{hypothesis.hypothesis_version}"
+                )
+                seed_payload = {
+                    "hypothesis_id": hypothesis.hypothesis_id,
+                    "recipe_id": recipe.recipe_id,
+                    "horizon": horizon,
+                    "data_snapshot_id": data_snapshot_id,
+                }
+                random_seed = int(_json_digest(seed_payload)[:8], 16) % (2**31)
+                identity = {
+                    "hypothesis_id": hypothesis.hypothesis_id,
+                    "hypothesis_version": hypothesis.hypothesis_version,
+                    "test_family_id": test_family_id,
+                    "factor_formula_hash": factor_formula_hash,
+                    "feature_recipe_hash": feature_recipe_hash,
+                    "direction": hypothesis.expected_direction,
+                    "lookback": lookback,
+                    "horizon": horizon,
+                    "universe_id": hypothesis.universe_definition.universe_id,
+                    "neutralization_id": hypothesis.neutralization_plan.neutralization_id,
+                    "cost_model_id": hypothesis.cost_model.cost_model_id,
+                    "portfolio_rule_id": portfolio_rule_id,
+                    "split_definition": split_definition,
+                    "blind_period_id": blind_period_id,
+                    "random_seed": random_seed,
+                    "code_commit": code_commit,
+                    "data_snapshot_id": data_snapshot_id,
+                }
+                trial_id = build_trial_id(**identity)
+                trials.append(
+                    ResearchTrial(
+                        trial_id=trial_id,
+                        **identity,
+                        nas_task_id=nas_task_id,
+                        trial_kind=TrialKind.CONFIRMATORY,
+                        parameter_locked_at=locked_at,
+                        submitted_at=locked_at,
+                        status=TrialStatus.SUBMITTED,
+                        decision=FactorResearchDecision.INCONCLUSIVE,
+                    )
+                )
+    if len(trials) > MAX_RESEARCH_TRIALS:
+        raise ValueError("RESEARCH_BUDGET_EXCEEDED:trials")
+    return trials
 
 
 def publish_hypothesis_registry(
@@ -398,15 +618,9 @@ def factor_retirement_registry_frame(*, recorded_at: datetime | None = None) -> 
         _retirement(
             "production_20d_momentum", "momentum", "RETIRED", "audit_signal_invalid", "FAIL"
         ),
-        _retirement(
-            "vol_adjusted_momentum", "momentum", "RETIRED", "audit_signal_invalid", "FAIL"
-        ),
-        _retirement(
-            "volume_dry_reversal", "reversal", "RETIRED", "audit_signal_invalid", "FAIL"
-        ),
-        _retirement(
-            "pullback_uptrend", "timing", "RETIRED", "audit_signal_invalid", "FAIL"
-        ),
+        _retirement("vol_adjusted_momentum", "momentum", "RETIRED", "audit_signal_invalid", "FAIL"),
+        _retirement("volume_dry_reversal", "reversal", "RETIRED", "audit_signal_invalid", "FAIL"),
+        _retirement("pullback_uptrend", "timing", "RETIRED", "audit_signal_invalid", "FAIL"),
         _retirement(
             "failed_alpha158_overlays",
             "legacy_overlay",
@@ -636,3 +850,23 @@ def _schema_frame(rows: list[dict[str, Any]], schema: dict[str, Any]) -> pl.Data
         if column not in frame.columns:
             frame = frame.with_columns(pl.lit(None, dtype=dtype).alias(column))
     return frame.select(list(schema)).cast(schema, strict=False)
+
+
+def _json_value(row: dict[str, Any], column: str) -> Any:
+    value = row.get(column)
+    if not isinstance(value, str):
+        raise ValueError(f"hypothesis registry {column} must contain canonical JSON")
+    try:
+        return json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"hypothesis registry {column} is invalid JSON") from exc
+
+
+def _json_digest(value: Any) -> str:
+    return hashlib.sha256(canonical_json(value).encode("utf-8")).hexdigest()
+
+
+def _frame_digest(frame: pl.DataFrame, *, sort_by: list[str]) -> str:
+    ordered = frame.sort(sort_by)
+    rows = ordered.to_dicts()
+    return _json_digest(rows)

@@ -32,6 +32,18 @@ from quant_lab.research.entry_quality import (
     V5_ORDER_LIFECYCLE_DATASET,
     V5_TRADE_EVENT_DATASET,
 )
+from quant_lab.research.factor_research.contracts import (
+    SCHEMA_VERSION as FACTOR_RESEARCH_SCHEMA_VERSION,
+)
+from quant_lab.research.factor_research.contracts import ResearchHypothesis
+from quant_lab.research.factor_research.registry import (
+    HYPOTHESIS_REGISTRY_SCHEMA,
+    RESEARCH_HYPOTHESIS_REGISTRY_DATASET,
+    RESEARCH_TRIAL_LEDGER_DATASET,
+    TRIAL_LEDGER_SCHEMA,
+    hypothesis_registry_digest,
+    trial_ledger_digest,
+)
 from quant_lab.research.second_stage_alpha_factory import (
     BTC_EXIT_REVIEW_DATASET,
     DEFAULT_HORIZONS,
@@ -50,8 +62,10 @@ from quant_lab.research.strategy_evidence import (
 )
 from quant_lab.research_plane.contracts import (
     ALPHA_FACTORY_SNAPSHOT_SCHEMA,
+    FACTOR_RESEARCH_SNAPSHOT_SCHEMA,
     RESEARCH_SNAPSHOT_SCHEMA,
     AlphaFactorySnapshotManifest,
+    FactorResearchSnapshotManifest,
     ResearchDatasetReference,
     ResearchSnapshotManifest,
 )
@@ -250,6 +264,76 @@ ALPHA_FACTORY_COLUMN_PROJECTIONS: dict[str, tuple[str, ...]] = {
     "gold/alpha_factory_template_registry": tuple(TEMPLATE_REGISTRY_SCHEMA),
 }
 
+FACTOR_RESEARCH_DATA_DATASETS = (
+    MARKET_BAR_DATASET,
+    EXPANDED_QUALITY_DATASET,
+    COST_BUCKET_DAILY_DATASET,
+    MARKET_REGIME_DATASET,
+)
+
+FACTOR_RESEARCH_INPUT_DATASETS = (
+    *FACTOR_RESEARCH_DATA_DATASETS,
+    RESEARCH_HYPOTHESIS_REGISTRY_DATASET,
+    RESEARCH_TRIAL_LEDGER_DATASET,
+)
+
+FACTOR_RESEARCH_COLUMN_PROJECTIONS: dict[str, tuple[str, ...]] = {
+    "silver/market_bar": (
+        "symbol",
+        "timeframe",
+        "ts",
+        "ts_utc",
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "quote_volume",
+        "is_closed",
+        "ingest_ts",
+    ),
+    "gold/expanded_universe_quality": (
+        "as_of_date",
+        "created_at",
+        "symbol",
+        "symbol_quality_score",
+        "quality_score",
+        "status",
+        "reader_ready",
+        "market_data_ready",
+        "avg_spread_bps",
+        "spread_bps_p75",
+        "volume_24h_usdt",
+        "quote_volume_24h",
+    ),
+    "gold/cost_bucket_daily": (
+        "as_of_date",
+        "day",
+        "created_at",
+        "symbol",
+        "roundtrip_all_in_cost_bps",
+        "selected_total_cost_bps",
+        "total_cost_bps_p75",
+        "cost_bps",
+        "cost_source",
+        "source",
+        "fallback_level",
+    ),
+    "gold/market_regime_daily": (
+        "as_of_date",
+        "day",
+        "as_of_ts",
+        "created_at",
+        "ts",
+        "date",
+        "symbol",
+        "current_regime",
+        "regime_state",
+        "market_regime",
+        "state",
+    ),
+}
+
 SNAPSHOT_TIME_COLUMNS = {
     str(V5_TRADE_EVENT_DATASET).replace("\\", "/"): ("ts_utc", "ts", "entry_ts"),
     str(V5_ORDER_LIFECYCLE_DATASET).replace("\\", "/"): (
@@ -258,19 +342,21 @@ SNAPSHOT_TIME_COLUMNS = {
         "submit_ts",
         "decision_ts",
     ),
-    str(MARKET_BAR_DATASET).replace("\\", "/"): ("ts",),
+    str(MARKET_BAR_DATASET).replace("\\", "/"): ("ts", "ts_utc"),
     str(V5_CANDIDATE_EVENT_DATASET).replace("\\", "/"): ("ts_utc", "ts"),
     str(V5_CANDIDATE_LABEL_DATASET).replace("\\", "/"): (
         "decision_ts",
         "ts_utc",
     ),
-    str(COST_BUCKET_DAILY_DATASET).replace("\\", "/"): ("as_of_date",),
+    str(COST_BUCKET_DAILY_DATASET).replace("\\", "/"): ("as_of_date", "day", "created_at"),
     str(EXPANDED_QUALITY_DATASET).replace("\\", "/"): ("as_of_date", "created_at"),
     str(MARKET_REGIME_DATASET).replace("\\", "/"): (
         "as_of_ts",
         "created_at",
         "ts",
         "as_of_date",
+        "day",
+        "date",
     ),
     str(BTC_EXIT_REVIEW_DATASET).replace("\\", "/"): (
         "entry_ts",
@@ -612,6 +698,158 @@ def seal_alpha_factory_snapshot(
         raise
 
 
+def factor_research_source_identity(
+    lake_root: str | Path,
+    *,
+    start_date: date,
+    end_date: date,
+    hypotheses: list[ResearchHypothesis],
+) -> tuple[str, str]:
+    """Return the immutable source digest and provisional data-snapshot identity."""
+    root = Path(lake_root).resolve()
+    selected, windows, _symbols = _select_factor_research_inputs(
+        root,
+        start_date=start_date,
+        end_date=end_date,
+        hypotheses=hypotheses,
+    )
+    digest = _factor_research_source_digest(root, selected=selected, windows=windows)
+    return digest, f"factor-input-{digest[:24]}"
+
+
+def seal_factor_research_snapshot(
+    lake_root: str | Path,
+    queue_root: str | Path,
+    *,
+    as_of_date: date,
+    start_date: date,
+    end_date: date,
+    max_history_days: int,
+    selected_v5_bundle_id: str,
+    effective_registry: pl.DataFrame,
+    trial_ledger: pl.DataFrame,
+    hypotheses: list[ResearchHypothesis],
+    signing_key: Ed25519PrivateKey,
+    signature_key_id: str,
+    quant_lab_commit: str | None = None,
+    expected_source_input_digest: str | None = None,
+    max_input_bytes: int = 25 * 1024**3,
+    max_input_rows: int = 100_000_000,
+) -> FactorResearchSnapshotManifest:
+    """Seal bounded point-in-time inputs and pre-registered trials for NAS research."""
+    if end_date < start_date or (end_date - start_date).days > max_history_days:
+        raise ValueError("factor_research_window_out_of_range")
+    if not hypotheses:
+        raise ValueError("factor_research_hypotheses_required")
+    root = Path(lake_root).resolve()
+    queue = ensure_research_queue_layout(queue_root)
+    commit = quant_lab_commit or _git_commit()
+    registry_digest = hypothesis_registry_digest(effective_registry)
+    ledger_digest = trial_ledger_digest(trial_ledger)
+    selected, windows, symbols = _select_factor_research_inputs(
+        root,
+        start_date=start_date,
+        end_date=end_date,
+        hypotheses=hypotheses,
+    )
+    source_input_digest = _factor_research_source_digest(root, selected=selected, windows=windows)
+    if expected_source_input_digest and source_input_digest != expected_source_input_digest:
+        raise RuntimeError("factor_research_source_identity_changed")
+    hypothesis_ids = tuple(sorted(item.hypothesis_id for item in hypotheses))
+    trial_ids = tuple(sorted(str(value) for value in trial_ledger.get_column("trial_id").to_list()))
+    snapshot_seed = model_content_sha256(
+        {
+            "schema_version": FACTOR_RESEARCH_SNAPSHOT_SCHEMA,
+            "commit": commit,
+            "as_of_date": as_of_date.isoformat(),
+            "start_date": start_date.isoformat(),
+            "end_date": end_date.isoformat(),
+            "max_history_days": max_history_days,
+            "selected_v5_bundle_id": selected_v5_bundle_id,
+            "factor_research_schema_version": FACTOR_RESEARCH_SCHEMA_VERSION,
+            "hypothesis_registry_digest": registry_digest,
+            "trial_ledger_digest": ledger_digest,
+            "source_input_digest": source_input_digest,
+            "hypothesis_ids": hypothesis_ids,
+            "trial_ids": trial_ids,
+            "symbols": symbols,
+            "column_projections": FACTOR_RESEARCH_COLUMN_PROJECTIONS,
+        }
+    )[:24]
+    snapshot_id = f"factor-research-{snapshot_seed}"
+    final_root = queue / "snapshots" / snapshot_id
+    if (final_root / "SEALED").is_file() and not (final_root / "FILES_RELEASED.json").is_file():
+        manifest = FactorResearchSnapshotManifest.model_validate_json(
+            (final_root / "manifest.json").read_text(encoding="utf-8")
+        )
+        if (
+            manifest.source_input_digest != source_input_digest
+            or manifest.hypothesis_registry_digest != registry_digest
+            or manifest.trial_ledger_digest != ledger_digest
+        ):
+            raise RuntimeError("factor_research_snapshot_identity_mismatch")
+        verify_factor_research_snapshot_manifest(manifest, final_root=final_root)
+        return manifest
+
+    temporary = queue / "snapshots" / f".sealing.{uuid.uuid4().hex}.partial"
+    temporary.mkdir(parents=True, exist_ok=False)
+    try:
+        references = _materialize_factor_research_snapshot_files(
+            root,
+            temporary,
+            selected=selected,
+            windows=windows,
+            symbols=symbols,
+            effective_registry=effective_registry,
+            trial_ledger=trial_ledger,
+        )
+        total_bytes = sum(item.size_bytes for item in references)
+        total_rows = sum(item.row_count for item in references)
+        if total_bytes > max_input_bytes:
+            raise RuntimeError("factor_research_snapshot_input_size_limit_exceeded")
+        if total_rows > max_input_rows:
+            raise RuntimeError("factor_research_snapshot_input_row_limit_exceeded")
+        if final_root.exists():
+            raise RuntimeError("research_snapshot_destination_incomplete")
+        provisional = FactorResearchSnapshotManifest(
+            snapshot_id=snapshot_id,
+            generated_at=datetime.now(UTC),
+            quant_lab_commit=commit,
+            selected_v5_bundle_id=selected_v5_bundle_id,
+            factor_research_schema_version=FACTOR_RESEARCH_SCHEMA_VERSION,
+            hypothesis_registry_digest=registry_digest,
+            trial_ledger_digest=ledger_digest,
+            source_input_digest=source_input_digest,
+            as_of_date=as_of_date,
+            start_date=start_date,
+            end_date=end_date,
+            max_history_days=max_history_days,
+            hypothesis_ids=hypothesis_ids,
+            trial_ids=trial_ids,
+            test_count=len(trial_ids),
+            datasets=[str(path).replace("\\", "/") for path in FACTOR_RESEARCH_INPUT_DATASETS],
+            files=references,
+            total_input_bytes=total_bytes,
+            total_input_rows=total_rows,
+            manifest_sha256="0" * 64,
+            signature_key_id=signature_key_id,
+            signature="pending",
+        )
+        digest = model_content_sha256(provisional, blank_fields=("manifest_sha256",))
+        unsigned = provisional.model_copy(update={"manifest_sha256": digest})
+        manifest = unsigned.model_copy(update={"signature": sign_model(unsigned, signing_key)})
+        (temporary / "manifest.json").write_text(
+            manifest.model_dump_json(indent=2), encoding="utf-8"
+        )
+        (temporary / "SEALED").write_text(digest + "\n", encoding="ascii")
+        _make_snapshot_read_only(temporary)
+        os.replace(temporary, final_root)
+        return manifest
+    except Exception:
+        shutil.rmtree(temporary, ignore_errors=True)
+        raise
+
+
 def verify_snapshot_manifest(
     manifest: ResearchSnapshotManifest,
     *,
@@ -649,9 +887,7 @@ def verify_alpha_factory_snapshot_manifest(
     expected = model_content_sha256(manifest, blank_fields=("manifest_sha256",))
     if expected != manifest.manifest_sha256:
         raise ValueError("alpha_factory_snapshot_manifest_digest_mismatch")
-    expected_datasets = {
-        str(path).replace("\\", "/") for path in ALPHA_FACTORY_INPUT_DATASETS
-    }
+    expected_datasets = {str(path).replace("\\", "/") for path in ALPHA_FACTORY_INPUT_DATASETS}
     if set(manifest.datasets) != expected_datasets:
         raise ValueError("alpha_factory_snapshot_dataset_set_mismatch")
     if final_root is None:
@@ -671,6 +907,238 @@ def verify_alpha_factory_snapshot_manifest(
             raise ValueError("alpha_factory_snapshot_size_mismatch")
         if sha256_file(candidate) != reference.sha256:
             raise ValueError("alpha_factory_snapshot_sha256_mismatch")
+
+
+def verify_factor_research_snapshot_manifest(
+    manifest: FactorResearchSnapshotManifest,
+    *,
+    final_root: Path | None = None,
+) -> None:
+    expected = model_content_sha256(manifest, blank_fields=("manifest_sha256",))
+    if expected != manifest.manifest_sha256:
+        raise ValueError("factor_research_snapshot_manifest_digest_mismatch")
+    expected_datasets = {str(path).replace("\\", "/") for path in FACTOR_RESEARCH_INPUT_DATASETS}
+    if set(manifest.datasets) != expected_datasets:
+        raise ValueError("factor_research_snapshot_dataset_set_mismatch")
+    if final_root is None:
+        return
+    root = final_root.resolve(strict=True)
+    seal = (root / "SEALED").read_text(encoding="ascii").strip()
+    if seal != manifest.manifest_sha256:
+        raise ValueError("factor_research_snapshot_seal_mismatch")
+    for reference in manifest.files:
+        unresolved = root / "files" / reference.relative_path
+        if _path_has_symlink(root, unresolved):
+            raise ValueError("factor_research_snapshot_path_escape")
+        candidate = unresolved.resolve(strict=True)
+        if root not in candidate.parents:
+            raise ValueError("factor_research_snapshot_path_escape")
+        if candidate.stat().st_size != reference.size_bytes:
+            raise ValueError("factor_research_snapshot_size_mismatch")
+        if sha256_file(candidate) != reference.sha256:
+            raise ValueError("factor_research_snapshot_sha256_mismatch")
+
+
+def _select_factor_research_inputs(
+    root: Path,
+    *,
+    start_date: date,
+    end_date: date,
+    hypotheses: list[ResearchHypothesis],
+) -> tuple[
+    list[tuple[str, Path, datetime | None, datetime | None]],
+    dict[str, tuple[datetime, datetime]],
+    list[str],
+]:
+    if end_date < start_date:
+        raise ValueError("factor_research_end_before_start")
+    executable_requirements: dict[str, set[str]] = {}
+    max_lookback = 1
+    max_horizon = 1
+    for hypothesis in hypotheses:
+        if not hypothesis.available_data_confirmed or hypothesis.blocked_missing_data:
+            raise ValueError(f"factor_research_hypothesis_data_blocked:{hypothesis.hypothesis_id}")
+        max_horizon = max(max_horizon, *hypothesis.expected_horizons)
+        for recipe in hypothesis.feature_recipes:
+            numeric = [int(item.value) for item in recipe.parameters if item.value.isdigit()]
+            if numeric:
+                max_lookback = max(max_lookback, *numeric)
+        for requirement in hypothesis.data_requirements:
+            if requirement.dataset_name not in FACTOR_RESEARCH_COLUMN_PROJECTIONS:
+                raise ValueError(f"factor_research_unsupported_dataset:{requirement.dataset_name}")
+            executable_requirements.setdefault(requirement.dataset_name, set()).update(
+                requirement.required_columns
+            )
+    start = datetime.combine(start_date, time.min, tzinfo=UTC)
+    end = datetime.combine(end_date + timedelta(days=1), time.min, tzinfo=UTC)
+    windows = {
+        "silver/market_bar": (
+            start - timedelta(hours=max_lookback),
+            end + timedelta(hours=max_horizon),
+        ),
+        "gold/expanded_universe_quality": (start, end),
+        "gold/cost_bucket_daily": (start, end),
+        "gold/market_regime_daily": (start, end),
+    }
+    required_paths = tuple(Path(name) for name in sorted(executable_requirements))
+    index = _load_required_file_index(root, required_paths)
+    selected = _select_indexed_files(root, index, windows)
+    selected_by_dataset: dict[str, list[Path]] = {}
+    for dataset, source, _min_ts, _max_ts in selected:
+        selected_by_dataset.setdefault(dataset, []).append(source)
+    for dataset, required_columns in executable_requirements.items():
+        sources = selected_by_dataset.get(dataset, [])
+        if not sources:
+            raise ValueError(f"factor_research_required_dataset_empty:{dataset}")
+        for source in sources:
+            schema = pl.read_parquet_schema(source)
+            missing = sorted(required_columns - set(schema))
+            if missing:
+                raise ValueError(
+                    f"factor_research_required_columns_missing:{dataset}:{','.join(missing)}"
+                )
+    symbols = _alpha_required_symbols(selected)
+    return selected, windows, symbols
+
+
+def _factor_research_source_digest(
+    root: Path,
+    *,
+    selected: list[tuple[str, Path, datetime | None, datetime | None]],
+    windows: dict[str, tuple[datetime, datetime]],
+) -> str:
+    return model_content_sha256(
+        {
+            "schema_version": "quant_lab.factor_research_source_identity.v1",
+            "windows": {
+                dataset: [start.isoformat(), end.isoformat()]
+                for dataset, (start, end) in sorted(windows.items())
+            },
+            "column_projections": FACTOR_RESEARCH_COLUMN_PROJECTIONS,
+            "files": _alpha_source_identities(root, selected),
+        }
+    )
+
+
+def _materialize_factor_research_snapshot_files(
+    root: Path,
+    temporary: Path,
+    *,
+    selected: list[tuple[str, Path, datetime | None, datetime | None]],
+    windows: dict[str, tuple[datetime, datetime]],
+    symbols: list[str],
+    effective_registry: pl.DataFrame,
+    trial_ledger: pl.DataFrame,
+) -> list[ResearchDatasetReference]:
+    references: list[ResearchDatasetReference] = []
+    for ordinal, (dataset, indexed_source, _min_ts, _max_ts) in enumerate(selected):
+        if indexed_source.is_symlink():
+            raise ValueError("snapshot_source_path_escape")
+        source = indexed_source.resolve(strict=True)
+        if root not in source.parents:
+            raise ValueError("snapshot_source_path_escape")
+        source_relative = str(source.relative_to(root)).replace("\\", "/")
+        before = source.stat()
+        frame = _project_factor_research_source(
+            source,
+            dataset=dataset,
+            window=windows[dataset],
+            symbols=symbols,
+        )
+        after = source.stat()
+        if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+            raise RuntimeError("snapshot_source_changed_while_sealing")
+        if frame.is_empty():
+            continue
+        part_id = model_content_sha256(
+            {"source": source_relative, "ordinal": ordinal, "mtime_ns": before.st_mtime_ns}
+        )[:16]
+        relative_path = f"{dataset}/part-{part_id}.parquet"
+        destination = temporary / "files" / relative_path
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        frame.write_parquet(destination, compression="zstd")
+        destination.chmod(0o440)
+        min_ts, max_ts = _dataset_file_time_bounds(destination, dataset)
+        stat = destination.stat()
+        references.append(
+            ResearchDatasetReference(
+                dataset_name=dataset,
+                source_relative_path=source_relative,
+                relative_path=relative_path,
+                sha256=sha256_file(destination),
+                size_bytes=stat.st_size,
+                row_count=frame.height,
+                mtime_ns=before.st_mtime_ns,
+                min_ts=min_ts,
+                max_ts=max_ts,
+            )
+        )
+    materialized_datasets = {item.dataset_name for item in references}
+    required_data = {str(path).replace("\\", "/") for path in FACTOR_RESEARCH_DATA_DATASETS}
+    missing_data = sorted(required_data - materialized_datasets)
+    if missing_data:
+        raise ValueError(f"factor_research_projected_dataset_empty:{','.join(missing_data)}")
+    for dataset_path, frame, schema, name in (
+        (
+            RESEARCH_HYPOTHESIS_REGISTRY_DATASET,
+            effective_registry,
+            HYPOTHESIS_REGISTRY_SCHEMA,
+            "authoritative-control",
+        ),
+        (RESEARCH_TRIAL_LEDGER_DATASET, trial_ledger, TRIAL_LEDGER_SCHEMA, "pre-registered"),
+    ):
+        dataset = str(dataset_path).replace("\\", "/")
+        relative_path = f"{dataset}/part-{name}.parquet"
+        destination = temporary / "files" / relative_path
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        frame.select(list(schema)).write_parquet(destination, compression="zstd")
+        destination.chmod(0o440)
+        stat = destination.stat()
+        references.append(
+            ResearchDatasetReference(
+                dataset_name=dataset,
+                source_relative_path=relative_path,
+                relative_path=relative_path,
+                sha256=sha256_file(destination),
+                size_bytes=stat.st_size,
+                row_count=frame.height,
+                mtime_ns=stat.st_mtime_ns,
+            )
+        )
+    references.sort(key=lambda item: (item.dataset_name, item.relative_path))
+    return references
+
+
+def _project_factor_research_source(
+    source: Path,
+    *,
+    dataset: str,
+    window: tuple[datetime, datetime],
+    symbols: list[str],
+) -> pl.DataFrame:
+    schema = pl.read_parquet_schema(source)
+    selected_columns = [
+        column for column in FACTOR_RESEARCH_COLUMN_PROJECTIONS[dataset] if column in schema
+    ]
+    if not selected_columns:
+        return pl.DataFrame()
+    lazy = pl.scan_parquet(source)
+    time_column = next(
+        (column for column in SNAPSHOT_TIME_COLUMNS.get(dataset, ()) if column in schema),
+        None,
+    )
+    if time_column is not None:
+        start, end = window
+        timestamp = _snapshot_timestamp_expr(time_column)
+        lazy = lazy.filter((timestamp >= start) & (timestamp < end))
+    if "symbol" in schema:
+        lazy = lazy.filter(pl.col("symbol").cast(pl.Utf8).is_in(symbols))
+    if dataset == "silver/market_bar":
+        if "timeframe" in schema:
+            lazy = lazy.filter(pl.col("timeframe").cast(pl.Utf8).str.to_lowercase() == "1h")
+        if "is_closed" in schema:
+            lazy = lazy.filter(pl.col("is_closed").cast(pl.Boolean, strict=False).fill_null(False))
+    return lazy.select(selected_columns).collect(engine="streaming")
 
 
 def _alpha_source_identities(

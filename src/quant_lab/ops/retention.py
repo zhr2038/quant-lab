@@ -6,12 +6,16 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from quant_lab.export_plane.snapshot_gc import gc_export_snapshot_payloads
+
 DEFAULT_BASE_DIR = Path("/var/lib/quant-lab")
 DEFAULT_KEEP_REDACTED_ARCHIVE_DAYS = 3
 DEFAULT_KEEP_RESTRICTED_ARCHIVE_DAYS = 7
 DEFAULT_KEEP_HIGH_FREQUENCY_ARCHIVE_DAYS = 30
 DEFAULT_KEEP_INBOX_DAYS = 2
 DEFAULT_KEEP_EXPORT_PACKS = 5
+DEFAULT_KEEP_EXPORT_TERMINAL_SNAPSHOT_HOURS = 24
+DEFAULT_MAX_EXPORT_TERMINAL_SNAPSHOT_BYTES = 5 * 1024**3
 
 
 @dataclass
@@ -30,6 +34,9 @@ class RetentionPruneResult:
     high_frequency_archive_prune_enabled: bool = False
     inbox_removed_files: int = 0
     export_removed_files: int = 0
+    export_snapshot_payload_released_count: int = 0
+    export_invalid_snapshot_payload_released_count: int = 0
+    export_snapshot_payload_released_bytes: int = 0
     maintenance_removed_dirs: int = 0
 
     def to_dict(self, *, max_removed_paths_reported: int | None = None) -> dict[str, Any]:
@@ -56,6 +63,15 @@ class RetentionPruneResult:
             "high_frequency_archive_prune_enabled": self.high_frequency_archive_prune_enabled,
             "inbox_removed_files": self.inbox_removed_files,
             "export_removed_files": self.export_removed_files,
+            "export_snapshot_payload_released_count": (
+                self.export_snapshot_payload_released_count
+            ),
+            "export_invalid_snapshot_payload_released_count": (
+                self.export_invalid_snapshot_payload_released_count
+            ),
+            "export_snapshot_payload_released_bytes": (
+                self.export_snapshot_payload_released_bytes
+            ),
             "maintenance_removed_dirs": self.maintenance_removed_dirs,
         }
 
@@ -69,6 +85,12 @@ def prune_quant_lab_storage(
     prune_high_frequency_archive: bool = False,
     keep_inbox_days: int = DEFAULT_KEEP_INBOX_DAYS,
     keep_export_packs: int = DEFAULT_KEEP_EXPORT_PACKS,
+    keep_export_terminal_snapshot_hours: int = (
+        DEFAULT_KEEP_EXPORT_TERMINAL_SNAPSHOT_HOURS
+    ),
+    max_export_terminal_snapshot_bytes: int = (
+        DEFAULT_MAX_EXPORT_TERMINAL_SNAPSHOT_BYTES
+    ),
     dry_run: bool = True,
     now: datetime | None = None,
 ) -> RetentionPruneResult:
@@ -119,6 +141,14 @@ def prune_quant_lab_storage(
         root,
         keep_count=keep_export_packs,
         dry_run=dry_run,
+        result=result,
+    )
+    _release_export_snapshot_payloads(
+        root,
+        keep_terminal_hours=keep_export_terminal_snapshot_hours,
+        max_terminal_payload_bytes=max_export_terminal_snapshot_bytes,
+        dry_run=dry_run,
+        now=current,
         result=result,
     )
     _prune_maintenance_smoke_dirs(root, dry_run=dry_run, result=result)
@@ -278,6 +308,39 @@ def _prune_maintenance_smoke_dirs(
     for item in maintenance_root.glob("compaction_smoke*"):
         if item.is_dir() and _remove_path(item, root, dry_run=dry_run, result=result):
             result.maintenance_removed_dirs += 1
+
+
+def _release_export_snapshot_payloads(
+    root: Path,
+    *,
+    keep_terminal_hours: int,
+    max_terminal_payload_bytes: int,
+    dry_run: bool,
+    now: datetime,
+    result: RetentionPruneResult,
+) -> None:
+    queue_root = root / "export_queue"
+    if not queue_root.is_dir():
+        return
+    try:
+        gc_result = gc_export_snapshot_payloads(
+            queue_root,
+            terminal_grace_hours=keep_terminal_hours,
+            max_terminal_payload_bytes=max_terminal_payload_bytes,
+            dry_run=dry_run,
+            now=now,
+        )
+    except (OSError, ValueError) as exc:
+        result.warnings.append(f"export_snapshot_gc_failed:{type(exc).__name__}:{exc}")
+        return
+    result.export_snapshot_payload_released_count = gc_result.released_snapshot_count
+    result.export_invalid_snapshot_payload_released_count = (
+        gc_result.released_invalid_snapshot_count
+    )
+    result.export_snapshot_payload_released_bytes = gc_result.bytes_released
+    result.removed_paths.extend(gc_result.released_paths)
+    result.removed_bytes += gc_result.bytes_released
+    result.warnings.extend(gc_result.warnings)
 
 
 def _safe_children(path: Path, result: RetentionPruneResult) -> list[Path]:

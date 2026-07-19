@@ -267,8 +267,7 @@ def test_candidate_research_refresh_is_separate_from_alpha_evidence():
     assert "--mode incremental --lookback-days 8" in refresh_unit
     assert "build-strategy-evidence" in refresh_unit
     assert "--skip-historical-outcomes" in refresh_unit
-    assert "build-factor-factory" in refresh_unit
-    assert "--horizon-bars 4,8,24,72" in refresh_unit
+    assert "build-factor-factory" not in refresh_unit
     assert "build-alpha-factory" not in refresh_unit
     assert "build-alpha-discovery-board" in refresh_unit
     assert "--skip-legacy-outcome-counts" in refresh_unit
@@ -281,12 +280,13 @@ def test_candidate_research_refresh_is_separate_from_alpha_evidence():
     assert "build-bnb-swing-exit-policy-review" not in refresh_unit
     assert "build-entry-quality" in refresh_unit
     assert "build-regime-router" not in refresh_unit
-    assert "flock -E 75 -w 600 /var/lock/quant-lab-heavy.lock" in refresh_unit
+    assert "/var/lock/quant-lab-heavy.lock" not in refresh_unit
     assert "flock -E 75 -w 30 /var/lock/quant-lab-v5-research.lock" in refresh_unit
     assert "/usr/bin/timeout 45m" in refresh_unit
     assert "TimeoutStartSec=55min" in refresh_unit
-    assert "MemoryHigh=3G" in refresh_unit
-    assert "MemoryMax=4G" in refresh_unit
+    assert "CPUQuota=40%" in refresh_unit
+    assert "MemoryHigh=900M" in refresh_unit
+    assert "MemoryMax=1200M" in refresh_unit
 
     assert "build-regime-router" in regime_unit
     assert "/var/lock/quant-lab-v5-regime-router.lock" in regime_unit
@@ -323,6 +323,25 @@ def test_alpha_factory_nas_request_replaces_scheduled_local_compute():
 
     assert "import-research-results" in importer
     assert "gc-research-snapshots" in snapshot_gc
+
+
+def test_factor_research_uses_shared_nas_plane_on_bounded_weekly_schedule():
+    request_service = _unit("quant-lab-factor-research-request.service")
+    request_timer = _unit("quant-lab-factor-research-request.timer")
+    refresh_service = _unit("quant-lab-v5-research-refresh.service")
+
+    assert "request-factor-research" in request_service
+    assert "build-factor-factory" not in request_service
+    assert "QUANT_LAB_NAS_FACTOR_RESEARCH_ENABLED" in request_service
+    assert "QUANT_LAB_RESEARCH_QUEUE_ROOT" in request_service
+    assert "POLARS_MAX_THREADS=1" in request_service
+    assert "CPUQuota=30%" in request_service
+    assert "MemoryHigh=500M" in request_service
+    assert "MemoryMax=900M" in request_service
+    assert "/var/lib/quant-lab/lake/bronze/lake_file_index" in request_service
+    assert "OnCalendar=Sun *-*-* 05:20:00 UTC" in request_timer
+    assert "RandomizedDelaySec=20min" in request_timer
+    assert "build-factor-factory" not in refresh_service
 
 
 def test_scheduled_compaction_covers_hot_ws_datasets():

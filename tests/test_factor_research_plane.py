@@ -24,6 +24,7 @@ from quant_lab.research_plane.queue import create_factor_research_task
 from quant_lab.research_plane.result import validate_factor_research_result_bundle
 from quant_lab.research_plane.signatures import verify_payload
 from quant_lab.research_plane.snapshot import verify_factor_research_snapshot_manifest
+from quant_lab.research_plane.status import research_plane_status
 from quant_lab.research_worker.factor_research import compute_factor_research_result
 from quant_lab.research_worker.result_writer import write_factor_research_result_bundle
 
@@ -117,6 +118,7 @@ def test_factor_research_task_is_content_addressed_signed_and_idempotent(tmp_pat
     assert first.test_count == 8
     assert len(list((queue / "pending").iterdir())) == 1
     verify_payload(first, first.signature, key.public_key())
+    assert research_plane_status(queue)["tasks"]["factor_research"]["state"] == "pending"
 
     snapshot_root = queue / "snapshots" / first.snapshot_id
     manifest = FactorResearchSnapshotManifest.model_validate_json(
@@ -208,6 +210,9 @@ def test_factor_research_task_is_content_addressed_signed_and_idempotent(tmp_pat
     assert set(completed_ledger.get_column("status").to_list()) == {"COMPLETED"}
     assert (queue / "completed" / first.task_id).is_dir()
     assert (queue / "results" / "imported" / first.task_id).is_dir()
+    status = research_plane_status(queue)
+    assert status["tasks"]["factor_research"]["state"] == "completed"
+    assert status["tasks"]["factor_research"]["task"]["task_id"] == first.task_id
 
 
 def test_factor_research_snapshot_projects_only_closed_one_hour_bars(tmp_path: Path) -> None:

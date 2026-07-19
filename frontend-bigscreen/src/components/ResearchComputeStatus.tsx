@@ -81,6 +81,7 @@ export function ResearchComputeStatus({ status }: Props) {
   const tasks = objectValue(status.tasks);
   const entryQuality = objectValue(tasks.entry_quality_history);
   const alphaFactory = objectValue(tasks.alpha_factory);
+  const factorResearch = objectValue(tasks.factor_research);
   const aggregateState = stringValue(status.state, "idle");
 
   return (
@@ -88,13 +89,14 @@ export function ResearchComputeStatus({ status }: Props) {
       <div className="research-compute-head">
         <div>
           <h3><Cpu size={18} />NAS Research Compute</h3>
-          <p>Entry Quality + Alpha Factory · research-only · live_order_effect: none</p>
+          <p>共享 Research Plane · research-only · live_order_effect: none</p>
         </div>
         <span className={`research-state ${stateTone(aggregateState)}`}><Activity size={14} />{aggregateState}</span>
       </div>
       <div className="research-task-list">
         <TaskStatus label="Entry Quality History" status={entryQuality} />
         <TaskStatus label="Alpha Factory" status={alphaFactory} />
+        <TaskStatus label="Factor Research v2" status={factorResearch} />
       </div>
     </section>
   );

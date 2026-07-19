@@ -1,0 +1,11 @@
+[Unit]
+Description=Request bounded NAS Factor Research weekly
+
+[Timer]
+OnCalendar=Sun *-*-* 05:20:00 UTC
+RandomizedDelaySec=20min
+Persistent=true
+Unit=quant-lab-factor-research-request.service
+
+[Install]
+WantedBy=timers.target

@@ -104,6 +104,7 @@ from quant_lab.research_plane.importer import (
 from quant_lab.research_plane.queue import (
     create_alpha_factory_task,
     create_entry_quality_history_task,
+    create_factor_research_task,
 )
 from quant_lab.research_plane.signatures import load_public_key, load_signing_key
 from quant_lab.research_plane.snapshot_gc import (
@@ -1812,6 +1813,59 @@ def request_alpha_factory_command(
         as_of_date=day,
         lookback_days=lookback_days,
         max_candidates=max_candidates,
+        signing_key=load_signing_key(signing_key_path),
+        signature_key_id=key_id,
+        quant_lab_commit=quant_lab_commit,
+    )
+    typer.echo(
+        json.dumps(
+            {
+                "task": task.model_dump(mode="json"),
+                "status": status.model_dump(mode="json"),
+            },
+            ensure_ascii=True,
+            sort_keys=True,
+            indent=2,
+        )
+    )
+
+
+@app.command("request-factor-research")
+def request_factor_research_command(
+    lake_root: Annotated[Path, typer.Option("--lake-root", file_okay=False, dir_okay=True)],
+    queue_root: Annotated[Path, typer.Option("--queue-root", file_okay=False, dir_okay=True)],
+    signing_key_path: Annotated[
+        Path,
+        typer.Option(
+            "--signing-key-path",
+            envvar="QUANT_LAB_RESEARCH_TASK_PRIVATE_KEY_PATH",
+            exists=True,
+            dir_okay=False,
+        ),
+    ],
+    key_id: Annotated[str, typer.Option("--key-id")],
+    quant_lab_commit: Annotated[str, typer.Option("--quant-lab-commit")],
+    as_of_date: Annotated[str, typer.Option("--date")] = "auto",
+    start_date: Annotated[str, typer.Option("--start-date")] = "auto",
+    end_date: Annotated[str, typer.Option("--end-date")] = "auto",
+    max_history_days: Annotated[
+        int, typer.Option("--max-history-days", min=30, max=730)
+    ] = 730,
+) -> None:
+    if not _enabled_environment("QUANT_LAB_NAS_RESEARCH_ENABLED"):
+        raise typer.BadParameter("QUANT_LAB_NAS_RESEARCH_ENABLED must be 1")
+    if not _enabled_environment("QUANT_LAB_NAS_FACTOR_RESEARCH_ENABLED"):
+        raise typer.BadParameter("QUANT_LAB_NAS_FACTOR_RESEARCH_ENABLED must be 1")
+    day = datetime.now(UTC).date() if as_of_date == "auto" else date.fromisoformat(as_of_date)
+    start_day = None if start_date == "auto" else date.fromisoformat(start_date)
+    end_day = None if end_date == "auto" else date.fromisoformat(end_date)
+    task, status = create_factor_research_task(
+        lake_root,
+        queue_root,
+        as_of_date=day,
+        start_date=start_day,
+        end_date=end_day,
+        max_history_days=max_history_days,
         signing_key=load_signing_key(signing_key_path),
         signature_key_id=key_id,
         quant_lab_commit=quant_lab_commit,

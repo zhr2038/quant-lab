@@ -107,15 +107,21 @@ def alpha_factory_plane_status(root: str | Path) -> dict[str, Any]:
     return _research_plane_status_for_type(root, "alpha_factory")
 
 
+def factor_research_plane_status(root: str | Path) -> dict[str, Any]:
+    return _research_plane_status_for_type(root, "factor_research")
+
+
 def research_plane_status(root: str | Path) -> dict[str, Any]:
     entry_quality = entry_quality_history_plane_status(root)
     alpha_factory = alpha_factory_plane_status(root)
+    factor_research = factor_research_plane_status(root)
     return {
         "schema_version": "quant_lab_research_plane_status.v2",
-        "state": _aggregate_state([entry_quality, alpha_factory]),
+        "state": _aggregate_state([entry_quality, alpha_factory, factor_research]),
         "tasks": {
             "entry_quality_history": entry_quality,
             "alpha_factory": alpha_factory,
+            "factor_research": factor_research,
         },
         "nas_offline_behavior": "wait_no_local_fallback",
         "research_only": True,

@@ -11,17 +11,11 @@ export function StrategyFlow({ flow }: { flow: Record<string, unknown> }) {
   const opportunityCost = (flow.opportunity_cost ?? {}) as Record<string, unknown>;
   const paperLifecycle = (flow.paper_lifecycle ?? {}) as Record<string, unknown>;
   const lifecycleCounts = (paperLifecycle.counts ?? {}) as Record<string, number>;
-  const factorReviewQueue = safeRows(factorFactory.paper_review_queue);
-  const bridgeRows = safeRows(factorFactory.strategy_bridge_candidates);
-  const dedupeRows = safeRows(factorFactory.dedupe_decisions);
-  const familyRows = safeRows(factorFactory.family_leaderboard);
-  const regimeRows = safeRows(factorFactory.regime_effectiveness);
-  const factorRows = dedupeFactorRows([
-    ...safeRows(factorFactory.paper_ready_candidates),
-    ...factorReviewQueue,
-    ...safeRows(factorFactory.top_candidates),
-    ...bridgeRows
-  ]);
+  const hypothesisRows = safeRows(factorFactory.hypotheses);
+  const trialRows = safeRows(factorFactory.trials);
+  const attributionRows = safeRows(factorFactory.attribution);
+  const portfolioRows = safeRows(factorFactory.portfolio_validation);
+  const nasTask = (factorFactory.nas_task ?? {}) as Record<string, unknown>;
   return (
     <section className="card pad strategy-card">
       <h2 className="section-title icon-title"><GitBranch size={23} />策略机会流</h2>
@@ -67,23 +61,28 @@ export function StrategyFlow({ flow }: { flow: Record<string, unknown> }) {
           </div>
         </div>
         <div className="factor-factory-mini">
-          <div className="candidate-title"><FlaskConical size={15} /> Factor Factory</div>
+          <div className="candidate-title"><FlaskConical size={15} /> Factor Research v2</div>
           <div className="factor-factory-stats">
-            <span><b>{shortNumber(factorFactory.candidate_count)}</b><em>候选</em></span>
-            <span><b>{shortNumber(factorFactory.paper_review_queue_count ?? factorFactory.paper_ready_count)}</b><em>Paper候选</em></span>
-            <span><b>{shortNumber(factorFactory.strategy_bridge_candidate_count ?? safeRows(factorFactory.strategy_bridge_candidates).length)}</b><em>Bridge</em></span>
+            <span><b>{shortNumber(factorFactory.independent_hypothesis_count)}</b><em>独立假设</em></span>
+            <span><b>{shortNumber(factorFactory.active_hypothesis_count)}</b><em>活跃假设</em></span>
+            <span><b>{shortNumber(factorFactory.trial_budget_usage_pct)}%</b><em>试验预算</em></span>
           </div>
           <div className="factor-chip-grid">
-            {factorRows.slice(0, 8).map((factor, i) => (
-              <div className="factor-chip" key={`${factor.factor_id}-${i}`} title={stringValue(factor.factor_id ?? factor.factor_name, "factor")}>
+            {hypothesisRows.slice(0, 6).map((hypothesis, i) => (
+              <div className="factor-chip" key={`${hypothesis.hypothesis_id}-${i}`} title={stringValue(hypothesis.title, "hypothesis")}>
                 <Sparkles size={13} />
-                <span>{stringValue(factor.factor_id ?? factor.factor_name, "factor")}</span>
-                <em>{stringValue(factor.state ?? factor.candidate_state, "RESEARCH")}</em>
-                <strong>{bps(factor.long_short_bps ?? factor.best_long_short_mean_bps)}</strong>
+                <span>{stringValue(hypothesis.hypothesis_id, "hypothesis")}</span>
+                <em>{stringValue(hypothesis.status, "DRAFT")}</em>
+                <strong>{shortNumber(hypothesis.variant_budget)} variants</strong>
               </div>
             ))}
           </div>
-          {!factorRows.length && <div className="factor-empty">Factor Factory 暂无候选</div>}
+          {!hypothesisRows.length && <div className="factor-empty">暂无已登记研究假设</div>}
+          <div className="opportunity-cost-note">
+            <span>NAS {stringValue(nasTask.state, "idle")}</span>
+            <em>Signal {shortNumber(factorFactory.signal_valid_count)} · Portfolio fail {shortNumber(factorFactory.portfolio_fail_count)}</em>
+            <strong>Confirmatory {shortNumber(factorFactory.confirmatory_trial_count)} · FDR pass {shortNumber(factorFactory.multiple_testing_pass_count)}</strong>
+          </div>
         </div>
         <div className="candidate-list">
           <div className="candidate-title"><Rocket size={15} /> 策略候选（只读）</div>
@@ -104,35 +103,35 @@ export function StrategyFlow({ flow }: { flow: Record<string, unknown> }) {
       </div>
       <div className="strategy-secondary-grid">
         <ResearchMiniPanel
-          title="Bridge"
-          rows={bridgeRows.slice(0, 4).map((row) => [
-            stringValue(row.factor_id, "factor"),
-            [row.symbol, row.regime, row.horizon].map((value) => stringValue(value, "")).filter(Boolean).join(" · "),
-            stringValue(row.eligible_for_alpha_factory ?? row.recommended_action, "review")
-          ])}
-        />
-        <ResearchMiniPanel
-          title="去重"
-          rows={dedupeRows.slice(0, 4).map((row) => [
-            stringValue(row.factor_id, "factor"),
-            stringValue(row.leader_factor_id, "leader ?"),
-            stringValue(row.dedupe_decision, "review")
-          ])}
-        />
-        <ResearchMiniPanel
-          title="家族榜"
-          rows={familyRows.slice(0, 4).map((row) => [
+          title="假设"
+          rows={hypothesisRows.slice(0, 4).map((row) => [
+            stringValue(row.hypothesis_id, "hypothesis"),
             stringValue(row.factor_family, "family"),
-            stringValue(row.leader_factor_id, "leader"),
-            `${shortNumber(row.paper_ready_count)} paper`
+            stringValue(row.status, "DRAFT")
           ])}
         />
         <ResearchMiniPanel
-          title="Regime"
-          rows={regimeRows.slice(0, 4).map((row) => [
+          title="试验"
+          rows={trialRows.slice(0, 4).map((row) => [
+            stringValue(row.trial_id, "trial"),
+            stringValue(row.trial_kind, "EXPLORATORY"),
+            stringValue(row.status, "SUBMITTED")
+          ])}
+        />
+        <ResearchMiniPanel
+          title="归因"
+          rows={attributionRows.slice(0, 4).map((row) => [
             stringValue(row.factor_id, "factor"),
-            [row.regime, row.horizon].map((value) => stringValue(value, "")).filter(Boolean).join(" · "),
-            bps(row.long_short_bps ?? row.best_long_short_mean_bps)
+            stringValue(row.attribution_type, "unknown"),
+            `residual ${shortNumber(row.joint_residual_rank_ic)}`
+          ])}
+        />
+        <ResearchMiniPanel
+          title="组合"
+          rows={portfolioRows.slice(0, 4).map((row) => [
+            stringValue(row.factor_id, "factor"),
+            stringValue(row.portfolio_validity, "UNKNOWN"),
+            stringValue(row.decision, "RESEARCH")
           ])}
         />
       </div>
@@ -174,20 +173,6 @@ function dedupeCandidates(rows: Record<string, unknown>[]): Record<string, unkno
       stringValue(candidate.symbol, ""),
       stringValue(candidate.horizon_hours, ""),
       stringValue(candidate.recommended_mode ?? candidate.decision, "")
-    ].join("|");
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-}
-
-function dedupeFactorRows(rows: Record<string, unknown>[]): Record<string, unknown>[] {
-  const seen = new Set<string>();
-  return rows.filter((factor) => {
-    const key = [
-      stringValue(factor.factor_id ?? factor.factor_name, ""),
-      stringValue(factor.best_horizon_bars ?? factor.horizon ?? factor.horizon_bars, ""),
-      stringValue(factor.candidate_state ?? factor.state ?? factor.recommended_action, "")
     ].join("|");
     if (seen.has(key)) return false;
     seen.add(key);

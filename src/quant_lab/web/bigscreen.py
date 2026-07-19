@@ -25,6 +25,7 @@ from quant_lab.data.market_bar_time import (
 )
 from quant_lab.factors.composite_factory import build_factor_factory_v2_reports
 from quant_lab.ops.api_metrics import api_metrics_summary
+from quant_lab.research.factor_research.registry import MAX_RESEARCH_TRIALS
 from quant_lab.symbols import normalize_symbol
 from quant_lab.time_display import beijing_today
 from quant_lab.web import perf, readers
@@ -119,6 +120,7 @@ def _build_bigscreen_snapshot_payload(root: Path) -> dict[str, Any]:
     data_health = _safe_summary("data_health_summary", readers.data_health_summary, root)
     cost = _safe_summary("cost_model_summary", readers.cost_model_summary, root)
     strategy = _safe_strategy_summary(root)
+    research_compute = _research_plane_status()
     market = _safe_summary("market_regime_summary", readers.market_regime_summary, root)
     collectors = _safe_summary("okx_collector_summary", readers.okx_collector_summary, root)
     v5 = _safe_summary("v5_telemetry_summary", readers.v5_telemetry_summary, root)
@@ -178,7 +180,6 @@ def _build_bigscreen_snapshot_payload(root: Path) -> dict[str, Any]:
     health_score = _health_score(status, data_health, cost, v5, web_events, exports)
     legacy_anomalies = _legacy_web_anomalies(data_health)
     server_resources = _server_resources(root)
-    research_compute = _research_plane_status()
     v5_payload = _v5_payload(v5, current_readiness)
     exports_payload = _exports_payload(exports)
     exports_payload.update(_expert_pack_v5_lag_status_payload(exports, v5))
@@ -202,7 +203,7 @@ def _build_bigscreen_snapshot_payload(root: Path) -> dict[str, Any]:
             web_smoke,
         )[:8],
         "data_matrix": data_matrix,
-        "strategy_flow": _strategy_flow(strategy),
+        "strategy_flow": _strategy_flow(strategy, research_compute=research_compute),
         "ai_research": ai_research,
         "v5": v5_payload,
         "cost": _cost_payload(cost),
@@ -295,6 +296,12 @@ def _snapshot_source_signature(root: Path) -> tuple[Any, ...]:
         _directory_signature(root / "gold" / "paper_strategy_registry"),
         _directory_signature(root / "gold" / "paper_strategy_promotion_gate"),
         _directory_signature(root / "gold" / "strategy_cost_trust"),
+        _directory_signature(root / "gold" / "research_hypothesis_registry"),
+        _directory_signature(root / "gold" / "research_trial_ledger"),
+        _directory_signature(root / "gold" / "factor_attribution"),
+        _directory_signature(root / "gold" / "factor_portfolio_validation"),
+        _directory_signature(root / "gold" / "factor_retirement"),
+        _path_signature(root / "gold" / "factor_research_generation.json"),
         _directory_signature(root / "gold" / "ai_research_run"),
         _directory_signature(root / "gold" / "ai_research_finding"),
         _directory_signature(root / "gold" / "ai_factor_proposal"),
@@ -515,7 +522,7 @@ def _safe_api_metrics(root: Path) -> dict[str, Any]:
 
 def _safe_strategy_summary(root: Path) -> dict[str, Any]:
     warnings: list[str] = []
-    frames: dict[str, pl.DataFrame] = {}
+    frames: dict[str, Any] = {}
     for dataset_name, output_key in [
         ("strategy_opportunity_advisory", "strategy_opportunity_advisory"),
         ("alpha_discovery_board", "alpha_discovery_board"),
@@ -528,6 +535,11 @@ def _safe_strategy_summary(root: Path) -> dict[str, Any]:
         ("factor_candidate", "factor_candidate"),
         ("factor_evidence", "factor_evidence"),
         ("factor_correlation_daily", "factor_correlation_daily"),
+        ("research_hypothesis_registry", "research_hypothesis_registry"),
+        ("research_trial_ledger", "research_trial_ledger"),
+        ("factor_attribution", "factor_attribution"),
+        ("factor_portfolio_validation", "factor_portfolio_validation"),
+        ("factor_retirement", "factor_retirement"),
         ("paper_strategy_proposal", "paper_strategy_proposal"),
         ("paper_strategy_registry", "paper_strategy_registry"),
         ("paper_strategy_promotion_gate", "paper_strategy_promotion_gate"),
@@ -541,6 +553,14 @@ def _safe_strategy_summary(root: Path) -> dict[str, Any]:
             warnings.append(warning)
     frames["factor_strategy_bridge_candidates"] = _latest_factor_strategy_bridge_candidates(
         root
+    )
+    generation_path = root / "gold" / "factor_research_generation.json"
+    try:
+        generation = json.loads(generation_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        generation = {}
+    frames["factor_research_generation"] = (
+        generation if isinstance(generation, dict) else {}
     )
     frames["fast_microstructure_forward_test"] = _latest_export_report_frame(
         root,
@@ -1895,7 +1915,11 @@ def _latest_by_symbol(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     return _rows_by_symbol(rows)
 
 
-def _strategy_flow(strategy: dict[str, Any]) -> dict[str, Any]:
+def _strategy_flow(
+    strategy: dict[str, Any],
+    *,
+    research_compute: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     advisory_rows = _frame_rows(strategy.get("strategy_opportunity_advisory"), limit=200)
     rank_source = strategy.get("strategy_opportunity_advisory_rank")
     if not isinstance(rank_source, pl.DataFrame) or rank_source.is_empty():
@@ -1903,7 +1927,10 @@ def _strategy_flow(strategy: dict[str, Any]) -> dict[str, Any]:
     ranking_rows = _frame_rows(rank_source, limit=50_000)
     counts = _strategy_counts(strategy, advisory_rows)
     top = _top_strategy_candidates(ranking_rows or advisory_rows)
-    factor_factory = _factor_factory_payload(strategy)
+    factor_factory = _factor_factory_payload(
+        strategy,
+        research_compute=research_compute or {},
+    )
     opportunity_cost = _opportunity_cost_payload(strategy)
     paper_lifecycle = _paper_lifecycle_payload(strategy)
     return {
@@ -2088,10 +2115,31 @@ def _sum_int_rows(rows: list[dict[str, Any]], field: str) -> int:
     return int(sum(_int(row.get(field)) or 0 for row in rows))
 
 
-def _factor_factory_payload(strategy: dict[str, Any]) -> dict[str, Any]:
+def _factor_factory_payload(
+    strategy: dict[str, Any],
+    *,
+    research_compute: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     candidates = _as_frame(strategy.get("factor_candidate"))
     evidence = _as_frame(strategy.get("factor_evidence"))
     correlations = _as_frame(strategy.get("factor_correlation_daily"))
+    hypotheses = _as_frame(strategy.get("research_hypothesis_registry"))
+    trials = _as_frame(strategy.get("research_trial_ledger"))
+    attribution = _as_frame(strategy.get("factor_attribution"))
+    portfolio_validation = _as_frame(strategy.get("factor_portfolio_validation"))
+    retirement = _as_frame(strategy.get("factor_retirement"))
+    generation = strategy.get("factor_research_generation")
+    if not isinstance(generation, dict):
+        generation = {}
+    compute_tasks = (
+        research_compute.get("tasks")
+        if isinstance(research_compute, dict)
+        and isinstance(research_compute.get("tasks"), dict)
+        else {}
+    )
+    factor_task = compute_tasks.get("factor_research")
+    if not isinstance(factor_task, dict):
+        factor_task = {}
     v2_reports = build_factor_factory_v2_reports(
         candidates=candidates,
         evidence=evidence,
@@ -2104,6 +2152,51 @@ def _factor_factory_payload(strategy: dict[str, Any]) -> dict[str, Any]:
     state_counts = _count_by_column(candidates, "candidate_state")
     high_correlation_pairs = _high_correlation_rows(correlations)
     evidence_by_horizon = _factor_evidence_by_horizon(evidence)
+    hypothesis_rows = _frame_rows(hypotheses, limit=2_000)
+    trial_rows = _frame_rows(trials, limit=10_000)
+    attribution_rows = _frame_rows(attribution, limit=10_000)
+    portfolio_rows = _frame_rows(portfolio_validation, limit=10_000)
+    hypothesis_status_counts = _count_by_column(hypotheses, "status")
+    trial_status_counts = _count_by_column(trials, "status")
+    confirmatory_trial_count = sum(
+        1
+        for row in trial_rows
+        if str(row.get("trial_kind") or "").upper() == "CONFIRMATORY"
+    )
+    failed_trial_count = sum(
+        trial_status_counts.get(state, 0)
+        for state in ("FAILED", "REJECTED", "INVALIDATED", "CANCELLED")
+    )
+    multiple_testing_pass_count = sum(
+        1
+        for row in _frame_rows(evidence, limit=20_000)
+        if (holm := _float(row.get("holm_adjusted_pvalue"))) is not None
+        and holm <= 0.05
+        and (fdr := _float(row.get("bh_fdr_qvalue"))) is not None
+        and fdr <= 0.05
+    )
+    fixed_effect_shares: list[float] = []
+    residual_ics: list[float] = []
+    for row in attribution_rows:
+        raw_ic = _float(row.get("raw_rank_ic"))
+        fixed_effect_ic = _float(row.get("symbol_fixed_effect_null_ic"))
+        residual_ic = _float(row.get("joint_residual_rank_ic"))
+        if raw_ic is not None and fixed_effect_ic is not None and abs(raw_ic) > 1e-12:
+            fixed_effect_shares.append(
+                max(0.0, min(1.0, 1.0 - abs(fixed_effect_ic) / abs(raw_ic)))
+            )
+        if residual_ic is not None:
+            residual_ics.append(residual_ic)
+    pbo_values = [
+        value
+        for row in portfolio_rows
+        if (value := _float(row.get("pbo"))) is not None
+    ]
+    dsr_values = [
+        value
+        for row in portfolio_rows
+        if (value := _float(row.get("dsr_probability"))) is not None
+    ]
     paper_ready_candidates = [
         row
         for row in candidate_rows
@@ -2114,10 +2207,62 @@ def _factor_factory_payload(strategy: dict[str, Any]) -> dict[str, Any]:
         warnings.append("factor_candidate_missing_or_empty")
     if evidence.is_empty():
         warnings.append("factor_evidence_missing_or_empty")
+    if hypotheses.is_empty():
+        warnings.append("research_hypothesis_registry_missing_or_empty")
+    if not generation:
+        warnings.append("factor_research_generation_not_published")
     return {
-        "title": "Factor Factory",
+        "title": "Hypothesis-Driven Factor Research",
         "live_order_effect": "none_read_only_research",
         "paper_ready_meaning": "paper review candidate only, not live eligibility",
+        "generation": generation,
+        "nas_task": factor_task,
+        "independent_hypothesis_count": len(
+            {str(row.get("hypothesis_id")) for row in hypothesis_rows if row.get("hypothesis_id")}
+        ),
+        "active_hypothesis_count": sum(
+            hypothesis_status_counts.get(state, 0)
+            for state in (
+                "APPROVED_FOR_RESEARCH",
+                "RUNNING",
+                "SIGNAL_VALID",
+                "PORTFOLIO_FAIL",
+                "PAPER_CANDIDATE",
+            )
+        ),
+        "trial_budget_limit": MAX_RESEARCH_TRIALS,
+        "trial_budget_used": trials.height,
+        "trial_budget_usage_pct": round(
+            min(100.0, trials.height * 100.0 / MAX_RESEARCH_TRIALS), 2
+        ),
+        "total_trial_count": trials.height,
+        "confirmatory_trial_count": confirmatory_trial_count,
+        "failed_trial_count": failed_trial_count,
+        "failed_trial_retention_pct": 100.0 if failed_trial_count else None,
+        "multiple_testing_pass_count": multiple_testing_pass_count,
+        "signal_valid_count": state_counts.get("SIGNAL_VALID", 0),
+        "portfolio_fail_count": state_counts.get("PORTFOLIO_FAIL", 0),
+        "paper_candidate_count": state_counts.get("PAPER_CANDIDATE", 0),
+        "data_blocked_count": hypothesis_status_counts.get("DATA_BLOCKED", 0),
+        "factor_fixed_effect_share": (
+            sum(fixed_effect_shares) / len(fixed_effect_shares)
+            if fixed_effect_shares
+            else None
+        ),
+        "residual_incremental_ic": (
+            sum(residual_ics) / len(residual_ics) if residual_ics else None
+        ),
+        "mean_pbo": sum(pbo_values) / len(pbo_values) if pbo_values else None,
+        "mean_dsr_probability": (
+            sum(dsr_values) / len(dsr_values) if dsr_values else None
+        ),
+        "hypothesis_status_counts": hypothesis_status_counts,
+        "trial_status_counts": trial_status_counts,
+        "hypotheses": hypothesis_rows[:8],
+        "trials": trial_rows[:8],
+        "attribution": attribution_rows[:8],
+        "portfolio_validation": portfolio_rows[:8],
+        "retirement": _frame_rows(retirement, limit=8),
         "candidate_count": candidates.height,
         "evidence_count": evidence.height,
         "correlation_pair_count": correlations.height,

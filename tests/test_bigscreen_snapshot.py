@@ -7,6 +7,7 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import polars as pl
+import pytest
 from fastapi.testclient import TestClient
 
 import quant_lab.api.main as api_main
@@ -1838,6 +1839,142 @@ def test_bigscreen_snapshot_exposes_factor_factory_results(tmp_path):
     assert fast_forward["lookback_bars"] == "2000"
     assert fast_forward["top_passes"][0]["feature_name"] == "orderbook_imbalance_1m"
     assert fast_forward["top_passes"][0]["symbol"] == "SOL-USDT"
+
+
+def test_bigscreen_factor_research_kpis_are_hypothesis_and_trial_driven(tmp_path):
+    clear_bigscreen_cache()
+    lake = tmp_path / "lake"
+    created_at = datetime(2026, 7, 19, tzinfo=UTC)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "hypothesis_id": "hypothesis-1",
+                    "hypothesis_version": 1,
+                    "factor_family": "defensive_quality",
+                    "status": "APPROVED_FOR_RESEARCH",
+                    "variant_budget": 2,
+                    "available_data_confirmed": True,
+                    "updated_at": created_at,
+                }
+            ]
+        ),
+        lake / "gold" / "research_hypothesis_registry",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "trial_id": "trial-confirmatory",
+                    "hypothesis_id": "hypothesis-1",
+                    "trial_kind": "CONFIRMATORY",
+                    "status": "COMPLETED",
+                    "decision": "SIGNAL_VALID",
+                    "submitted_at": created_at,
+                },
+                {
+                    "trial_id": "trial-failed",
+                    "hypothesis_id": "hypothesis-1",
+                    "trial_kind": "EXPLORATORY",
+                    "status": "FAILED",
+                    "decision": "REJECTED_NO_SIGNAL",
+                    "submitted_at": created_at,
+                },
+            ]
+        ),
+        lake / "gold" / "research_trial_ledger",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "as_of_date": "2026-07-19",
+                    "trial_id": "trial-confirmatory",
+                    "factor_id": "factor-1",
+                    "holm_adjusted_pvalue": 0.02,
+                    "bh_fdr_qvalue": 0.03,
+                    "created_at": created_at,
+                }
+            ]
+        ),
+        lake / "gold" / "factor_evidence",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "as_of_date": "2026-07-19",
+                    "factor_id": "factor-1",
+                    "candidate_state": "PORTFOLIO_FAIL",
+                    "created_at": created_at,
+                }
+            ]
+        ),
+        lake / "gold" / "factor_candidate",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "as_of_date": "2026-07-19",
+                    "trial_id": "trial-confirmatory",
+                    "factor_id": "factor-1",
+                    "raw_rank_ic": 0.04,
+                    "symbol_fixed_effect_null_ic": 0.02,
+                    "joint_residual_rank_ic": 0.015,
+                    "attribution_type": "STRUCTURAL_CROSS_SECTIONAL",
+                    "created_at": created_at,
+                }
+            ]
+        ),
+        lake / "gold" / "factor_attribution",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "as_of_date": "2026-07-19",
+                    "trial_id": "trial-confirmatory",
+                    "factor_id": "factor-1",
+                    "portfolio_validity": "FAIL",
+                    "decision": "PORTFOLIO_FAIL",
+                    "pbo": 0.25,
+                    "dsr_probability": 0.62,
+                    "created_at": created_at,
+                }
+            ]
+        ),
+        lake / "gold" / "factor_portfolio_validation",
+    )
+    generation_path = lake / "gold" / "factor_research_generation.json"
+    generation_path.parent.mkdir(parents=True, exist_ok=True)
+    generation_path.write_text(
+        json.dumps(
+            {
+                "generation_id": "factor-generation-1",
+                "published_at": created_at.isoformat(),
+                "research_only": True,
+                "live_order_effect": "none",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    factor_research = bigscreen_snapshot(lake)["strategy_flow"]["factor_factory"]
+
+    assert factor_research["title"] == "Hypothesis-Driven Factor Research"
+    assert factor_research["independent_hypothesis_count"] == 1
+    assert factor_research["active_hypothesis_count"] == 1
+    assert factor_research["total_trial_count"] == 2
+    assert factor_research["confirmatory_trial_count"] == 1
+    assert factor_research["failed_trial_count"] == 1
+    assert factor_research["failed_trial_retention_pct"] == 100.0
+    assert factor_research["multiple_testing_pass_count"] == 1
+    assert factor_research["portfolio_fail_count"] == 1
+    assert factor_research["factor_fixed_effect_share"] == pytest.approx(0.5)
+    assert factor_research["residual_incremental_ic"] == pytest.approx(0.015)
+    assert factor_research["mean_pbo"] == pytest.approx(0.25)
+    assert factor_research["mean_dsr_probability"] == pytest.approx(0.62)
 
 
 def test_bigscreen_snapshot_surfaces_legacy_web_anomalies(monkeypatch, tmp_path):

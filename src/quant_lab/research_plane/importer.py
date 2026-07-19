@@ -719,12 +719,14 @@ def _import_factor_research_result(
             current_registry = read_parquet_dataset(
                 lake / RESEARCH_HYPOTHESIS_REGISTRY_DATASET
             )
-            current_ledger = read_parquet_dataset(lake / RESEARCH_TRIAL_LEDGER_DATASET)
             if hypothesis_registry_digest(current_registry) != task.hypothesis_registry_digest:
                 raise ValueError(
                     "factor_research_result_superseded_by_hypothesis_registry_change"
                 ) from exc
-            if trial_ledger_digest(current_ledger) != task.trial_ledger_digest:
+            if (
+                _current_factor_research_trial_ledger_digest(lake, task)
+                != task.trial_ledger_digest
+            ):
                 raise ValueError(
                     "factor_research_result_superseded_by_trial_ledger_change"
                 ) from exc
@@ -753,7 +755,23 @@ def _import_factor_research_result(
             )
         else:
             _reject_result(queue, task, status, inbox, running, exc)
-        raise
+            raise
+
+
+def _current_factor_research_trial_ledger_digest(
+    lake_root: str | Path,
+    task: FactorResearchTask,
+) -> str:
+    """Bind publication to this task's trials while preserving historical ledger rows."""
+    ledger = read_parquet_dataset(Path(lake_root) / RESEARCH_TRIAL_LEDGER_DATASET)
+    if ledger.is_empty() or "trial_id" not in ledger.columns:
+        raise ValueError("factor_research_current_trial_ledger_missing")
+    expected = set(task.trial_ids)
+    current = ledger.filter(ledger.get_column("trial_id").is_in(sorted(expected)))
+    observed = set(current.get_column("trial_id").to_list())
+    if observed != expected:
+        raise ValueError("factor_research_current_trial_ledger_incomplete")
+    return trial_ledger_digest(current)
 
 
 def import_pending_entry_quality_history_results(

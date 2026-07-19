@@ -20,7 +20,10 @@ from quant_lab.research_plane.factor_research_publish import (
     FACTOR_RESEARCH_GENERATION_POINTER,
     FACTOR_RESEARCH_GENERATION_SCHEMA,
 )
-from quant_lab.research_plane.importer import import_entry_quality_history_result
+from quant_lab.research_plane.importer import (
+    _current_factor_research_trial_ledger_digest,
+    import_entry_quality_history_result,
+)
 from quant_lab.research_plane.queue import create_factor_research_task
 from quant_lab.research_plane.result import validate_factor_research_result_bundle
 from quant_lab.research_plane.signatures import verify_payload
@@ -33,6 +36,7 @@ from quant_lab.research_worker.factor_research import (
 from quant_lab.research_worker.result_writer import write_factor_research_result_bundle
 
 COMMIT = "a" * 40
+NEXT_COMMIT = "c" * 40
 TASK_KEY_ID = "cloud-research-v1"
 BUNDLE_ID = "v5-bundle-sha256:" + "b" * 64
 
@@ -227,15 +231,65 @@ def test_factor_research_task_is_content_addressed_signed_and_idempotent(tmp_pat
         lake,
         queue,
         as_of_date=date(2026, 7, 19),
-        start_date=date(2025, 7, 18),
         signing_key=key,
         signature_key_id=TASK_KEY_ID,
-        quant_lab_commit=COMMIT,
+        quant_lab_commit=NEXT_COMMIT,
         selected_v5_bundle_id=BUNDLE_ID,
     )
     assert next_task.task_id != first.task_id
+    historical_ledger = read_parquet_dataset(lake / RESEARCH_TRIAL_LEDGER_DATASET)
+    assert historical_ledger.height == first.test_count + next_task.test_count
+    assert (
+        _current_factor_research_trial_ledger_digest(lake, next_task)
+        == next_task.trial_ledger_digest
+    )
+    next_snapshot_root = queue / "snapshots" / next_task.snapshot_id
+    next_manifest = FactorResearchSnapshotManifest.model_validate_json(
+        (next_snapshot_root / "manifest.json").read_text("utf-8")
+    )
+    next_compute = compute_factor_research_result(
+        next_snapshot_root, next_manifest, next_task
+    )
+    next_result_root, _, _ = write_factor_research_result_bundle(
+        tmp_path / "worker-results-next",
+        task=next_task,
+        snapshot=next_manifest,
+        compute=next_compute,
+        worker_id="nas-research-worker-01",
+        worker_commit=NEXT_COMMIT,
+        worker_key_id="nas-research-v1",
+        worker_signing_key=worker_key,
+        claimed_at=datetime(2026, 7, 19, 2, 0, tzinfo=UTC),
+        input_bytes=next_manifest.total_input_bytes,
+        cache_hit_bytes=next_manifest.total_input_bytes,
+        downloaded_bytes=0,
+        peak_rss_bytes=256 * 1024**2,
+        compute_duration_seconds=1.0,
+        max_result_bytes=256 * 1024**2,
+    )
+    os.replace(queue / "pending" / next_task.task_id, queue / "running" / next_task.task_id)
+    shutil.copytree(next_result_root, queue / "results" / "inbox" / next_task.task_id)
+    next_imported = import_entry_quality_history_result(
+        lake,
+        queue,
+        next_task.task_id,
+        task_public_key=key.public_key(),
+        worker_public_key=worker_key.public_key(),
+        expected_task_key_id=TASK_KEY_ID,
+        expected_worker_key_id="nas-research-v1",
+        expected_quant_lab_commit=NEXT_COMMIT,
+    )
+    assert next_imported.state == "completed"
+    assert next_imported.idempotent is False
+    final_registry = read_parquet_dataset(lake / RESEARCH_HYPOTHESIS_REGISTRY_DATASET)
+    final_evaluated = final_registry.filter(
+        pl.col("hypothesis_id").is_in(next_task.hypothesis_ids)
+    )
+    assert set(final_evaluated.get_column("status").to_list()) == {
+        "APPROVED_FOR_RESEARCH"
+    }
     status = research_plane_status(queue)
-    assert status["tasks"]["factor_research"]["state"] == "pending"
+    assert status["tasks"]["factor_research"]["state"] == "completed"
     assert status["tasks"]["factor_research"]["task"]["task_id"] == next_task.task_id
 
 

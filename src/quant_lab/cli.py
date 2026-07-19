@@ -1453,6 +1453,14 @@ def prune_storage_retention_command(
     ] = False,
     keep_inbox_days: Annotated[int, typer.Option("--keep-inbox-days", min=1)] = 2,
     keep_export_packs: Annotated[int, typer.Option("--keep-export-packs", min=1)] = 5,
+    keep_export_terminal_snapshot_hours: Annotated[
+        int,
+        typer.Option("--keep-export-terminal-snapshot-hours", min=0),
+    ] = 24,
+    max_export_terminal_snapshot_bytes: Annotated[
+        int,
+        typer.Option("--max-export-terminal-snapshot-bytes", min=0),
+    ] = 5 * 1024**3,
     dry_run: Annotated[
         bool,
         typer.Option(
@@ -1473,6 +1481,8 @@ def prune_storage_retention_command(
         prune_high_frequency_archive=prune_high_frequency_archive,
         keep_inbox_days=keep_inbox_days,
         keep_export_packs=keep_export_packs,
+        keep_export_terminal_snapshot_hours=keep_export_terminal_snapshot_hours,
+        max_export_terminal_snapshot_bytes=max_export_terminal_snapshot_bytes,
         dry_run=dry_run,
     )
     typer.echo(

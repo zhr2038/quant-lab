@@ -86,7 +86,7 @@ export function StrategyFlow({ flow }: { flow: Record<string, unknown> }) {
             ))}
           </div>
           {!hypothesisRows.length && <div className="factor-empty">暂无已登记研究假设</div>}
-          <div className="opportunity-cost-note" title={[nasTaskId, generationId].filter(Boolean).join(" | ")}>
+          <div className="opportunity-cost-note factor-generation-note" title={[nasTaskId, generationId].filter(Boolean).join(" | ")}>
             <span>NAS {stringValue(nasTask.state, "idle")} · {shortId(nasTaskId || generationId)}</span>
             <em>
               {stringValue(factorFactory.current_generation_verdict, "NO_CURRENT_TRIALS")}

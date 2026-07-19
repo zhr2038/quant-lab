@@ -2522,6 +2522,19 @@ def test_web_v2_uses_fluid_layout_and_truthful_pack_loading_state():
     assert "statusPending || generateMutation.isPending" in app_source
 
 
+def test_web_v2_factor_generation_status_uses_dedicated_responsive_grid():
+    strategy_flow = Path(
+        "frontend-bigscreen/src/components/StrategyFlow.tsx"
+    ).read_text(encoding="utf-8")
+    styles = Path("frontend-bigscreen/src/styles.css").read_text(encoding="utf-8")
+
+    assert 'className="opportunity-cost-note factor-generation-note"' in strategy_flow
+    assert ".strategy-research-grid .factor-generation-note{" in styles
+    assert "grid-template-columns:minmax(190px,.82fr)" in styles
+    assert ".strategy-research-grid .factor-generation-note strong{text-align:right}" in styles
+    assert "grid-template-columns:1fr;align-items:start;row-gap:4px" in styles
+
+
 def test_web_v2_legacy_hashes_open_ops_drilldowns():
     app_source = Path("frontend-bigscreen/src/App.tsx").read_text(encoding="utf-8")
 

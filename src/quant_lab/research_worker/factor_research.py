@@ -23,6 +23,17 @@ from quant_lab.research.factor_research.contracts import (
     ResearchTrial,
     StrategyFit,
 )
+from quant_lab.research.factor_research.cost_policy import (
+    MAX_POINT_IN_TIME_COST_AGE_HOURS,
+    MIN_DATA_COVERAGE,
+    MIN_POINT_IN_TIME_SPREAD_SAMPLES_PER_DAY,
+    MIN_RESEARCH_PROXY_ROUNDTRIP_COST_BPS,
+    ORDERBOOK_SPREAD_1M_DATASET,
+    POINT_IN_TIME_COST_EVALUATION_DAYS,
+    PUBLIC_PROXY_COST_SOURCES,
+    RESEARCH_COST_SOURCES,
+    TRUSTED_COST_SOURCES,
+)
 from quant_lab.research.factor_research.decision import (
     FactorDecisionEvidence,
     decide_factor_research,
@@ -49,6 +60,7 @@ from quant_lab.research.factor_research.portfolio import (
 from quant_lab.research.factor_research.registry import (
     RESEARCH_HYPOTHESIS_REGISTRY_DATASET,
     RESEARCH_TRIAL_LEDGER_DATASET,
+    feature_recipe_pre_window_bars,
     hypotheses_from_registry,
     hypothesis_registry_digest,
     trial_ledger_digest,
@@ -124,7 +136,13 @@ class TrialStatistics:
     coverage: float
     development_halves_same_sign: bool
     major_periods_same_sign_count: int
+    cost_evaluation_sample_count: int
     cost_coverage: float
+    trusted_cost_coverage: float
+    public_proxy_cost_coverage: float
+    reconstructed_proxy_cost_coverage: float
+    bootstrap_cost_coverage: float
+    stale_cost_rate: float
 
 
 def compute_factor_features_from_snapshot(
@@ -257,6 +275,7 @@ def compute_factor_statistics(
     *,
     trials: list[ResearchTrial],
     timing_hypothesis_ids: set[str],
+    cost_evaluation_start: datetime | None = None,
 ) -> dict[str, TrialStatistics]:
     preliminary: dict[str, dict[str, Any]] = {}
     pvalues: dict[str, float] = {}
@@ -287,7 +306,18 @@ def compute_factor_statistics(
         valid = samples.filter(
             pl.col("raw_value").is_not_null() & pl.col("forward_return").is_not_null()
         ).height
-        cost_valid = samples.filter(pl.col("cost_bps").is_not_null()).height
+        cost_samples = (
+            samples.filter(pl.col("decision_ts") >= cost_evaluation_start)
+            if cost_evaluation_start is not None
+            else samples
+        )
+        cost_sample_count = cost_samples.height
+        cost_valid = _true_count(cost_samples, "cost_point_in_time_valid")
+        trusted_cost_valid = _true_count(cost_samples, "cost_trusted_point_in_time_valid")
+        public_proxy_cost_valid = _true_count(cost_samples, "cost_public_proxy_valid")
+        reconstructed_proxy_cost_valid = _true_count(cost_samples, "cost_reconstructed_proxy_valid")
+        bootstrap_cost_valid = _true_count(cost_samples, "cost_bootstrap_valid")
+        stale_cost_count = _true_count(cost_samples, "cost_stale")
         preliminary[trial_id] = {
             "full": full,
             "development": development,
@@ -300,7 +330,21 @@ def compute_factor_statistics(
             "major_periods_same_sign_count": sum(
                 item.mean * trial.direction > 0 for item in (development, validation, blind)
             ),
-            "cost_coverage": cost_valid / samples.height if samples.height else 0.0,
+            "cost_evaluation_sample_count": cost_sample_count,
+            "cost_coverage": cost_valid / cost_sample_count if cost_sample_count else 0.0,
+            "trusted_cost_coverage": (
+                trusted_cost_valid / cost_sample_count if cost_sample_count else 0.0
+            ),
+            "public_proxy_cost_coverage": (
+                public_proxy_cost_valid / cost_sample_count if cost_sample_count else 0.0
+            ),
+            "reconstructed_proxy_cost_coverage": (
+                reconstructed_proxy_cost_valid / cost_sample_count if cost_sample_count else 0.0
+            ),
+            "bootstrap_cost_coverage": (
+                bootstrap_cost_valid / cost_sample_count if cost_sample_count else 0.0
+            ),
+            "stale_cost_rate": (stale_cost_count / cost_sample_count if cost_sample_count else 0.0),
         }
     adjustments = adjust_multiple_testing(pvalues)
     return {
@@ -354,6 +398,8 @@ def compute_factor_portfolios(
     trials: list[ResearchTrial],
     statistics: dict[str, TrialStatistics],
     timing_hypothesis_ids: set[str],
+    cost_evaluation_start: datetime | None = None,
+    cost_evaluation_end: datetime | None = None,
 ) -> tuple[dict[str, FactorPortfolioValidation], dict[str, list[float]]]:
     validations: dict[str, FactorPortfolioValidation] = {}
     return_series: dict[str, list[float]] = {}
@@ -361,6 +407,24 @@ def compute_factor_portfolios(
         samples = samples_by_trial[trial.trial_id].with_columns(
             (pl.col("raw_value") * trial.direction).alias("alpha_score")
         )
+        if cost_evaluation_start is not None:
+            samples = samples.filter(pl.col("decision_ts") >= cost_evaluation_start)
+        if cost_evaluation_end is not None:
+            samples = samples.filter(pl.col("decision_ts") < cost_evaluation_end)
+        if "cost_point_in_time_valid" in samples.columns:
+            samples = samples.with_columns(
+                (
+                    pl.col("tradable").fill_null(False)
+                    & pl.col("cost_point_in_time_valid").fill_null(False)
+                ).alias("tradable")
+            )
+        if cost_evaluation_start is not None and cost_evaluation_end is not None:
+            samples = samples.with_columns(
+                _chronological_split_expression(
+                    start=cost_evaluation_start,
+                    end=cost_evaluation_end,
+                ).alias("split")
+            )
         stats = statistics[trial.trial_id]
         signal_pass = _signal_pass(stats, trial.direction)
         timing = trial.hypothesis_id in timing_hypothesis_ids
@@ -453,6 +517,7 @@ def compute_factor_research_result(
         samples_by_trial,
         trials=trials,
         timing_hypothesis_ids=timing_ids,
+        cost_evaluation_start=_cost_evaluation_start(task),
     )
     attributions = compute_factor_attribution(
         samples_by_trial,
@@ -464,6 +529,8 @@ def compute_factor_research_result(
         trials=trials,
         statistics=statistics,
         timing_hypothesis_ids=timing_ids,
+        cost_evaluation_start=_cost_evaluation_start(task),
+        cost_evaluation_end=_cost_evaluation_end(task),
     )
     overfit = compute_factor_overfit_diagnostics(return_series, trials=trials)
     evidence, attribution_frame, portfolio_frame = _decision_frames(
@@ -507,6 +574,25 @@ def compute_factor_research_result(
         "test_count": len(trials),
         "output_rows": {name: frame.height for name, frame in frames.items()},
         "decision_counts": _value_counts(evidence, "decision"),
+        "cost_evaluation_window_days": POINT_IN_TIME_COST_EVALUATION_DAYS,
+        "minimum_point_in_time_cost_coverage": min(
+            (item.cost_coverage for item in statistics.values()),
+            default=0.0,
+        ),
+        "minimum_trusted_cost_coverage": min(
+            (item.trusted_cost_coverage for item in statistics.values()),
+            default=0.0,
+        ),
+        "minimum_reconstructed_proxy_cost_coverage": min(
+            (item.reconstructed_proxy_cost_coverage for item in statistics.values()),
+            default=0.0,
+        ),
+        "research_proxy_roundtrip_cost_floor_bps": (MIN_RESEARCH_PROXY_ROUNDTRIP_COST_BPS),
+        "minimum_spread_samples_per_symbol_day": (MIN_POINT_IN_TIME_SPREAD_SAMPLES_PER_DAY),
+        "maximum_stale_cost_rate": max(
+            (item.stale_cost_rate for item in statistics.values()),
+            default=0.0,
+        ),
         "compute_duration_seconds": time.perf_counter() - started,
         "research_only": True,
         "live_order_effect": "none",
@@ -691,7 +777,7 @@ def _build_trial_samples(
         _normalized_market(read_parquet_dataset(snapshot_lake_root / MARKET_DATASET))
     )
     universe = _point_in_time_market_universe(market)
-    costs = _normalize_daily_source(
+    published_costs = _normalize_cost_source(
         read_parquet_dataset(snapshot_lake_root / COST_DATASET),
         value_candidates=(
             "total_cost_bps_p75",
@@ -699,8 +785,11 @@ def _build_trial_samples(
             "roundtrip_all_in_cost_bps",
             "cost_bps",
         ),
-        output_name="cost_bps",
     )
+    reconstructed_costs = _normalize_spread_proxy_cost_source(
+        read_parquet_dataset(snapshot_lake_root / ORDERBOOK_SPREAD_1M_DATASET)
+    )
+    costs = _merge_point_in_time_cost_sources(published_costs, reconstructed_costs)
     regimes = _normalize_daily_source(
         read_parquet_dataset(snapshot_lake_root / REGIME_DATASET),
         value_candidates=("current_regime", "regime_state", "market_regime", "state"),
@@ -739,7 +828,7 @@ def _build_trial_samples(
             universe,
             value_column="universe_quality_score",
         )
-        samples = _join_point_in_time(samples, costs, value_column="cost_bps")
+        samples = _join_cost_point_in_time(samples, costs)
         samples = _join_point_in_time(samples, regimes, value_column="regime")
         samples = samples.with_columns(
             (
@@ -771,6 +860,7 @@ def _build_trial_samples(
             pl.lit(trial.factor_formula_hash).alias("factor_hash"),
             pl.lit(factor_id).alias("factor_id"),
         )
+        samples = _attach_point_in_time_cost_validity(samples)
         result[trial.trial_id] = samples.sort(["decision_ts", "symbol"])
     return result
 
@@ -836,6 +926,345 @@ def _normalize_daily_source(
     )
 
 
+def _normalize_cost_source(
+    frame: pl.DataFrame,
+    *,
+    value_candidates: tuple[str, ...],
+) -> pl.DataFrame:
+    schema = {
+        "symbol": pl.Utf8,
+        "source_day": pl.Date,
+        "_cost_observation_end_at": pl.Datetime(time_zone="UTC"),
+        "_cost_available_at": pl.Datetime(time_zone="UTC"),
+        "cost_bps": pl.Float64,
+        "cost_source": pl.Utf8,
+        "cost_fallback_level": pl.Utf8,
+        "eligible_for_live_cost_coverage": pl.Boolean,
+        "cost_reconstructed_from_spread": pl.Boolean,
+        "cost_observation_count": pl.Int64,
+        "cost_materialized_late": pl.Boolean,
+        "_cost_source_priority": pl.Int64,
+    }
+    day_column = next(
+        (name for name in ("day", "as_of_date", "date") if name in frame.columns),
+        None,
+    )
+    value_column = next((name for name in value_candidates if name in frame.columns), None)
+    if day_column is None or value_column is None or "symbol" not in frame.columns:
+        return pl.DataFrame(schema=schema)
+    source_day = pl.coalesce(
+        pl.col(day_column).cast(pl.Date, strict=False),
+        pl.col(day_column).cast(pl.Utf8, strict=False).str.to_date(strict=False),
+    )
+    observation_end_at = source_day.cast(pl.Datetime(time_zone="UTC")) + timedelta(days=1)
+    if "created_at" in frame.columns:
+        created_at = pl.coalesce(
+            pl.col("created_at").cast(pl.Datetime(time_zone="UTC"), strict=False),
+            pl.col("created_at")
+            .cast(pl.Utf8, strict=False)
+            .str.to_datetime(time_zone="UTC", strict=False),
+        )
+    else:
+        created_at = pl.lit(None, dtype=pl.Datetime(time_zone="UTC"))
+    source_columns = [name for name in ("cost_source", "source") if name in frame.columns]
+    source = (
+        pl.coalesce(*[pl.col(name).cast(pl.Utf8, strict=False) for name in source_columns])
+        if source_columns
+        else pl.lit("")
+    )
+    fallback = (
+        pl.col("fallback_level").cast(pl.Utf8, strict=False)
+        if "fallback_level" in frame.columns
+        else pl.lit("")
+    )
+    eligible = (
+        pl.col("eligible_for_live_cost_coverage").cast(pl.Boolean, strict=False)
+        if "eligible_for_live_cost_coverage" in frame.columns
+        else pl.lit(False)
+    )
+    normalized = frame.select(
+        pl.col("symbol").cast(pl.Utf8).str.to_uppercase().str.replace_all("/", "-").alias("symbol"),
+        source_day.alias("source_day"),
+        observation_end_at.alias("_cost_observation_end_at"),
+        created_at.alias("_cost_reported_at"),
+        pl.col(value_column).cast(pl.Float64, strict=False).alias("cost_bps"),
+        source.fill_null("").str.to_lowercase().alias("cost_source"),
+        fallback.fill_null("").alias("cost_fallback_level"),
+        eligible.fill_null(False).alias("eligible_for_live_cost_coverage"),
+    )
+    normalized = normalized.with_columns(
+        pl.max_horizontal(
+            pl.col("_cost_reported_at").fill_null(pl.col("_cost_observation_end_at")),
+            pl.col("_cost_observation_end_at"),
+        ).alias("_cost_available_at"),
+        pl.lit(False).alias("cost_reconstructed_from_spread"),
+        pl.lit(None, dtype=pl.Int64).alias("cost_observation_count"),
+    )
+    source_expr = pl.col("cost_source")
+    proxy_or_bootstrap = source_expr.is_in(
+        sorted(PUBLIC_PROXY_COST_SOURCES | {"bootstrap_cost_probe"})
+    )
+    normalized = normalized.with_columns(
+        pl.when(proxy_or_bootstrap)
+        .then(
+            pl.max_horizontal(
+                pl.col("cost_bps"),
+                pl.lit(MIN_RESEARCH_PROXY_ROUNDTRIP_COST_BPS),
+            )
+        )
+        .otherwise(pl.col("cost_bps"))
+        .alias("cost_bps"),
+        (
+            (pl.col("_cost_available_at") - pl.col("_cost_observation_end_at")).dt.total_seconds()
+            / 3600.0
+            > float(MAX_POINT_IN_TIME_COST_AGE_HOURS)
+        ).alias("cost_materialized_late"),
+        _cost_source_priority_expression().alias("_cost_source_priority"),
+    )
+    return (
+        normalized.drop("_cost_reported_at")
+        .drop_nulls(["symbol", "source_day", "_cost_observation_end_at", "_cost_available_at"])
+        .filter(pl.col("cost_bps").is_finite() & (pl.col("cost_bps") >= 0.0))
+        .sort(
+            [
+                "symbol",
+                "source_day",
+                "_cost_available_at",
+                "_cost_source_priority",
+                "cost_bps",
+            ]
+        )
+        .unique(["symbol", "source_day", "_cost_available_at"], keep="last")
+        .sort(["symbol", "_cost_available_at", "_cost_source_priority"])
+        .select(list(schema))
+        .cast(schema, strict=False)
+    )
+
+
+def _normalize_spread_proxy_cost_source(frame: pl.DataFrame) -> pl.DataFrame:
+    schema = {
+        "symbol": pl.Utf8,
+        "source_day": pl.Date,
+        "_cost_observation_end_at": pl.Datetime(time_zone="UTC"),
+        "_cost_available_at": pl.Datetime(time_zone="UTC"),
+        "cost_bps": pl.Float64,
+        "cost_source": pl.Utf8,
+        "cost_fallback_level": pl.Utf8,
+        "eligible_for_live_cost_coverage": pl.Boolean,
+        "cost_reconstructed_from_spread": pl.Boolean,
+        "cost_observation_count": pl.Int64,
+        "cost_materialized_late": pl.Boolean,
+        "_cost_source_priority": pl.Int64,
+    }
+    if not {"symbol", "minute_ts", "spread_bps"}.issubset(frame.columns):
+        return pl.DataFrame(schema=schema)
+    minute = (
+        frame.select(
+            pl.col("symbol")
+            .cast(pl.Utf8)
+            .str.to_uppercase()
+            .str.replace_all("/", "-")
+            .alias("symbol"),
+            pl.coalesce(
+                pl.col("minute_ts").cast(pl.Datetime(time_zone="UTC"), strict=False),
+                pl.col("minute_ts")
+                .cast(pl.Utf8, strict=False)
+                .str.to_datetime(time_zone="UTC", strict=False),
+            ).alias("minute_ts"),
+            pl.col("spread_bps").cast(pl.Float64, strict=False).alias("spread_bps"),
+        )
+        .drop_nulls(["symbol", "minute_ts", "spread_bps"])
+        .filter(pl.col("spread_bps").is_finite() & (pl.col("spread_bps") >= 0.0))
+        # Multiple public book channels can cover the same minute. The maximum
+        # is retained so channel duplication cannot make the proxy optimistic.
+        .group_by(["symbol", "minute_ts"])
+        .agg(pl.col("spread_bps").max().alias("spread_bps"))
+        .with_columns(pl.col("minute_ts").dt.date().alias("source_day"))
+    )
+    daily = (
+        minute.group_by(["symbol", "source_day"])
+        .agg(
+            pl.col("spread_bps").quantile(0.75, interpolation="linear").alias("_spread_bps_p75"),
+            pl.len().alias("cost_observation_count"),
+        )
+        .filter(pl.col("cost_observation_count") >= MIN_POINT_IN_TIME_SPREAD_SAMPLES_PER_DAY)
+    )
+    return _finalize_spread_proxy_daily(daily)
+
+
+def _finalize_spread_proxy_daily(daily: pl.DataFrame) -> pl.DataFrame:
+    schema = {
+        "symbol": pl.Utf8,
+        "source_day": pl.Date,
+        "_cost_observation_end_at": pl.Datetime(time_zone="UTC"),
+        "_cost_available_at": pl.Datetime(time_zone="UTC"),
+        "cost_bps": pl.Float64,
+        "cost_source": pl.Utf8,
+        "cost_fallback_level": pl.Utf8,
+        "eligible_for_live_cost_coverage": pl.Boolean,
+        "cost_reconstructed_from_spread": pl.Boolean,
+        "cost_observation_count": pl.Int64,
+        "cost_materialized_late": pl.Boolean,
+        "_cost_source_priority": pl.Int64,
+    }
+    required = {"symbol", "source_day", "_spread_bps_p75", "cost_observation_count"}
+    if not required.issubset(daily.columns):
+        return pl.DataFrame(schema=schema)
+    return (
+        daily.filter(
+            pl.col("cost_observation_count") >= MIN_POINT_IN_TIME_SPREAD_SAMPLES_PER_DAY
+        )
+        .with_columns(
+            (pl.col("source_day").cast(pl.Datetime(time_zone="UTC")) + timedelta(days=1)).alias(
+                "_cost_observation_end_at"
+            )
+        )
+        .with_columns(
+            pl.col("_cost_observation_end_at").alias("_cost_available_at"),
+            pl.max_horizontal(
+                pl.col("_spread_bps_p75"),
+                pl.lit(MIN_RESEARCH_PROXY_ROUNDTRIP_COST_BPS),
+            ).alias("cost_bps"),
+            pl.lit("public_spread_proxy").alias("cost_source"),
+            pl.lit(
+                "FEE_MISSING;SLIPPAGE_UNKNOWN;POINT_IN_TIME_1M_SPREAD_PROXY;"
+                "CONSERVATIVE_30BPS_FLOOR"
+            ).alias("cost_fallback_level"),
+            pl.lit(False).alias("eligible_for_live_cost_coverage"),
+            pl.lit(True).alias("cost_reconstructed_from_spread"),
+            pl.lit(False).alias("cost_materialized_late"),
+            pl.lit(10, dtype=pl.Int64).alias("_cost_source_priority"),
+        )
+        .drop("_spread_bps_p75")
+        .sort(["symbol", "_cost_available_at"])
+        .select(list(schema))
+        .cast(schema, strict=False)
+    )
+
+
+def _merge_point_in_time_cost_sources(
+    published: pl.DataFrame,
+    reconstructed: pl.DataFrame,
+) -> pl.DataFrame:
+    if published.is_empty():
+        return reconstructed
+    if reconstructed.is_empty():
+        return published.filter(
+            ~pl.col("cost_materialized_late")
+            & pl.col("cost_source").is_in(sorted(RESEARCH_COST_SOURCES))
+        )
+    combined = pl.concat([published, reconstructed], how="vertical_relaxed").filter(
+        ~pl.col("cost_materialized_late")
+        & pl.col("cost_source").is_in(sorted(RESEARCH_COST_SOURCES))
+    )
+    # Preserve later, timely recalibrations as new events. Only exact event-time
+    # collisions are deduplicated. A fresher observation day wins first; for
+    # the same day, trusted evidence takes precedence.
+    return (
+        combined.sort(
+            [
+                "symbol",
+                "_cost_available_at",
+                "source_day",
+                "_cost_source_priority",
+            ]
+        )
+        .unique(["symbol", "_cost_available_at"], keep="last", maintain_order=True)
+        .sort(["symbol", "_cost_available_at"])
+    )
+
+
+def _cost_source_priority_expression() -> pl.Expr:
+    source = pl.col("cost_source")
+    return (
+        pl.when(pl.col("cost_reconstructed_from_spread"))
+        .then(pl.lit(10))
+        .when(source == "bootstrap_cost_probe")
+        .then(pl.lit(20))
+        .when(source.is_in(sorted(PUBLIC_PROXY_COST_SOURCES)))
+        .then(pl.lit(30))
+        .when(
+            source.is_in(sorted(TRUSTED_COST_SOURCES)) & pl.col("eligible_for_live_cost_coverage")
+        )
+        .then(pl.lit(40))
+        .when(source.is_in(sorted(TRUSTED_COST_SOURCES)))
+        .then(pl.lit(35))
+        .otherwise(pl.lit(0))
+    )
+
+
+def _join_cost_point_in_time(samples: pl.DataFrame, costs: pl.DataFrame) -> pl.DataFrame:
+    if costs.is_empty():
+        return samples.with_columns(
+            pl.lit(None, dtype=pl.Float64).alias("cost_bps"),
+            pl.lit(None, dtype=pl.Date).alias("_cost_bps_source_day"),
+            pl.lit(None, dtype=pl.Datetime(time_zone="UTC")).alias("_cost_observation_end_at"),
+            pl.lit(None, dtype=pl.Datetime(time_zone="UTC")).alias("_cost_available_at"),
+            pl.lit(None, dtype=pl.Utf8).alias("cost_source"),
+            pl.lit(None, dtype=pl.Utf8).alias("cost_fallback_level"),
+            pl.lit(False).alias("eligible_for_live_cost_coverage"),
+            pl.lit(False).alias("cost_reconstructed_from_spread"),
+            pl.lit(None, dtype=pl.Int64).alias("cost_observation_count"),
+            pl.lit(False).alias("cost_materialized_late"),
+        )
+    right = costs.rename({"source_day": "_cost_bps_source_day"}).sort(
+        ["symbol", "_cost_available_at"]
+    )
+    return samples.sort(["symbol", "decision_ts"]).join_asof(
+        right,
+        left_on="decision_ts",
+        right_on="_cost_available_at",
+        by="symbol",
+        strategy="backward",
+        check_sortedness=False,
+    )
+
+
+def _attach_point_in_time_cost_validity(samples: pl.DataFrame) -> pl.DataFrame:
+    cost_source = pl.col("cost_source").fill_null("").str.to_lowercase()
+    fallback = pl.col("cost_fallback_level").fill_null("").str.to_uppercase()
+    age_hours = (
+        pl.col("decision_ts") - pl.col("_cost_observation_end_at")
+    ).dt.total_seconds() / 3600.0
+    with_age = samples.with_columns(age_hours.alias("cost_age_hours"))
+    timely = (
+        pl.col("cost_bps").is_not_null()
+        & pl.col("_cost_available_at").is_not_null()
+        & pl.col("cost_age_hours").is_between(
+            0.0,
+            float(MAX_POINT_IN_TIME_COST_AGE_HOURS),
+            closed="both",
+        )
+    )
+    research_valid = (
+        timely
+        & cost_source.is_in(sorted(RESEARCH_COST_SOURCES))
+        & ~fallback.str.contains("GLOBAL_DEFAULT")
+    )
+    return with_age.with_columns(
+        research_valid.alias("cost_point_in_time_valid"),
+        (
+            research_valid
+            & cost_source.is_in(sorted(TRUSTED_COST_SOURCES))
+            & pl.col("eligible_for_live_cost_coverage").fill_null(False)
+        ).alias("cost_trusted_point_in_time_valid"),
+        (timely & cost_source.is_in(sorted(PUBLIC_PROXY_COST_SOURCES))).alias(
+            "cost_public_proxy_valid"
+        ),
+        (
+            timely
+            & cost_source.is_in(sorted(PUBLIC_PROXY_COST_SOURCES))
+            & pl.col("cost_reconstructed_from_spread").fill_null(False)
+        ).alias("cost_reconstructed_proxy_valid"),
+        (timely & (cost_source == "bootstrap_cost_probe")).alias("cost_bootstrap_valid"),
+        (
+            pl.col("cost_bps").is_not_null()
+            & pl.col("_cost_available_at").is_not_null()
+            & (pl.col("cost_age_hours") > float(MAX_POINT_IN_TIME_COST_AGE_HOURS))
+        ).alias("cost_stale"),
+    )
+
+
 def _join_point_in_time(
     samples: pl.DataFrame,
     source: pl.DataFrame,
@@ -896,7 +1325,15 @@ def _decision_frames(
         decision = decide_factor_research(
             FactorDecisionEvidence(
                 data_available=not samples.is_empty(),
-                data_quality_pass=stats.coverage >= 0.80 and stats.cost_coverage >= 0.80,
+                signal_data_quality_pass=stats.coverage >= MIN_DATA_COVERAGE,
+                portfolio_data_quality_pass=(
+                    stats.cost_evaluation_sample_count > 0
+                    and stats.cost_coverage >= MIN_DATA_COVERAGE
+                ),
+                deployment_cost_quality_pass=(
+                    stats.cost_evaluation_sample_count > 0
+                    and stats.trusted_cost_coverage >= MIN_DATA_COVERAGE
+                ),
                 leakage_pass=True,
                 duplicate_rejected=False,
                 coverage=stats.coverage,
@@ -1013,7 +1450,14 @@ def _decision_frames(
                 "attribution_type": attribution.attribution_type,
                 "joint_residual_rank_ic": attribution.joint_residual_rank_ic,
                 "max_symbol_contribution_share": attribution.max_symbol_contribution_share,
+                "cost_evaluation_window_days": POINT_IN_TIME_COST_EVALUATION_DAYS,
+                "cost_evaluation_sample_count": stats.cost_evaluation_sample_count,
                 "cost_coverage": stats.cost_coverage,
+                "trusted_cost_coverage": stats.trusted_cost_coverage,
+                "public_proxy_cost_coverage": stats.public_proxy_cost_coverage,
+                "reconstructed_proxy_cost_coverage": (stats.reconstructed_proxy_cost_coverage),
+                "bootstrap_cost_coverage": stats.bootstrap_cost_coverage,
+                "stale_cost_rate": stats.stale_cost_rate,
                 "pbo": diagnostics.pbo,
                 "dsr_probability": diagnostics.dsr_probability,
                 "overfit_status": diagnostics.status,
@@ -1051,6 +1495,14 @@ def _decision_frames(
                 "factor_id": factor_id,
                 "horizon_bars": trial.horizon,
                 **portfolio.__dict__,
+                "cost_evaluation_window_days": POINT_IN_TIME_COST_EVALUATION_DAYS,
+                "cost_evaluation_sample_count": stats.cost_evaluation_sample_count,
+                "cost_coverage": stats.cost_coverage,
+                "trusted_cost_coverage": stats.trusted_cost_coverage,
+                "public_proxy_cost_coverage": stats.public_proxy_cost_coverage,
+                "reconstructed_proxy_cost_coverage": (stats.reconstructed_proxy_cost_coverage),
+                "bootstrap_cost_coverage": stats.bootstrap_cost_coverage,
+                "stale_cost_rate": stats.stale_cost_rate,
                 "blockers_json": json.dumps(portfolio.blockers, separators=(",", ":")),
                 "pbo": diagnostics.pbo,
                 "dsr_probability": diagnostics.dsr_probability,
@@ -1225,7 +1677,6 @@ def _anti_leakage_report(
             "_universe_quality_score_source_day",
         ),
         ("regime_not_from_future", "_regime_source_day"),
-        ("cost_not_from_future", "_cost_bps_source_day"),
     ):
         checks.append(
             _check(
@@ -1236,6 +1687,21 @@ def _anti_leakage_report(
                 ).height,
             )
         )
+    checks.append(
+        _check(
+            "cost_not_from_future",
+            all_samples.filter(
+                (
+                    pl.col("_cost_available_at").is_not_null()
+                    & (pl.col("_cost_available_at") > pl.col("decision_ts"))
+                )
+                | (
+                    pl.col("_cost_observation_end_at").is_not_null()
+                    & (pl.col("_cost_observation_end_at") > pl.col("decision_ts"))
+                )
+            ).height,
+        )
+    )
     checks.append(
         _check(
             "multiple_testing_family_complete",
@@ -1267,6 +1733,7 @@ def _definition_row(
 ) -> dict[str, Any]:
     recipe = next(item for item in hypothesis.feature_recipes if item.recipe_id == recipe_id)
     lookback = max([int(item.value) for item in recipe.parameters if item.value.isdigit()] or [1])
+    pre_window_bars = feature_recipe_pre_window_bars(recipe)
     return {
         "hypothesis_id": hypothesis.hypothesis_id,
         "hypothesis_version": hypothesis.hypothesis_version,
@@ -1300,8 +1767,8 @@ def _definition_row(
         "status": "RESEARCH_REGISTERED",
         "lookback_bars": lookback,
         "availability_lag_bars": 1,
-        "warmup_bars": lookback,
-        "required_bars": lookback + max(hypothesis.expected_horizons),
+        "warmup_bars": pre_window_bars,
+        "required_bars": pre_window_bars + max(hypothesis.expected_horizons),
         "causal": True,
         "normalization": "cross_sectional_or_time_series_zscore",
         "owner": "factor_research_v2",
@@ -1352,6 +1819,10 @@ def _cross_section_rank(column: str) -> pl.Expr:
 def _split_expression(task: FactorResearchTask) -> pl.Expr:
     start = datetime.combine(task.start_date, datetime_time.min, tzinfo=UTC)
     end = datetime.combine(task.end_date + timedelta(days=1), datetime_time.min, tzinfo=UTC)
+    return _chronological_split_expression(start=start, end=end)
+
+
+def _chronological_split_expression(*, start: datetime, end: datetime) -> pl.Expr:
     span = end - start
     research_end = start + span * 0.60
     validation_end = start + span * 0.80
@@ -1362,6 +1833,15 @@ def _split_expression(task: FactorResearchTask) -> pl.Expr:
         .then(pl.lit("VALIDATION"))
         .otherwise(pl.lit("BLIND_CONFIRMATORY"))
     )
+
+
+def _cost_evaluation_start(task: FactorResearchTask) -> datetime:
+    start_day = task.end_date - timedelta(days=POINT_IN_TIME_COST_EVALUATION_DAYS - 1)
+    return datetime.combine(start_day, datetime_time.min, tzinfo=UTC)
+
+
+def _cost_evaluation_end(task: FactorResearchTask) -> datetime:
+    return datetime.combine(task.end_date + timedelta(days=1), datetime_time.min, tzinfo=UTC)
 
 
 def _ic_values(samples: pl.DataFrame, *, timing: bool) -> list[float]:
@@ -1399,8 +1879,7 @@ def _halves_same_direction(values: list[float], direction: int) -> bool:
 
 def _signal_pass(stats: TrialStatistics, direction: int) -> bool:
     return (
-        stats.coverage >= 0.80
-        and stats.cost_coverage >= 0.80
+        stats.coverage >= MIN_DATA_COVERAGE
         and stats.development.mean * direction > 0.03
         and stats.development.confirmatory_hac_tstat >= 2.0
         and stats.development_halves_same_sign
@@ -1428,14 +1907,12 @@ def _portfolio_return_series(
             signal = float(group.get_column("alpha_score").drop_nulls().mean() or 0.0)
             selected = group.filter(pl.col("tradable")) if signal > 0 else group.head(0)
         else:
-            selected = group.filter(pl.col("tradable")).sort("alpha_score", descending=True).head(3)
+            selected = group.sort("alpha_score", descending=True).head(3).filter(pl.col("tradable"))
         if selected.is_empty():
             values.append(0.0)
             continue
         net = selected.select(
-            (pl.col("forward_return") - pl.col("cost_bps").fill_null(0.0) / 10_000.0)
-            .mean()
-            .alias("net")
+            (pl.col("forward_return") - pl.col("cost_bps") / 10_000.0).mean().alias("net")
         ).item()
         values.append(float(net or 0.0))
     return values
@@ -1515,3 +1992,9 @@ def _digest(value: Any) -> str:
 
 def _mean(values: list[float]) -> float:
     return sum(values) / len(values) if values else 0.0
+
+
+def _true_count(frame: pl.DataFrame, column: str) -> int:
+    if frame.is_empty() or column not in frame.columns:
+        return 0
+    return frame.filter(pl.col(column).fill_null(False)).height

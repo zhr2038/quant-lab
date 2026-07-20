@@ -114,7 +114,12 @@ def create_factor_research_task(
     max_horizon_hours = max(
         horizon for hypothesis in executable for horizon in hypothesis.expected_horizons
     )
-    latest_complete_end = as_of_date - timedelta(days=(max_horizon_hours + 23) // 24)
+    # A date-only task created during the UTC day cannot assume that day's
+    # closing bars already exist. Keep the full as-of day outside every label
+    # horizon so the final decision has a completed forward label.
+    latest_complete_end = as_of_date - timedelta(
+        days=(max_horizon_hours + 23) // 24 + 1
+    )
     resolved_end = end_date or latest_complete_end
     if resolved_end > latest_complete_end:
         raise ValueError("factor_research_label_horizon_incomplete")

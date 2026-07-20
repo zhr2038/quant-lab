@@ -433,6 +433,10 @@ function drilldownContent(view: ViewKey, data: BigscreenSnapshot) {
                 portfolio_fail_count: factorFactory.portfolio_fail_count,
                 paper_candidate_count: factorFactory.paper_candidate_count,
                 data_blocked_count: factorFactory.data_blocked_count,
+                portfolio_cost_gate: factorFactory.portfolio_cost_gate,
+                minimum_point_in_time_cost_coverage: factorFactory.minimum_point_in_time_cost_coverage,
+                minimum_trusted_cost_coverage: factorFactory.minimum_trusted_cost_coverage,
+                minimum_reconstructed_proxy_cost_coverage: factorFactory.minimum_reconstructed_proxy_cost_coverage,
                 historical_audit_evidence_count: factorFactory.external_audit_count,
                 factor_fixed_effect_share: factorFactory.factor_fixed_effect_share,
                 residual_incremental_ic: factorFactory.residual_incremental_ic,
@@ -459,7 +463,7 @@ function drilldownContent(view: ViewKey, data: BigscreenSnapshot) {
           <MiniTable
             title="Long-only spot portfolio validation"
             rows={portfolioValidation}
-            columns={["factor_id", "horizon_bars", "net_return", "portfolio_validity", "decision", "pbo", "dsr_probability", "concentration_hhi"]}
+            columns={["factor_id", "horizon_bars", "net_return", "cost_coverage", "trusted_cost_coverage", "reconstructed_proxy_cost_coverage", "portfolio_validity", "decision", "pbo", "dsr_probability"]}
           />
           <MiniTable
             title="Factor retirement registry"

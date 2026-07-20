@@ -25,6 +25,7 @@ from quant_lab.data.market_bar_time import (
 )
 from quant_lab.factors.composite_factory import build_factor_factory_v2_reports
 from quant_lab.ops.api_metrics import api_metrics_summary
+from quant_lab.research.factor_research.cost_policy import MIN_DATA_COVERAGE
 from quant_lab.research.factor_research.registry import MAX_RESEARCH_TRIALS
 from quant_lab.symbols import normalize_symbol
 from quant_lab.time_display import beijing_today
@@ -2181,6 +2182,52 @@ def _factor_factory_payload(
         if generation_trial_ids
         else trial_rows
     )
+    current_portfolio_rows = (
+        [
+            row
+            for row in portfolio_rows
+            if str(row.get("trial_id") or "") in generation_trial_ids
+        ]
+        if generation_trial_ids
+        else portfolio_rows
+    )
+    point_in_time_cost_coverages = [
+        value
+        for row in current_portfolio_rows
+        if (value := _float(row.get("cost_coverage"))) is not None
+    ]
+    trusted_cost_coverages = [
+        value
+        for row in current_portfolio_rows
+        if (value := _float(row.get("trusted_cost_coverage"))) is not None
+    ]
+    reconstructed_cost_coverages = [
+        value
+        for row in current_portfolio_rows
+        if (value := _float(row.get("reconstructed_proxy_cost_coverage"))) is not None
+    ]
+    stale_cost_rates = [
+        value
+        for row in current_portfolio_rows
+        if (value := _float(row.get("stale_cost_rate"))) is not None
+    ]
+    minimum_point_in_time_cost_coverage = (
+        min(point_in_time_cost_coverages) if point_in_time_cost_coverages else None
+    )
+    minimum_trusted_cost_coverage = (
+        min(trusted_cost_coverages) if trusted_cost_coverages else None
+    )
+    if minimum_point_in_time_cost_coverage is None:
+        portfolio_cost_gate = "NOT_OBSERVABLE"
+    elif minimum_point_in_time_cost_coverage < MIN_DATA_COVERAGE:
+        portfolio_cost_gate = "BLOCKED_POINT_IN_TIME_COST"
+    elif (
+        minimum_trusted_cost_coverage is None
+        or minimum_trusted_cost_coverage < MIN_DATA_COVERAGE
+    ):
+        portfolio_cost_gate = "RESEARCH_PROXY_ONLY_DEPLOYMENT_BLOCKED"
+    else:
+        portfolio_cost_gate = "TRUSTED_COST_READY"
     hypothesis_status_counts = _count_by_column(hypotheses, "status")
     trial_status_counts = _count_by_column(trials, "status")
     confirmatory_trial_count = sum(
@@ -2303,6 +2350,13 @@ def _factor_factory_payload(
         "portfolio_fail_count": state_counts.get("PORTFOLIO_FAIL", 0),
         "paper_candidate_count": state_counts.get("PAPER_CANDIDATE", 0),
         "data_blocked_count": hypothesis_status_counts.get("DATA_BLOCKED", 0),
+        "portfolio_cost_gate": portfolio_cost_gate,
+        "minimum_point_in_time_cost_coverage": minimum_point_in_time_cost_coverage,
+        "minimum_trusted_cost_coverage": minimum_trusted_cost_coverage,
+        "minimum_reconstructed_proxy_cost_coverage": (
+            min(reconstructed_cost_coverages) if reconstructed_cost_coverages else None
+        ),
+        "maximum_stale_cost_rate": max(stale_cost_rates) if stale_cost_rates else None,
         "factor_fixed_effect_share": (
             sum(fixed_effect_shares) / len(fixed_effect_shares)
             if fixed_effect_shares
@@ -2320,7 +2374,7 @@ def _factor_factory_payload(
         "hypotheses": hypothesis_rows[:8],
         "trials": current_trial_rows[:8],
         "attribution": attribution_rows[:8],
-        "portfolio_validation": portfolio_rows[:8],
+        "portfolio_validation": current_portfolio_rows[:8],
         "retirement": _frame_rows(retirement, limit=8),
         "external_audit_count": external_audit.height,
         "external_audit_evidence": _frame_rows(external_audit, limit=16),

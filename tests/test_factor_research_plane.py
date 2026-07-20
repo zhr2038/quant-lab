@@ -76,12 +76,23 @@ def _write_source_data(root: Path, *, include_regime: bool = True) -> None:
     costs.mkdir(parents=True)
     pl.DataFrame(
         {
-            "day": [date(2024, 7, 18), date(2026, 7, 16)],
+            "day": [date(2024, 7, 18), date(2026, 7, 15)],
             "symbol": ["SOL-USDT", "SOL-USDT"],
             "total_cost_bps_p75": [12.0, 10.0],
             "cost_source": ["actual", "actual"],
         }
     ).write_parquet(costs / "part-cost.parquet")
+
+    spreads = root / "silver" / "orderbook_spread_1m"
+    spreads.mkdir(parents=True)
+    pl.DataFrame(
+        {
+            "symbol": ["SOL-USDT"],
+            "channel": ["books5"],
+            "minute_ts": [datetime(2026, 7, 15, 23, 0, tzinfo=UTC)],
+            "spread_bps": [8.0],
+        }
+    ).write_parquet(spreads / "part-spread.parquet")
 
     if include_regime:
         regime = root / "gold" / "market_regime_daily"
@@ -119,6 +130,7 @@ def test_factor_research_task_is_content_addressed_signed_and_idempotent(tmp_pat
     )
     assert first.task_id == second.task_id
     assert first.snapshot_id == second.snapshot_id
+    assert first.end_date == date(2026, 7, 15)
     assert first_status.task_id == second_status.task_id
     assert first.test_count == 8
     assert len(list((queue / "pending").iterdir())) == 1
@@ -136,6 +148,16 @@ def test_factor_research_task_is_content_addressed_signed_and_idempotent(tmp_pat
     )
     assert manifest.trial_ids == first.trial_ids
     assert manifest.source_input_digest == first.source_input_digest
+    assert "silver/orderbook_spread_1m" in set(manifest.datasets)
+
+    snapshot_costs = read_parquet_dataset(
+        snapshot_root / "files" / "gold" / "cost_bucket_daily"
+    )
+    assert snapshot_costs.get_column("day").to_list() == [date(2026, 7, 15)]
+    snapshot_spreads = read_parquet_dataset(
+        snapshot_root / "files" / "silver" / "orderbook_spread_1m"
+    )
+    assert snapshot_spreads.height == 1
 
     assert read_parquet_dataset(lake / RESEARCH_HYPOTHESIS_REGISTRY_DATASET).is_empty()
     assert read_parquet_dataset(lake / RESEARCH_TRIAL_LEDGER_DATASET).is_empty()
@@ -339,6 +361,26 @@ def test_factor_research_request_fails_closed_when_required_source_is_missing(
     lake = tmp_path / "lake"
     _write_source_data(lake, include_regime=False)
     with pytest.raises(ValueError, match="required_dataset_empty:gold/market_regime_daily"):
+        create_factor_research_task(
+            lake,
+            tmp_path / "queue",
+            as_of_date=date(2026, 7, 19),
+            signing_key=Ed25519PrivateKey.generate(),
+            signature_key_id=TASK_KEY_ID,
+            quant_lab_commit=COMMIT,
+            selected_v5_bundle_id=BUNDLE_ID,
+        )
+
+
+def test_factor_research_request_requires_point_in_time_spread_history(tmp_path: Path) -> None:
+    lake = tmp_path / "lake"
+    _write_source_data(lake)
+    shutil.rmtree(lake / "silver" / "orderbook_spread_1m")
+
+    with pytest.raises(
+        ValueError,
+        match="required_dataset_empty:silver/orderbook_spread_1m",
+    ):
         create_factor_research_task(
             lake,
             tmp_path / "queue",

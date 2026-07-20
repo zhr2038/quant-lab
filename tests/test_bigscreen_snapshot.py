@@ -1938,6 +1938,10 @@ def test_bigscreen_factor_research_kpis_are_hypothesis_and_trial_driven(tmp_path
                     "factor_id": "factor-1",
                     "portfolio_validity": "FAIL",
                     "decision": "PORTFOLIO_FAIL",
+                    "cost_coverage": 0.93,
+                    "trusted_cost_coverage": 0.12,
+                    "reconstructed_proxy_cost_coverage": 0.81,
+                    "stale_cost_rate": 0.04,
                     "pbo": 0.25,
                     "dsr_probability": 0.62,
                     "created_at": created_at,
@@ -1996,6 +2000,15 @@ def test_bigscreen_factor_research_kpis_are_hypothesis_and_trial_driven(tmp_path
     assert factor_research["residual_incremental_ic"] == pytest.approx(0.015)
     assert factor_research["mean_pbo"] == pytest.approx(0.25)
     assert factor_research["mean_dsr_probability"] == pytest.approx(0.62)
+    assert factor_research["minimum_point_in_time_cost_coverage"] == pytest.approx(0.93)
+    assert factor_research["minimum_trusted_cost_coverage"] == pytest.approx(0.12)
+    assert factor_research["minimum_reconstructed_proxy_cost_coverage"] == pytest.approx(
+        0.81
+    )
+    assert factor_research["maximum_stale_cost_rate"] == pytest.approx(0.04)
+    assert factor_research["portfolio_cost_gate"] == (
+        "RESEARCH_PROXY_ONLY_DEPLOYMENT_BLOCKED"
+    )
     assert factor_research["external_audit_count"] == 1
     assert factor_research["external_audit_evidence"][0]["eligible_for_promotion"] is False
 

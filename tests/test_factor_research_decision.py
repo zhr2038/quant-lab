@@ -8,7 +8,9 @@ from quant_lab.research.factor_research.decision import (
 def _evidence(**updates: object) -> FactorDecisionEvidence:
     values: dict[str, object] = {
         "data_available": True,
-        "data_quality_pass": True,
+        "signal_data_quality_pass": True,
+        "portfolio_data_quality_pass": True,
+        "deployment_cost_quality_pass": True,
         "leakage_pass": True,
         "duplicate_rejected": False,
         "coverage": 0.95,
@@ -52,6 +54,31 @@ def test_signal_pass_and_long_only_failure_is_portfolio_fail() -> None:
     assert result.decision == FactorResearchDecision.PORTFOLIO_FAIL
     assert result.signal_validity == "PASS"
     assert result.portfolio_validity == "FAIL"
+
+
+def test_missing_point_in_time_cost_does_not_erase_valid_signal() -> None:
+    result = decide_factor_research(_evidence(portfolio_data_quality_pass=False))
+
+    assert result.decision == FactorResearchDecision.SIGNAL_VALID
+    assert result.signal_validity == "PASS"
+    assert result.portfolio_validity == "INCONCLUSIVE"
+    assert result.deployment_readiness == "BLOCKED_POINT_IN_TIME_COST_REQUIRED"
+
+
+def test_proxy_cost_can_validate_portfolio_but_not_deployment() -> None:
+    result = decide_factor_research(_evidence(deployment_cost_quality_pass=False))
+
+    assert result.decision == FactorResearchDecision.SIGNAL_VALID
+    assert result.signal_validity == "PASS"
+    assert result.portfolio_validity == "PASS"
+    assert result.deployment_readiness == "BLOCKED_TRUSTED_COST_EVIDENCE_REQUIRED"
+
+
+def test_missing_signal_inputs_are_inconclusive_not_a_false_negative() -> None:
+    result = decide_factor_research(_evidence(signal_data_quality_pass=False))
+
+    assert result.decision == FactorResearchDecision.REJECTED_DATA_QUALITY
+    assert result.signal_validity == "INCONCLUSIVE"
 
 
 def test_inconclusive_overfit_diagnostics_cannot_be_paper_candidate() -> None:

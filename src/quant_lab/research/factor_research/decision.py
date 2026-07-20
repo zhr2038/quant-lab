@@ -8,7 +8,9 @@ from quant_lab.research.factor_research.contracts import FactorResearchDecision
 @dataclass(frozen=True)
 class FactorDecisionEvidence:
     data_available: bool
-    data_quality_pass: bool
+    signal_data_quality_pass: bool
+    portfolio_data_quality_pass: bool
+    deployment_cost_quality_pass: bool
     leakage_pass: bool
     duplicate_rejected: bool
     coverage: float
@@ -45,9 +47,13 @@ class FactorDecisionResult:
 
 def decide_factor_research(evidence: FactorDecisionEvidence) -> FactorDecisionResult:
     if not evidence.data_available:
-        return _result(FactorResearchDecision.DATA_BLOCKED, "UNKNOWN", "UNKNOWN")
-    if not evidence.data_quality_pass:
-        return _result(FactorResearchDecision.REJECTED_DATA_QUALITY, "FAIL", "UNKNOWN")
+        return _result(FactorResearchDecision.DATA_BLOCKED, "INCONCLUSIVE", "INCONCLUSIVE")
+    if not evidence.signal_data_quality_pass:
+        return _result(
+            FactorResearchDecision.REJECTED_DATA_QUALITY,
+            "INCONCLUSIVE",
+            "INCONCLUSIVE",
+        )
     if not evidence.leakage_pass:
         return _result(FactorResearchDecision.REJECTED_LEAKAGE, "FAIL", "UNKNOWN")
     if evidence.duplicate_rejected:
@@ -83,6 +89,22 @@ def decide_factor_research(evidence: FactorDecisionEvidence) -> FactorDecisionRe
             deployment_readiness="BLOCKED",
             blockers=tuple(confirmatory_blockers),
         )
+    if not evidence.portfolio_data_quality_pass:
+        return FactorDecisionResult(
+            decision=FactorResearchDecision.SIGNAL_VALID,
+            signal_validity="PASS",
+            portfolio_validity="INCONCLUSIVE",
+            deployment_readiness="BLOCKED_POINT_IN_TIME_COST_REQUIRED",
+            blockers=("point_in_time_cost_coverage_below_0_80",),
+        )
+    if evidence.portfolio_validity == "INCONCLUSIVE":
+        return FactorDecisionResult(
+            decision=FactorResearchDecision.SIGNAL_VALID,
+            signal_validity="PASS",
+            portfolio_validity="INCONCLUSIVE",
+            deployment_readiness="BLOCKED_PORTFOLIO_EVIDENCE_REQUIRED",
+            blockers=("pre_registered_long_only_portfolio_inconclusive",),
+        )
     if evidence.portfolio_validity != "PASS":
         return FactorDecisionResult(
             decision=FactorResearchDecision.PORTFOLIO_FAIL,
@@ -115,6 +137,14 @@ def decide_factor_research(evidence: FactorDecisionEvidence) -> FactorDecisionRe
             portfolio_validity="FAIL",
             deployment_readiness="BLOCKED",
             blockers=tuple(portfolio_blockers),
+        )
+    if not evidence.deployment_cost_quality_pass:
+        return FactorDecisionResult(
+            decision=FactorResearchDecision.SIGNAL_VALID,
+            signal_validity="PASS",
+            portfolio_validity="PASS",
+            deployment_readiness="BLOCKED_TRUSTED_COST_EVIDENCE_REQUIRED",
+            blockers=("trusted_point_in_time_cost_coverage_below_0_80",),
         )
     return FactorDecisionResult(
         decision=FactorResearchDecision.PAPER_CANDIDATE,

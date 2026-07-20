@@ -16,6 +16,7 @@ from quant_lab.data.file_index import build_lake_file_index
 from quant_lab.data.lake import (
     compact_parquet_dataset,
     compact_parquet_directory_files,
+    read_parquet_dataset,
     repair_parquet_partition_values,
 )
 from quant_lab.e2e import run_v5_contract_e2e
@@ -35,6 +36,7 @@ from quant_lab.ingest.okx_public import (
     MARKET_BAR_DATASET,
     OKXPublicClient,
     backfill_expanded_usdt_spot_market_bars,
+    backfill_factor_research_market_history,
     normalize_okx_candles_to_market_bars,
     publish_market_bars_to_lake,
 )
@@ -79,6 +81,13 @@ from quant_lab.research.entry_quality import (
 )
 from quant_lab.research.expanded_universe import (
     build_and_publish_expanded_crypto_universe_shadow,
+)
+from quant_lab.research.factor_research.registry import (
+    EXECUTABLE_HYPOTHESIS_STATUSES,
+    RESEARCH_HYPOTHESIS_REGISTRY_DATASET,
+    factor_research_pre_window_bars,
+    hypotheses_from_registry,
+    prepare_factor_research_control_state,
 )
 from quant_lab.research.paper_promotion import build_and_publish_paper_strategy_pipeline
 from quant_lab.research.paper_tracking import build_and_publish_paper_strategy_tracking
@@ -276,6 +285,91 @@ def okx_backfill_expanded_universe(
         ),
     )
     typer.echo(result.model_dump_json(indent=2))
+
+
+@app.command("okx-backfill-factor-research-history")
+def okx_backfill_factor_research_history(
+    lake_root: Annotated[
+        Path,
+        typer.Option(
+            "--lake-root",
+            file_okay=False,
+            dir_okay=True,
+            writable=True,
+            help="quant-lab lake root to deepen with bounded public 1H history.",
+        ),
+    ],
+    as_of_date: Annotated[
+        str,
+        typer.Option("--date", help="UTC task day in YYYY-MM-DD format or auto."),
+    ] = "auto",
+    max_history_days: Annotated[
+        int, typer.Option("--max-history-days", min=30, max=730)
+    ] = 730,
+    symbols: Annotated[
+        str,
+        typer.Option("--symbols", help="Locked comma-separated research symbols."),
+    ] = "BTC-USDT,ETH-USDT,SOL-USDT,BNB-USDT",
+    bar: Annotated[str, typer.Option("--bar")] = "1H",
+    max_pages_per_symbol: Annotated[
+        int, typer.Option("--max-pages-per-symbol", min=1, max=300)
+    ] = 100,
+    limit: Annotated[int, typer.Option("--limit", min=1, max=300)] = 300,
+    minimum_coverage: Annotated[
+        float, typer.Option("--minimum-coverage", min=0.80, max=1.0)
+    ] = 0.98,
+    require_complete: Annotated[bool, typer.Option("--require-complete/--allow-incomplete")] = True,
+) -> None:
+    day = datetime.now(UTC).date() if as_of_date == "auto" else date.fromisoformat(as_of_date)
+    registry = prepare_factor_research_control_state(
+        read_parquet_dataset(lake_root / RESEARCH_HYPOTHESIS_REGISTRY_DATASET)
+    )
+    hypotheses = [
+        item
+        for item in hypotheses_from_registry(registry)
+        if item.status in EXECUTABLE_HYPOTHESIS_STATUSES
+    ]
+    if not hypotheses:
+        raise typer.BadParameter("no executable Factor Research hypotheses")
+    required_market_days = max(
+        requirement.min_history_days
+        for hypothesis in hypotheses
+        for requirement in hypothesis.data_requirements
+        if requirement.dataset_name == "silver/market_bar"
+    )
+    if max_history_days < required_market_days:
+        raise typer.BadParameter(
+            "max-history-days is shorter than the locked market history requirement"
+        )
+    max_horizon_hours = max(
+        horizon for hypothesis in hypotheses for horizon in hypothesis.expected_horizons
+    )
+    pre_window_hours = factor_research_pre_window_bars(hypotheses)
+    latest_complete_end = day - timedelta(days=(max_horizon_hours + 23) // 24 + 1)
+    research_start = latest_complete_end - timedelta(days=max_history_days - 1)
+    start_at = datetime.combine(research_start, datetime.min.time(), tzinfo=UTC) - timedelta(
+        hours=pre_window_hours
+    )
+    # The queue's conservative end-date rule guarantees all required labels
+    # finish before this as-of-day boundary.
+    end_at = datetime.combine(day, datetime.min.time(), tzinfo=UTC)
+    result = run_with_job_metrics(
+        lake_root=lake_root,
+        job_name="okx-backfill-factor-research-history",
+        func=lambda: backfill_factor_research_market_history(
+            lake_root=lake_root,
+            start_at=start_at,
+            end_at=end_at,
+            symbols=[item.strip() for item in symbols.split(",") if item.strip()],
+            bar=bar,
+            max_pages_per_symbol=max_pages_per_symbol,
+            limit=limit,
+            minimum_coverage=minimum_coverage,
+        ),
+    )
+    typer.echo(result.model_dump_json(indent=2))
+    if require_complete and not result.complete:
+        raise typer.Exit(code=2)
 
 
 @app.command("okx-ws-run")

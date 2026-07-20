@@ -1,7 +1,7 @@
 import math
 import time
 from collections.abc import Mapping, Sequence
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +16,7 @@ from quant_lab.symbols import normalize_symbol
 
 OKX_PUBLIC_REST_SOURCE = "okx_public_rest"
 OKX_EXPANDED_UNIVERSE_SOURCE = "okx_public_rest_expanded_universe"
+OKX_FACTOR_RESEARCH_HISTORY_SOURCE = "okx_public_rest_factor_research_history"
 OKX_SPOT_UNIVERSE_CANDIDATES_DATASET = (
     Path("bronze") / "okx_public_rest" / "spot_universe_candidates"
 )
@@ -263,6 +264,28 @@ class OKXExpandedUniverseBackfillResult(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
+class OKXFactorResearchHistoryBackfillResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    lake_root: str
+    symbols: list[str]
+    bar: str
+    start_at: datetime
+    end_at: datetime
+    expected_bars_per_symbol: int = Field(ge=1)
+    fetched_pages: int = Field(ge=0)
+    fetched_candles: int = Field(ge=0)
+    published_market_bars: int = Field(ge=0)
+    market_bar_rows: int = Field(ge=0)
+    coverage_by_symbol: dict[str, float]
+    earliest_by_symbol: dict[str, datetime | None]
+    latest_by_symbol: dict[str, datetime | None]
+    skipped_symbols: list[str]
+    complete: bool
+    minimum_coverage: float = Field(gt=0, le=1)
+    warnings: list[str] = Field(default_factory=list)
+
+
 def select_okx_usdt_spot_universe(
     *,
     instruments: Sequence[Mapping[str, Any]],
@@ -438,6 +461,223 @@ def backfill_expanded_usdt_spot_market_bars(
         gap_repair_history_pages=effective_gap_repair_pages,
         warnings=warnings,
     )
+
+
+def backfill_factor_research_market_history(
+    *,
+    lake_root: str | Path,
+    start_at: datetime,
+    end_at: datetime,
+    symbols: Sequence[str] = tuple(sorted(CURRENT_V5_UNIVERSE)),
+    client: OKXPublicClient | None = None,
+    bar: str = "1H",
+    market_type: str = "SPOT",
+    max_pages_per_symbol: int = 100,
+    limit: int = 300,
+    minimum_coverage: float = 0.98,
+    page_sleep_seconds: float = 0.11,
+) -> OKXFactorResearchHistoryBackfillResult:
+    """Idempotently deepen the locked Factor Research market history.
+
+    This uses only OKX public history candles. Existing lake rows are the
+    checkpoint: a retry resumes from each symbol's earliest stored bar and an
+    atomic market-bar upsert preserves already completed symbols.
+    """
+    root = Path(lake_root)
+    start = _ensure_utc(start_at)
+    end = _ensure_utc(end_at)
+    if end <= start:
+        raise ValueError("factor_research_history_end_must_follow_start")
+    if max_pages_per_symbol < 1:
+        raise ValueError("max_pages_per_symbol must be positive")
+    if not 1 <= limit <= 300:
+        raise ValueError("limit must be between 1 and 300")
+    if not 0 < minimum_coverage <= 1:
+        raise ValueError("minimum_coverage must be in (0, 1]")
+    if page_sleep_seconds < 0:
+        raise ValueError("page_sleep_seconds must be non-negative")
+    timeframe_ms = _timeframe_to_milliseconds(bar)
+    if timeframe_ms is None:
+        raise ValueError(f"unsupported_factor_research_bar:{bar}")
+    normalized_symbols = sorted(
+        {normalize_symbol(symbol) for symbol in symbols if normalize_symbol(symbol)}
+    )
+    if not normalized_symbols:
+        raise ValueError("factor_research_history_symbols_empty")
+
+    expected_bars = max(
+        1,
+        math.ceil((end - start).total_seconds() * 1000 / timeframe_ms),
+    )
+    effective_client = client or OKXPublicClient()
+    before = _market_bar_history_coverage(
+        root,
+        symbols=normalized_symbols,
+        bar=bar,
+        start_at=start,
+        end_at=end,
+        expected_bars=expected_bars,
+    )
+    fetched_pages = 0
+    fetched_candles = 0
+    published_market_bars = 0
+    skipped_symbols: list[str] = []
+    warnings: list[str] = []
+
+    for symbol in normalized_symbols:
+        existing_coverage = before["coverage_by_symbol"].get(symbol, 0.0)
+        existing_earliest = before["earliest_by_symbol"].get(symbol)
+        if existing_coverage >= minimum_coverage and (
+            existing_earliest is not None
+            and existing_earliest <= start + timedelta(milliseconds=timeframe_ms)
+        ):
+            skipped_symbols.append(symbol)
+            continue
+        has_window_start = (
+            existing_earliest is not None
+            and existing_earliest <= start + timedelta(milliseconds=timeframe_ms)
+        )
+        # If the start is already present but coverage is incomplete, the gap
+        # is internal and pagination must restart from the latest page.
+        # Otherwise continue backwards from the earliest durable checkpoint.
+        after = (
+            None
+            if existing_earliest is None or has_window_start
+            else str(int(existing_earliest.timestamp() * 1000))
+        )
+        seen_cursors = {after} if after is not None else set()
+        symbol_records: list[MarketBar] = []
+        reached_start = False
+        for _ in range(max_pages_per_symbol):
+            candles = effective_client.get_history_candles(
+                symbol,
+                bar,
+                after=after,
+                limit=limit,
+            )
+            fetched_pages += 1
+            if not candles:
+                break
+            fetched_candles += len(candles)
+            normalized = normalize_okx_candles_to_market_bars(
+                candles,
+                inst_id=symbol,
+                bar=bar,
+                market_type=market_type,
+                source=OKX_FACTOR_RESEARCH_HISTORY_SOURCE,
+            )
+            symbol_records.extend(record for record in normalized if start <= record.ts < end)
+            next_after = _oldest_candle_ts(candles)
+            if next_after is None or next_after in seen_cursors:
+                warnings.append(f"history_cursor_stalled:{symbol}")
+                break
+            oldest_at = datetime.fromtimestamp(int(next_after) / 1000.0, tz=UTC)
+            if oldest_at <= start:
+                reached_start = True
+                break
+            seen_cursors.add(next_after)
+            after = next_after
+            if len(candles) < limit:
+                break
+            if page_sleep_seconds > 0:
+                time.sleep(page_sleep_seconds)
+        unique_records = _dedupe_market_bars(symbol_records)
+        if unique_records:
+            publish_market_bars_to_lake(unique_records, root)
+            published_market_bars += len(unique_records)
+        if not reached_start and (
+            existing_earliest is None
+            or existing_earliest > start + timedelta(milliseconds=timeframe_ms)
+        ):
+            warnings.append(f"history_start_not_reached:{symbol}")
+
+    coverage = _market_bar_history_coverage(
+        root,
+        symbols=normalized_symbols,
+        bar=bar,
+        start_at=start,
+        end_at=end,
+        expected_bars=expected_bars,
+    )
+    incomplete = [
+        symbol
+        for symbol in normalized_symbols
+        if coverage["coverage_by_symbol"].get(symbol, 0.0) < minimum_coverage
+    ]
+    warnings.extend(f"history_coverage_below_threshold:{symbol}" for symbol in incomplete)
+    return OKXFactorResearchHistoryBackfillResult(
+        lake_root=str(root),
+        symbols=normalized_symbols,
+        bar=bar,
+        start_at=start,
+        end_at=end,
+        expected_bars_per_symbol=expected_bars,
+        fetched_pages=fetched_pages,
+        fetched_candles=fetched_candles,
+        published_market_bars=published_market_bars,
+        market_bar_rows=coverage["market_bar_rows"],
+        coverage_by_symbol=coverage["coverage_by_symbol"],
+        earliest_by_symbol=coverage["earliest_by_symbol"],
+        latest_by_symbol=coverage["latest_by_symbol"],
+        skipped_symbols=skipped_symbols,
+        complete=not incomplete,
+        minimum_coverage=minimum_coverage,
+        warnings=sorted(set(warnings)),
+    )
+
+
+def _market_bar_history_coverage(
+    lake_root: Path,
+    *,
+    symbols: Sequence[str],
+    bar: str,
+    start_at: datetime,
+    end_at: datetime,
+    expected_bars: int,
+) -> dict[str, Any]:
+    try:
+        market = read_parquet_dataset(lake_root / MARKET_BAR_DATASET)
+    except Exception:
+        market = pl.DataFrame()
+    coverage = {symbol: 0.0 for symbol in symbols}
+    earliest: dict[str, datetime | None] = {symbol: None for symbol in symbols}
+    latest: dict[str, datetime | None] = {symbol: None for symbol in symbols}
+    if not market.is_empty() and {"symbol", "timeframe", "ts"}.issubset(market.columns):
+        selected = (
+            market.with_columns(
+                pl.col("symbol")
+                .cast(pl.Utf8)
+                .str.to_uppercase()
+                .str.replace_all("/", "-")
+                .alias("symbol")
+            )
+            .filter(
+                pl.col("symbol").is_in(list(symbols))
+                & (pl.col("timeframe").cast(pl.Utf8).str.to_lowercase() == bar.lower())
+                & (pl.col("ts") >= start_at)
+                & (pl.col("ts") < end_at)
+            )
+            .select("symbol", "ts")
+            .drop_nulls()
+            .unique(["symbol", "ts"])
+            .group_by("symbol")
+            .agg(
+                pl.col("ts").min().alias("earliest"),
+                pl.col("ts").max().alias("latest"),
+                pl.len().alias("bars"),
+            )
+        )
+        for row in selected.to_dicts():
+            symbol = str(row["symbol"])
+            coverage[symbol] = min(1.0, int(row["bars"]) / expected_bars)
+            earliest[symbol] = row["earliest"]
+            latest[symbol] = row["latest"]
+    return {
+        "coverage_by_symbol": coverage,
+        "earliest_by_symbol": earliest,
+        "latest_by_symbol": latest,
+        "market_bar_rows": market.height,
+    }
 
 
 def _market_bar_symbols_with_internal_gaps(

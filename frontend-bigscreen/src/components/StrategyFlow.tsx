@@ -1,5 +1,5 @@
 import { FlaskConical, GitBranch, Rocket, Scale } from "lucide-react";
-import { bps, safeRows, shortNumber, stringValue } from "../lib/api";
+import { bps, pct, safeRows, shortNumber, stringValue } from "../lib/api";
 
 export function StrategyFlow({ flow }: { flow: Record<string, unknown> }) {
   const counts = (flow.counts ?? {}) as Record<string, number>;
@@ -96,6 +96,8 @@ export function StrategyFlow({ flow }: { flow: Record<string, unknown> }) {
               <em>
                 质量拒绝 {shortNumber(factorFactory.current_data_quality_rejected_count)}
                 {" · FDR 通过 "}{shortNumber(factorFactory.multiple_testing_pass_count)}
+                {" · PIT成本 "}{pct(factorFactory.minimum_point_in_time_cost_coverage, 1)}
+                {" · 可信 "}{pct(factorFactory.minimum_trusted_cost_coverage, 1)}
               </em>
             </div>
           </div>
@@ -147,7 +149,7 @@ export function StrategyFlow({ flow }: { flow: Record<string, unknown> }) {
           rows={portfolioRows.slice(0, 4).map((row) => [
             stringValue(row.factor_id, "factor"),
             stringValue(row.portfolio_validity, "UNKNOWN"),
-            stringValue(row.decision, "RESEARCH")
+            `${stringValue(row.decision, "RESEARCH")} · PIT ${pct(row.cost_coverage, 0)} · trusted ${pct(row.trusted_cost_coverage, 0)}`
           ])}
         />
       </div>

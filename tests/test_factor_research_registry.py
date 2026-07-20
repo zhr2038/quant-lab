@@ -21,6 +21,7 @@ from quant_lab.research.factor_research.registry import (
     RESEARCH_TRIAL_LEDGER_DATASET,
     default_hypothesis_registry,
     factor_external_audit_evidence_frame,
+    factor_research_pre_window_bars,
     hypotheses_from_registry,
     hypothesis_registry_digest,
     hypothesis_registry_frame,
@@ -48,6 +49,16 @@ def test_default_hypotheses_are_bounded_and_ai_drafts_do_not_execute() -> None:
         "DERIVATIVES_CROWDING",
         "LIQUIDITY_MICROSTRUCTURE",
     }
+
+
+def test_pre_window_covers_both_dynamic_volatility_windows() -> None:
+    active = [
+        item
+        for item in default_hypothesis_registry()
+        if item.status == HypothesisStatus.APPROVED_FOR_RESEARCH
+    ]
+
+    assert factor_research_pre_window_bars(active) == 960
 
 
 def test_hypothesis_budget_rejects_more_than_two_active_per_family() -> None:

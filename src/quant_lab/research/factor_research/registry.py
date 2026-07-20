@@ -362,6 +362,43 @@ def default_hypothesis_registry() -> list[ResearchHypothesis]:
     ]
 
 
+def feature_recipe_pre_window_bars(recipe: FeatureRecipe) -> int:
+    """Return the closed 1H history required before the first decision bar."""
+    parameters = {
+        item.name: int(item.value)
+        for item in recipe.parameters
+        if item.value.isdigit()
+    }
+    if recipe.operation == "volatility_change":
+        return parameters.get("current_lookback_bars", 480) + parameters.get(
+            "baseline_lookback_bars", 480
+        )
+    if recipe.operation in {
+        "rolling_volatility",
+        "rolling_downside_volatility",
+        "beta_stability",
+        "liquidity_stability",
+        "crash_sensitivity",
+    }:
+        return max(parameters.values(), default=1)
+    if recipe.operation in {"market_breadth", "market_dispersion"}:
+        # The worker first forms the trailing return and then normalizes it over
+        # a locked 168-hour window.
+        return parameters.get("return_lookback_bars", 24) + 168
+    return max(parameters.values(), default=1)
+
+
+def factor_research_pre_window_bars(hypotheses: Iterable[ResearchHypothesis]) -> int:
+    return max(
+        (
+            feature_recipe_pre_window_bars(recipe)
+            for hypothesis in hypotheses
+            for recipe in hypothesis.feature_recipes
+        ),
+        default=1,
+    )
+
+
 def validate_hypothesis_budget(hypotheses: Iterable[ResearchHypothesis]) -> None:
     materialized = list(hypotheses)
     keys = [(item.hypothesis_id, item.hypothesis_version) for item in materialized]

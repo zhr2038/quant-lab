@@ -126,6 +126,20 @@ def test_expanded_universe_backfill_stays_within_bigscreen_freshness_window():
     assert "build-expanded-universe-shadow" in service
 
 
+def test_factor_research_request_backfills_locked_history_before_sealing_snapshot():
+    service = _unit("quant-lab-factor-research-request.service")
+
+    assert "okx-backfill-factor-research-history" in service
+    assert "--max-history-days 730" in service
+    assert "--symbols BTC-USDT,ETH-USDT,SOL-USDT,BNB-USDT" in service
+    assert "--minimum-coverage 0.98" in service
+    assert "--require-complete" in service
+    assert service.index("okx-backfill-factor-research-history") < service.index(
+        "request-factor-research"
+    )
+    assert "/var/lib/quant-lab/lake/silver/market_bar" in service
+
+
 def test_daily_export_uses_recent_api_metrics_window():
     unit = _unit("quant-lab-daily-export.service")
 

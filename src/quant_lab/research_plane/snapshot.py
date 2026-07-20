@@ -36,11 +36,16 @@ from quant_lab.research.factor_research.contracts import (
     SCHEMA_VERSION as FACTOR_RESEARCH_SCHEMA_VERSION,
 )
 from quant_lab.research.factor_research.contracts import ResearchHypothesis
+from quant_lab.research.factor_research.cost_policy import (
+    ORDERBOOK_SPREAD_1M_DATASET,
+    POINT_IN_TIME_COST_EVALUATION_DAYS,
+)
 from quant_lab.research.factor_research.registry import (
     HYPOTHESIS_REGISTRY_SCHEMA,
     RESEARCH_HYPOTHESIS_REGISTRY_DATASET,
     RESEARCH_TRIAL_LEDGER_DATASET,
     TRIAL_LEDGER_SCHEMA,
+    factor_research_pre_window_bars,
     hypothesis_registry_digest,
     trial_ledger_digest,
 )
@@ -284,6 +289,7 @@ FACTOR_RESEARCH_DATA_DATASETS = (
     MARKET_BAR_DATASET,
     COST_BUCKET_DAILY_DATASET,
     MARKET_REGIME_DATASET,
+    ORDERBOOK_SPREAD_1M_DATASET,
 )
 
 FACTOR_RESEARCH_INPUT_DATASETS = (
@@ -319,6 +325,7 @@ FACTOR_RESEARCH_COLUMN_PROJECTIONS: dict[str, tuple[str, ...]] = {
         "cost_source",
         "source",
         "fallback_level",
+        "eligible_for_live_cost_coverage",
     ),
     "gold/market_regime_daily": (
         "as_of_date",
@@ -332,6 +339,12 @@ FACTOR_RESEARCH_COLUMN_PROJECTIONS: dict[str, tuple[str, ...]] = {
         "regime_state",
         "market_regime",
         "state",
+    ),
+    "silver/orderbook_spread_1m": (
+        "symbol",
+        "channel",
+        "minute_ts",
+        "spread_bps",
     ),
 }
 
@@ -359,6 +372,7 @@ SNAPSHOT_TIME_COLUMNS = {
         "day",
         "date",
     ),
+    str(ORDERBOOK_SPREAD_1M_DATASET).replace("\\", "/"): ("minute_ts",),
     str(BTC_EXIT_REVIEW_DATASET).replace("\\", "/"): (
         "entry_ts",
         "created_at",
@@ -973,22 +987,24 @@ def _select_factor_research_inputs(
     if end_date < start_date:
         raise ValueError("factor_research_end_before_start")
     executable_requirements: dict[str, set[str]] = {}
-    max_lookback = 1
+    max_lookback = factor_research_pre_window_bars(hypotheses)
     max_horizon = 1
     for hypothesis in hypotheses:
         if not hypothesis.available_data_confirmed or hypothesis.blocked_missing_data:
             raise ValueError(f"factor_research_hypothesis_data_blocked:{hypothesis.hypothesis_id}")
         max_horizon = max(max_horizon, *hypothesis.expected_horizons)
-        for recipe in hypothesis.feature_recipes:
-            numeric = [int(item.value) for item in recipe.parameters if item.value.isdigit()]
-            if numeric:
-                max_lookback = max(max_lookback, *numeric)
         for requirement in hypothesis.data_requirements:
             if requirement.dataset_name not in FACTOR_RESEARCH_COLUMN_PROJECTIONS:
                 raise ValueError(f"factor_research_unsupported_dataset:{requirement.dataset_name}")
             executable_requirements.setdefault(requirement.dataset_name, set()).update(
                 requirement.required_columns
             )
+    # The locked portfolio-cost layer can reconstruct a conservative daily
+    # proxy only from immutable point-in-time 1m spread observations. This is
+    # an engine requirement even when a hypothesis did not repeat it.
+    executable_requirements.setdefault("silver/orderbook_spread_1m", set()).update(
+        {"symbol", "minute_ts", "spread_bps"}
+    )
     start = datetime.combine(start_date, time.min, tzinfo=UTC)
     end = datetime.combine(end_date + timedelta(days=1), time.min, tzinfo=UTC)
     windows = {
@@ -996,8 +1012,15 @@ def _select_factor_research_inputs(
             start - timedelta(hours=max_lookback),
             end + timedelta(hours=max_horizon),
         ),
-        "gold/cost_bucket_daily": (start, end),
+        "gold/cost_bucket_daily": (
+            end - timedelta(days=POINT_IN_TIME_COST_EVALUATION_DAYS + 1),
+            end,
+        ),
         "gold/market_regime_daily": (start, end),
+        "silver/orderbook_spread_1m": (
+            end - timedelta(days=POINT_IN_TIME_COST_EVALUATION_DAYS + 1),
+            end,
+        ),
     }
     required_paths = tuple(Path(name) for name in sorted(executable_requirements))
     index = _load_required_file_index(root, required_paths)

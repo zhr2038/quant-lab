@@ -183,6 +183,21 @@ def test_task_contract_still_reads_v4_hypothesis_research_history() -> None:
     assert task.prompt_version == "quant_lab.ai_research.prompt.v4"
 
 
+def test_task_contract_still_reads_v5_hypothesis_research_history() -> None:
+    task = AIResearchTask(
+        prompt_version="quant_lab.ai_research.prompt.v5",
+        task_id="task-v5-history",
+        created_at=datetime.now(UTC),
+        source_pack_name="expert.zip",
+        source_pack_sha256="a" * 64,
+        packet_sha256="b" * 64,
+        sections={"factor_research": []},
+        allowed_hypothesis_families=["behavioral_underreaction"],
+    )
+
+    assert task.prompt_version == "quant_lab.ai_research.prompt.v5"
+
+
 def test_strict_schema_rejects_unknown_keys_and_requires_all_properties() -> None:
     schema = strict_output_schema(Stage1Diagnosis)
     assert schema["additionalProperties"] is False

@@ -445,6 +445,106 @@ def test_factor_audit_distinguishes_rejected_current_candidates_from_missing_for
     assert "current_factor_forward_validation_missing" not in task.preflight.warnings
 
 
+def test_cost_timeline_does_not_treat_later_report_materialization_as_probe_event(
+    tmp_path,
+) -> None:
+    pack = tmp_path / "quant_lab_expert_pack_cost_timeline.zip"
+    with zipfile.ZipFile(pack, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("manifest.json", "{}")
+        archive.writestr("provenance.json", "{}")
+        archive.writestr("data_quality.json", "{}")
+        archive.writestr(
+            "reports/cost_bootstrap_readiness.csv",
+            "generated_at,symbol,latest_probe_ts,latest_probe_fill_ts,latest_bill_ts,"
+            "trusted_sample_count,bootstrap_state\n"
+            "2026-07-19T14:48:26.419573Z,BTC-USDT,2026-06-21T03:00:00Z,"
+            "2026-06-21T03:01:00Z,2026-07-19T14:48:26.419573Z,0,"
+            "BOOTSTRAP_PROBE_AVAILABLE\n"
+            "2026-07-19T14:48:26.419573Z,SOL-USDT,2026-06-23T03:00:00Z,"
+            "2026-06-23T03:01:00Z,2026-07-19T14:48:26.419573Z,0,"
+            "BOOTSTRAP_PROBE_AVAILABLE\n",
+        )
+        archive.writestr(
+            "reports/cost_probe_fill_bill_match.csv",
+            "generated_at,symbol,roundtrip_id,bill_match_status,fee_diff_usdt\n"
+            "2026-07-19T15:27:53Z,BTC-USDT,btc-roundtrip,PASS,0\n"
+            "2026-07-19T15:27:53Z,SOL-USDT,sol-roundtrip,PASS,0\n",
+        )
+        archive.writestr(
+            "reports/cost_probe_cost_disagreement.csv",
+            "generated_at,symbol,roundtrip_id,diff_bps,status,bill_match_status\n"
+            "2026-07-19T15:27:53Z,BTC-USDT,btc-roundtrip,0,PASS,PASS\n"
+            "2026-07-19T15:27:53Z,SOL-USDT,sol-roundtrip,0,PASS,PASS\n",
+        )
+
+    task, _ = build_ai_research_task(pack, queue_root=tmp_path / "queue")
+
+    assert task is not None
+    document = next(
+        item
+        for item in task.sections["cost_and_execution"]
+        if item.source_member == "derived/cost_evidence_timeline_audit.json"
+    )
+    assert document.content["timeline_status"] == (
+        "LATER_RECONCILIATION_MATERIALIZATION_ONLY"
+    )
+    assert document.content["post_readiness_cost_event_observed"] is False
+    assert document.content["later_reconciliation_report_materialized"] is True
+    assert document.content["later_report_materialization_only"] is True
+    assert document.content["trusted_sample_gap_symbols"] == ["BTC-USDT", "SOL-USDT"]
+    assert document.content["latest_explicit_event_at"] == (
+        "2026-07-19T14:48:26.419573+00:00"
+    )
+    assert document.truncated is False
+
+
+def test_cost_timeline_detects_explicit_post_readiness_probe_event(tmp_path) -> None:
+    pack = tmp_path / "quant_lab_expert_pack_post_readiness_probe.zip"
+    with zipfile.ZipFile(pack, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("manifest.json", "{}")
+        archive.writestr("provenance.json", "{}")
+        archive.writestr("data_quality.json", "{}")
+        archive.writestr(
+            "reports/cost_bootstrap_readiness.csv",
+            "generated_at,symbol,latest_probe_ts,trusted_sample_count\n"
+            "2026-07-19T14:48:26Z,BTC-USDT,2026-06-21T03:00:00Z,0\n",
+        )
+        archive.writestr(
+            "reports/cost_probe_fill_bill_match.csv",
+            "generated_at,symbol,roundtrip_id,bill_match_status\n"
+            "2026-07-19T15:27:53Z,BTC-USDT,btc-roundtrip,PASS\n",
+        )
+        archive.writestr(
+            "reports/cost_probe_cost_disagreement.csv",
+            "generated_at,symbol,roundtrip_id,roundtrip_completed_at,diff_bps,status\n"
+            "2026-07-19T15:27:53Z,BTC-USDT,btc-roundtrip,"
+            "2026-07-19T15:00:00Z,0,PASS\n",
+        )
+
+    task, _ = build_ai_research_task(pack, queue_root=tmp_path / "queue")
+
+    assert task is not None
+    document = next(
+        item
+        for item in task.sections["cost_and_execution"]
+        if item.source_member == "derived/cost_evidence_timeline_audit.json"
+    )
+    assert document.content["timeline_status"] == (
+        "POST_READINESS_COST_EVENT_OBSERVED"
+    )
+    assert document.content["post_readiness_cost_event_observed"] is True
+    assert document.content["later_report_materialization_only"] is False
+    assert document.content["post_readiness_event_observations"] == [
+        {
+            "source_member": "reports/cost_probe_cost_disagreement.csv",
+            "row_index": "0",
+            "symbol": "BTC-USDT",
+            "field": "roundtrip_completed_at",
+            "value": "2026-07-19T15:00:00+00:00",
+        }
+    ]
+
+
 def test_large_complete_alpha_audit_is_not_mislabeled_as_truncated(tmp_path) -> None:
     pack = tmp_path / "quant_lab_expert_pack_large_complete_alpha_audit.zip"
     candidate_rows = []

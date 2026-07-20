@@ -146,6 +146,24 @@ _FACTOR_VALIDATION_AUDIT_MEMBERS = {
     "reports/factor_dedupe_decision.csv",
     "reports/factor_forward_validation.csv",
 }
+_COST_TIMELINE_AUDIT_MEMBERS = {
+    "reports/cost_bootstrap_readiness.csv",
+    "reports/cost_probe_cost_disagreement.csv",
+    "reports/cost_probe_fill_bill_match.csv",
+}
+_COST_EVENT_TIMESTAMP_FIELDS = (
+    "latest_probe_ts",
+    "latest_probe_fill_ts",
+    "latest_bill_ts",
+    "probe_event_ts",
+    "roundtrip_completed_at",
+    "entry_fill_ts",
+    "exit_fill_ts",
+    "entry_bill_ts",
+    "exit_bill_ts",
+    "fill_ts",
+    "bill_ts",
+)
 _RESEARCH_DATASET_KEYWORDS = (
     "alpha",
     "factor",
@@ -247,6 +265,21 @@ def build_ai_research_task(
                 )
                 continue
             sections["factor_research"].append(document)
+            consumed_chars += encoded_length
+
+        cost_documents, cost_audit_sources, cost_audit_warnings = (
+            _build_cost_evidence_audit_documents(archive)
+        )
+        audit_sources.update(cost_audit_sources)
+        warnings.extend(cost_audit_warnings)
+        for document in cost_documents:
+            encoded_length = len(canonical_json(document.model_dump(mode="json")))
+            if consumed_chars + encoded_length > max_total_chars:
+                warnings.append(
+                    f"skipped_due_to_total_limit:{document.source_member}"
+                )
+                continue
+            sections["cost_and_execution"].append(document)
             consumed_chars += encoded_length
 
         selected = _select_members(
@@ -976,6 +1009,187 @@ def _build_factor_research_audit_documents(
     return documents, consumed_sources, warnings
 
 
+def _build_cost_evidence_audit_documents(
+    archive: zipfile.ZipFile,
+) -> tuple[list[EvidenceDocument], set[str], list[str]]:
+    available = {
+        info.filename.lower().lstrip("./"): info
+        for info in archive.infolist()
+        if _safe_supported_member(info)
+    }
+    sources = {
+        name: available[name]
+        for name in _COST_TIMELINE_AUDIT_MEMBERS
+        if name in available
+    }
+    if not sources:
+        return [], set(), []
+    if len(sources) != len(_COST_TIMELINE_AUDIT_MEMBERS):
+        missing = sorted(_COST_TIMELINE_AUDIT_MEMBERS - set(sources))
+        return [], set(), [f"cost_timeline_audit_missing_source:{name}" for name in missing]
+
+    rows_by_source = {
+        name: _read_csv_rows(archive, member) for name, member in sources.items()
+    }
+    readiness_rows = rows_by_source["reports/cost_bootstrap_readiness.csv"]
+    invalid_timestamps: list[dict[str, str]] = []
+    materialization_observations: list[dict[str, str]] = []
+    event_observations: list[dict[str, str]] = []
+
+    for source_member, rows in sorted(rows_by_source.items()):
+        for row_index, row in enumerate(rows):
+            symbol = str(row.get("symbol") or "")
+            generated_at = str(row.get("generated_at") or "").strip()
+            if generated_at:
+                parsed = _parse_utc_timestamp(generated_at)
+                if parsed is None:
+                    invalid_timestamps.append(
+                        {
+                            "source_member": source_member,
+                            "row_index": str(row_index),
+                            "field": "generated_at",
+                            "value": generated_at,
+                        }
+                    )
+                else:
+                    materialization_observations.append(
+                        {
+                            "source_member": source_member,
+                            "row_index": str(row_index),
+                            "symbol": symbol,
+                            "field": "generated_at",
+                            "value": parsed.isoformat(),
+                        }
+                    )
+            for field in _COST_EVENT_TIMESTAMP_FIELDS:
+                value = str(row.get(field) or "").strip()
+                if not value:
+                    continue
+                parsed = _parse_utc_timestamp(value)
+                if parsed is None:
+                    invalid_timestamps.append(
+                        {
+                            "source_member": source_member,
+                            "row_index": str(row_index),
+                            "field": field,
+                            "value": value,
+                        }
+                    )
+                    continue
+                event_observations.append(
+                    {
+                        "source_member": source_member,
+                        "row_index": str(row_index),
+                        "symbol": symbol,
+                        "field": field,
+                        "value": parsed.isoformat(),
+                    }
+                )
+
+    readiness_generated_times = [
+        parsed
+        for row in readiness_rows
+        if (parsed := _parse_utc_timestamp(row.get("generated_at"))) is not None
+    ]
+    readiness_generated_at = max(readiness_generated_times, default=None)
+    explicit_event_times = [
+        parsed
+        for observation in event_observations
+        if (parsed := _parse_utc_timestamp(observation["value"])) is not None
+    ]
+    latest_explicit_event_at = max(explicit_event_times, default=None)
+    post_readiness_events = [
+        observation
+        for observation in event_observations
+        if readiness_generated_at is not None
+        and (parsed := _parse_utc_timestamp(observation["value"])) is not None
+        and parsed > readiness_generated_at
+    ]
+    reconciliation_materialized_after_readiness = [
+        observation
+        for observation in materialization_observations
+        if observation["source_member"]
+        != "reports/cost_bootstrap_readiness.csv"
+        and readiness_generated_at is not None
+        and (parsed := _parse_utc_timestamp(observation["value"])) is not None
+        and parsed > readiness_generated_at
+    ]
+    later_report_materialization_only = bool(
+        reconciliation_materialized_after_readiness and not post_readiness_events
+    )
+    if readiness_generated_at is None:
+        timeline_status = "READINESS_TIMESTAMP_MISSING"
+    elif post_readiness_events:
+        timeline_status = "POST_READINESS_COST_EVENT_OBSERVED"
+    elif later_report_materialization_only:
+        timeline_status = "LATER_RECONCILIATION_MATERIALIZATION_ONLY"
+    else:
+        timeline_status = "READINESS_CURRENT_TO_EXPLICIT_EVENTS"
+
+    trusted_sample_gap_symbols: list[str] = []
+    for row in readiness_rows:
+        trusted_sample_count = _compact_number(row.get("trusted_sample_count"))
+        if isinstance(trusted_sample_count, int | float) and trusted_sample_count <= 0:
+            symbol = str(row.get("symbol") or "")
+            if symbol:
+                trusted_sample_gap_symbols.append(symbol)
+
+    complete = not invalid_timestamps
+    content = {
+        "schema_version": "quant_lab.ai_cost_evidence_timeline_audit.v1",
+        "source_members": sorted(sources),
+        "timestamp_semantics": {
+            "generated_at": "report_materialization_time_only",
+            "explicit_event_fields": list(_COST_EVENT_TIMESTAMP_FIELDS),
+            "causality_rule": (
+                "A later report generated_at does not prove a later probe, fill, or "
+                "bill event. Only explicit event timestamp fields establish event time."
+            ),
+        },
+        "timeline_status": timeline_status,
+        "readiness_generated_at": (
+            readiness_generated_at.isoformat() if readiness_generated_at else None
+        ),
+        "latest_explicit_event_at": (
+            latest_explicit_event_at.isoformat() if latest_explicit_event_at else None
+        ),
+        "post_readiness_cost_event_observed": bool(post_readiness_events),
+        "later_reconciliation_report_materialized": bool(
+            reconciliation_materialized_after_readiness
+        ),
+        "later_report_materialization_only": later_report_materialization_only,
+        "post_readiness_event_observations": post_readiness_events,
+        "reconciliation_materialized_after_readiness": (
+            reconciliation_materialized_after_readiness
+        ),
+        "trusted_sample_gap_symbols": sorted(set(trusted_sample_gap_symbols)),
+        "readiness_rows": readiness_rows,
+        "fill_bill_match_rows": rows_by_source[
+            "reports/cost_probe_fill_bill_match.csv"
+        ],
+        "cost_disagreement_rows": rows_by_source[
+            "reports/cost_probe_cost_disagreement.csv"
+        ],
+        "invalid_timestamp_observations": invalid_timestamps,
+        "_representation": {
+            "kind": "full_cost_timeline_audit",
+            "selection_rule": "all_rows_from_three_canonical_cost_evidence_reports",
+            "row_count": sum(len(rows) for rows in rows_by_source.values()),
+            "truncated": False,
+        },
+    }
+    warnings = []
+    if invalid_timestamps:
+        warnings.append("cost_timeline_audit_invalid_timestamp")
+    document = _derived_evidence_document(
+        "derived/cost_evidence_timeline_audit.json",
+        content,
+        sources.values(),
+        complete=complete,
+    )
+    return [document], set(sources), warnings
+
+
 def _build_alpha_factory_candidate_audit(
     archive: zipfile.ZipFile,
     sources: dict[str, zipfile.ZipInfo],
@@ -1409,6 +1623,19 @@ def _read_csv_rows(
         {str(key): str(value or "") for key, value in row.items() if key is not None}
         for row in csv.DictReader(io.StringIO(text))
     ]
+
+
+def _parse_utc_timestamp(value: Any) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed.astimezone(UTC)
 
 
 def _rows_by_key(

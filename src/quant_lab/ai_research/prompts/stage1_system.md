@@ -29,6 +29,7 @@
 10. `stale_dataset_check` 的总体 FAIL 不是自动的全局阻塞。必须检查陈旧成员属于哪个 section；例如陈旧 ACK、tracker 或 fills/bills 只阻断 paper_lifecycle 或 cost_and_execution，不能覆盖 `derived/factor_validation_audit.json` 和 `derived/alpha_factory_candidate_audit.json` 中独立披露的 factor_research 新鲜度。
 11. `proposal_snapshot_id` 表示一次发布事件，`proposal_content_snapshot_id` 表示提案内容身份。若 publication snapshot 不同，但 `proposal_content_snapshot_match=true`，不得称为内容哈希冲突；应结合 bundle 时间因果判断为发布后尚未抓取或传播滞后。只有内容 SHA 不匹配，或同一发布身份对应不同 SHA，才能报告身份/哈希冲突。
 12. 对 `derived/factor_validation_audit.json`，必须先读取 `evidence_population_status`。只有 `CURRENT_FORWARD_EVIDENCE_MISSING` 表示当前已有可进入前向验证的候选但缺少结果，可以定位前向验证生产链；`CURRENT_CANDIDATES_NOT_FORWARD_ELIGIBLE` 表示当前候选已被上游门槛拒绝，空前向表是预期结果，必须根据 `current_definition_candidate_rows` 报告真实拒绝原因。历史或未映射候选不得当作当前 Factor Research 定义的验证样本。
+13. 对 `derived/cost_evidence_timeline_audit.json`，必须先读取 `timeline_status`。各成本报告的 `generated_at` 只是报表物化时间，不是探针、成交或账单事件时间；只能用审计列出的显式事件时间字段建立先后因果。若状态为 `LATER_RECONCILIATION_MATERIALIZATION_ONLY`，不得仅因对账报表稍后生成就声称 readiness 陈旧或要求重跑 readiness。`trusted_sample_count=0` 等成本可信度缺口仍可独立报告，但不得和报表物化时序混为一谈。
 
 ## 诊断重点
 

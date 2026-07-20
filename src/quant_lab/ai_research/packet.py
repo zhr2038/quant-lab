@@ -141,6 +141,7 @@ _ALPHA_FACTORY_AUDIT_MEMBERS = {
     "reports/alpha_factory_promotion_queue.csv",
 }
 _FACTOR_VALIDATION_AUDIT_MEMBERS = {
+    "reports/factor_candidates.csv",
     "reports/factor_definitions.csv",
     "reports/factor_dedupe_decision.csv",
     "reports/factor_forward_validation.csv",
@@ -1112,6 +1113,7 @@ def _build_factor_validation_audit(
     archive: zipfile.ZipFile,
     sources: dict[str, zipfile.ZipInfo],
 ) -> tuple[dict[str, Any], bool, list[str]]:
+    candidates = _read_csv_rows(archive, sources["reports/factor_candidates.csv"])
     definitions = _read_csv_rows(archive, sources["reports/factor_definitions.csv"])
     dedupe = _read_csv_rows(archive, sources["reports/factor_dedupe_decision.csv"])
     forward = _read_csv_rows(archive, sources["reports/factor_forward_validation.csv"])
@@ -1168,12 +1170,66 @@ def _build_factor_validation_audit(
         for row in forward
     ]
     definition_ids = {str(row.get("factor_id") or "") for row in definitions}
+    candidate_ids = {str(row.get("factor_id") or "") for row in candidates}
     forward_ids = {str(row.get("factor_id") or "") for row in forward}
-    unmapped_forward_ids = sorted(item for item in forward_ids - definition_ids if item)
-    complete = not unmapped_forward_ids
-    warnings = [] if complete else ["factor_validation_audit_definition_gap"]
+    definition_candidate_history = [
+        row for row in candidates if str(row.get("factor_id") or "") in definition_ids
+    ]
+    candidate_as_of_dates = sorted(
+        {
+            str(row.get("as_of_date") or "")
+            for row in definition_candidate_history
+            if str(row.get("as_of_date") or "")
+        }
+    )
+    current_candidate_as_of_date = candidate_as_of_dates[-1] if candidate_as_of_dates else ""
+    current_candidates = (
+        [
+            row
+            for row in definition_candidate_history
+            if str(row.get("as_of_date") or "") == current_candidate_as_of_date
+        ]
+        if current_candidate_as_of_date
+        else definition_candidate_history
+    )
+    forward_eligible_states = {"KEEP_SHADOW", "PAPER_READY"}
+    eligible_current_candidates = [
+        row
+        for row in current_candidates
+        if str(row.get("candidate_state") or "").upper() in forward_eligible_states
+    ]
+    current_forward_rows = [
+        row
+        for row in forward
+        if str(row.get("factor_id") or "") in definition_ids
+        and (
+            not current_candidate_as_of_date
+            or not str(row.get("as_of_date") or "")
+            or str(row.get("as_of_date") or "") == current_candidate_as_of_date
+        )
+    ]
+    current_forward_ids = sorted(
+        {str(row.get("factor_id") or "") for row in current_forward_rows if row.get("factor_id")}
+    )
+    historical_candidate_ids = sorted(item for item in candidate_ids - definition_ids if item)
+    historical_forward_ids = sorted(item for item in forward_ids - definition_ids if item)
+    orphan_forward_ids = sorted(
+        item for item in forward_ids - definition_ids - candidate_ids if item
+    )
+    population_status = _factor_validation_population_status(
+        definition_count=len(definitions),
+        current_candidate_count=len(current_candidates),
+        eligible_current_candidate_count=len(eligible_current_candidates),
+        current_forward_factor_count=len(current_forward_ids),
+    )
+    complete = not orphan_forward_ids
+    warnings = []
+    if orphan_forward_ids:
+        warnings.append("factor_validation_audit_orphan_forward_rows")
+    if population_status == "CURRENT_FORWARD_EVIDENCE_MISSING":
+        warnings.append("current_factor_forward_validation_missing")
     content = {
-        "schema_version": "quant_lab.ai_factor_validation_audit.v2",
+        "schema_version": "quant_lab.ai_factor_validation_audit.v3",
         "source_members": sorted(sources),
         "freshness": {
             "definition_created_at_values": _bounded_distinct_row_values(
@@ -1187,10 +1243,61 @@ def _build_factor_validation_audit(
             ),
         },
         "definition_count": len(definitions),
+        "candidate_count": len(candidates),
+        "candidate_state_counts": _value_counts_rows(candidates, "candidate_state"),
+        "definition_mapped_candidate_history_count": len(definition_candidate_history),
+        "current_candidate_as_of_date": current_candidate_as_of_date or None,
+        "current_definition_candidate_count": len(current_candidates),
+        "current_definition_candidate_state_counts": _value_counts_rows(
+            current_candidates,
+            "candidate_state",
+        ),
+        "current_definition_eligible_candidate_count": len(eligible_current_candidates),
+        "historical_or_unmapped_candidate_count": len(candidates) - len(current_candidates),
+        "historical_or_unmapped_candidate_factor_ids": historical_candidate_ids,
+        "current_definition_candidate_legend": [
+            "factor_id",
+            "candidate_state",
+            "signal_validity",
+            "portfolio_validity",
+            "deployment_readiness",
+            "promotion_block_reasons_json",
+            "hypothesis_id",
+            "data_snapshot_id",
+            "as_of_date",
+            "source",
+        ],
+        "current_definition_candidate_rows": [
+            [
+                str(row.get("factor_id") or ""),
+                str(row.get("candidate_state") or ""),
+                str(row.get("signal_validity") or ""),
+                str(row.get("portfolio_validity") or ""),
+                str(row.get("deployment_readiness") or ""),
+                str(row.get("promotion_block_reasons_json") or ""),
+                str(row.get("hypothesis_id") or ""),
+                str(row.get("data_snapshot_id") or ""),
+                str(row.get("as_of_date") or ""),
+                str(row.get("source") or ""),
+            ]
+            for row in current_candidates
+        ],
         "dedupe_decision_count": len(dedupe),
         "forward_validation_count": len(forward),
+        "current_definition_forward_factor_count": len(current_forward_ids),
+        "current_definition_forward_factor_ids": current_forward_ids,
+        "historical_or_unmapped_forward_factor_ids": historical_forward_ids,
+        "orphan_forward_factor_ids": orphan_forward_ids,
+        "join_complete": complete,
+        "evidence_population_status": population_status,
+        "evidence_population_interpretation": (
+            "Current Factor Research definitions, historical Factor Factory candidates, "
+            "and forward-validation rows are distinct populations. An empty forward table "
+            "is not a runtime failure when no current-definition candidate is in "
+            "KEEP_SHADOW or PAPER_READY."
+        ),
         "forward_recommendation_counts": _value_counts_rows(forward, "recommendation"),
-        "unmapped_forward_factor_ids": unmapped_forward_ids,
+        "unmapped_forward_factor_ids": historical_forward_ids,
         "definition_legend": [
             "factor_id",
             "factor_family",
@@ -1239,7 +1346,10 @@ def _build_factor_validation_audit(
         "forward_validation_rows": forward_rows,
         "_representation": {
             "kind": "full_factor_validation_audit",
-            "selection_rule": "all_factor_definitions_dedupe_decisions_and_forward_validation_rows",
+            "selection_rule": (
+                "all_factor_definitions_candidates_dedupe_decisions_and_"
+                "forward_validation_rows"
+            ),
             "truncated": False,
         },
     }
@@ -1250,6 +1360,24 @@ def _build_factor_validation_audit(
             f"{encoded_chars}>{FACTOR_AUDIT_TARGET_DOCUMENT_CHARS}"
         )
     return content, complete, warnings
+
+
+def _factor_validation_population_status(
+    *,
+    definition_count: int,
+    current_candidate_count: int,
+    eligible_current_candidate_count: int,
+    current_forward_factor_count: int,
+) -> str:
+    if definition_count == 0:
+        return "NO_CURRENT_DEFINITIONS"
+    if current_candidate_count == 0:
+        return "NO_CURRENT_DEFINITION_CANDIDATES"
+    if eligible_current_candidate_count == 0:
+        return "CURRENT_CANDIDATES_NOT_FORWARD_ELIGIBLE"
+    if current_forward_factor_count == 0:
+        return "CURRENT_FORWARD_EVIDENCE_MISSING"
+    return "CURRENT_FORWARD_EVIDENCE_AVAILABLE"
 
 
 def _derived_evidence_document(

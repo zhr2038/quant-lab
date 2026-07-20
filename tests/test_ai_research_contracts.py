@@ -8,6 +8,7 @@ from pydantic import ValidationError
 from quant_lab.ai_research.contracts import (
     PROHIBITED_ACTIONS,
     AIResearchResult,
+    AIResearchTask,
     EvidenceReference,
     KeyValue,
     LegacyStage2ProposalSet,
@@ -165,6 +166,21 @@ def test_result_contract_still_reads_legacy_stage2_history() -> None:
     )
 
     assert isinstance(result.proposals, LegacyStage2ProposalSet)
+
+
+def test_task_contract_still_reads_v4_hypothesis_research_history() -> None:
+    task = AIResearchTask(
+        prompt_version="quant_lab.ai_research.prompt.v4",
+        task_id="task-v4-history",
+        created_at=datetime.now(UTC),
+        source_pack_name="expert.zip",
+        source_pack_sha256="a" * 64,
+        packet_sha256="b" * 64,
+        sections={"factor_research": []},
+        allowed_hypothesis_families=["behavioral_underreaction"],
+    )
+
+    assert task.prompt_version == "quant_lab.ai_research.prompt.v4"
 
 
 def test_strict_schema_rejects_unknown_keys_and_requires_all_properties() -> None:

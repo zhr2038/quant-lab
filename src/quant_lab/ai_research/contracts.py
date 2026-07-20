@@ -12,12 +12,16 @@ AI_STAGE1_SCHEMA_VERSION = "quant_lab.ai_research_diagnosis.v1"
 LEGACY_AI_STAGE2_SCHEMA_VERSION = "quant_lab.ai_research_proposals.v1"
 AI_STAGE2_SCHEMA_VERSION = "quant_lab.ai_research_hypothesis_drafts.v2"
 AI_RESULT_SCHEMA_VERSION = "quant_lab.ai_research_result.v1"
-AI_PROMPT_VERSION = "quant_lab.ai_research.prompt.v4"
+AI_PROMPT_VERSION = "quant_lab.ai_research.prompt.v5"
+HYPOTHESIS_AI_PROMPT_VERSIONS = (
+    "quant_lab.ai_research.prompt.v4",
+    AI_PROMPT_VERSION,
+)
 SUPPORTED_AI_PROMPT_VERSIONS = (
     "quant_lab.ai_research.prompt.v1",
     "quant_lab.ai_research.prompt.v2",
     "quant_lab.ai_research.prompt.v3",
-    AI_PROMPT_VERSION,
+    *HYPOTHESIS_AI_PROMPT_VERSIONS,
 )
 
 LIVE_ORDER_EFFECT = "none_read_only_research"
@@ -578,6 +582,7 @@ class AIResearchTask(StrictModel):
         "quant_lab.ai_research.prompt.v2",
         "quant_lab.ai_research.prompt.v3",
         "quant_lab.ai_research.prompt.v4",
+        "quant_lab.ai_research.prompt.v5",
     ] = AI_PROMPT_VERSION
     task_id: str = Field(min_length=1, max_length=160)
     created_at: datetime
@@ -607,9 +612,15 @@ class AIResearchTask(StrictModel):
             not self.source_pack_id or not self.source_snapshot_id
         ):
             raise ValueError("NAS AI research task requires pack_id and snapshot_id")
-        if self.prompt_version == AI_PROMPT_VERSION and not self.allowed_hypothesis_families:
+        if (
+            self.prompt_version in HYPOTHESIS_AI_PROMPT_VERSIONS
+            and not self.allowed_hypothesis_families
+        ):
             raise ValueError("AI research task requires bounded hypothesis families")
-        if self.prompt_version != AI_PROMPT_VERSION and not self.allowed_factor_templates:
+        if (
+            self.prompt_version not in HYPOTHESIS_AI_PROMPT_VERSIONS
+            and not self.allowed_factor_templates
+        ):
             raise ValueError("legacy AI research task requires at least one factor template")
         return self
 

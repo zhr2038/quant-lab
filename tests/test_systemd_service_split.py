@@ -322,6 +322,9 @@ def test_alpha_factory_nas_request_replaces_scheduled_local_compute():
     assert "Unit=quant-lab-alpha-factory-request.service" not in legacy_timer
 
     assert "import-research-results" in importer
+    assert "TimeoutStartSec=30min" in importer
+    assert "MemoryHigh=2G" in importer
+    assert "MemoryMax=3G" in importer
     assert "gc-research-snapshots" in snapshot_gc
 
 

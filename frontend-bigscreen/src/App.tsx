@@ -681,7 +681,7 @@ function ExpertPackControls({ exports }: { exports: Record<string, unknown> }) {
         <div className="export-warning">
           {status?.network_notice || "下载需要连接家庭网络或 VPN；文件存储在 NAS。"}
           {status?.nas_center_url ? (
-            <> <a href={status.nas_center_url} target="_blank" rel="noreferrer">打开 NAS 专家包中心</a></>
+            <> <a href={status.nas_center_url} target="_blank" rel="noreferrer">打开 NAS 专家包中心（需登录）</a></>
           ) : null}
         </div>
       ) : null}

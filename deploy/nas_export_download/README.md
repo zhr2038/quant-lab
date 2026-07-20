@@ -2,6 +2,8 @@
 
 This LAN/VPN-only service reads `accepted_index.json`. The Python process never streams
 Pack bytes. After HMAC validation it sends `X-Accel-Redirect` to unprivileged Nginx.
+The pack index and operator pages remain protected by Basic Auth. Browser download links
+use short-lived HMAC signatures and do not prompt for the operator password.
 
 Create:
 

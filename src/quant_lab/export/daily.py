@@ -18434,6 +18434,12 @@ def _stale_rows(frames: dict[str, pl.DataFrame]) -> pl.DataFrame:
         if name in EVENT_DRIVEN_V5_DATASETS and status == "stale" and v5_telemetry_is_current:
             status = EVENT_DRIVEN_V5_DATASETS[name]
         if (
+            name in readers.V5_PAPER_TELEMETRY_DATASETS
+            and status == "stale"
+            and v5_telemetry_is_current
+        ):
+            status = "waiting_for_v5_paper_telemetry"
+        if (
             name in EVENT_DRIVEN_OKX_READONLY_DATASETS
             and status == "stale"
             and okx_readonly_private_is_current

@@ -5909,6 +5909,38 @@ def test_stale_dataset_check_ignores_event_driven_v5_cost_usage_when_current():
     assert "v5_quant_lab_fallback" not in datasets
 
 
+def test_stale_dataset_check_matches_web_v5_paper_and_auth_report_semantics():
+    now = datetime.now(UTC)
+    old = now - timedelta(days=3)
+    stale = daily_export_module._stale_rows(
+        {
+            "strategy_health_daily": pl.DataFrame(
+                [
+                    {
+                        "strategy": "v5",
+                        "date": now.date().isoformat(),
+                        "status": "OK",
+                        "latest_bundle_ts": now,
+                    }
+                ]
+            ),
+            "v5_paper_strategy_exit_quality": pl.DataFrame(
+                [
+                    {
+                        "proposal_id": "proposal-1",
+                        "strategy_id": "paper-1",
+                        "ingest_ts": old,
+                    }
+                ]
+            ),
+            "api_auth_error_timeline": pl.DataFrame([{"generated_at": now}]),
+            "api_auth_client_summary": pl.DataFrame([{"generated_at": now}]),
+        }
+    )
+
+    assert stale.is_empty()
+
+
 def test_stale_dataset_check_ignores_stale_bnb_latest_when_source_daily_is_current():
     now = datetime.now(UTC)
     old = now - timedelta(days=1)

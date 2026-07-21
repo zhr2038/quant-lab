@@ -429,6 +429,8 @@ DATASET_TIMESTAMP_COLUMNS: dict[str, tuple[str, ...]] = {
     "risk_permission_api_dependency_meta": ("generated_at", "telemetry_latest_ts"),
     "api_request_metrics": ("request_ts",),
     "api_auth_incident": ("generated_at", "last_error_at"),
+    "api_auth_error_timeline": ("generated_at", "last_error_at"),
+    "api_auth_client_summary": ("generated_at", "last_error_at"),
     "api_auth_production_slo": (
         "generated_at",
         "last_unexpected_auth_failure_at",

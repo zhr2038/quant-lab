@@ -324,9 +324,10 @@ def verify_factor_factory_generation(
             key_columns=FACTOR_FACTORY_PRIMARY_KEYS[dataset_name],
         )
     candidates = read_parquet_dataset(root / FACTOR_CANDIDATE_DATASET)
-    if not candidates.is_empty() and "source" in candidates.columns:
-        managed = candidates.filter(pl.col("source") == "factors.factory.v0.1")
-        _validate_cloud_candidate(managed)
+    _validate_published_candidates(
+        candidates,
+        as_of_date=str(pointer["as_of_date"]),
+    )
     return rows
 
 
@@ -439,12 +440,16 @@ def _validate_staged_dataset(
         connection.close()
 
 
-def _validate_cloud_candidate(frame: pl.DataFrame) -> None:
+def _validate_cloud_candidate(
+    frame: pl.DataFrame,
+    *,
+    enforce_row_limit: bool = True,
+) -> None:
     if frame.is_empty():
         return
-    if frame.height > 200:
+    if enforce_row_limit and frame.height > 200:
         raise ValueError("factor_factory_candidate_limit_exceeded")
-    required = {"candidate_state", "manual_review_required", "source"}
+    required = {"as_of_date", "candidate_state", "manual_review_required", "source"}
     if not required.issubset(frame.columns):
         raise ValueError("factor_factory_candidate_schema_incomplete")
     allowed = {"KILL", "RESEARCH", "KEEP_SHADOW", "PAPER_READY"}
@@ -455,6 +460,17 @@ def _validate_cloud_candidate(frame: pl.DataFrame) -> None:
     )
     if not invalid.is_empty():
         raise ValueError("factor_factory_candidate_safety_mismatch")
+
+
+def _validate_published_candidates(frame: pl.DataFrame, *, as_of_date: str) -> None:
+    if frame.is_empty():
+        return
+    if "source" not in frame.columns:
+        raise ValueError("factor_factory_candidate_schema_incomplete")
+    managed = frame.filter(pl.col("source") == "factors.factory.v0.1")
+    _validate_cloud_candidate(managed, enforce_row_limit=False)
+    current = managed.filter(pl.col("as_of_date") == as_of_date)
+    _validate_cloud_candidate(current)
 
 
 def _write_generation_sidecars(

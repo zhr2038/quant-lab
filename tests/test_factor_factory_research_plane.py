@@ -27,6 +27,7 @@ from quant_lab.research_plane.factor_factory_publish import (
     FACTOR_FACTORY_DATASETS,
     FACTOR_FACTORY_GENERATION_POINTER,
     FACTOR_FACTORY_PRIMARY_KEYS,
+    _validate_published_candidates,
     publish_factor_factory_generation,
     verify_factor_factory_generation,
 )
@@ -54,6 +55,26 @@ COMMIT = "a" * 40
 TASK_KEY_ID = "cloud-research-v1"
 WORKER_KEY_ID = "nas-worker-v1"
 CLI_RUNNER = CliRunner()
+
+
+def test_factor_factory_candidate_limit_is_scoped_to_current_as_of_date() -> None:
+    historical = pl.DataFrame(
+        {
+            "as_of_date": ["2026-05-19"] * 250,
+            "candidate_state": ["KEEP_SHADOW"] * 250,
+            "manual_review_required": [True] * 250,
+            "source": ["factors.factory.v0.1"] * 250,
+        }
+    )
+    current = historical.head(22).with_columns(pl.lit("2026-05-20").alias("as_of_date"))
+    _validate_published_candidates(
+        pl.concat([historical, current]),
+        as_of_date="2026-05-20",
+    )
+
+    too_many_current = historical.with_columns(pl.lit("2026-05-20").alias("as_of_date"))
+    with pytest.raises(ValueError, match="candidate_limit_exceeded"):
+        _validate_published_candidates(too_many_current, as_of_date="2026-05-20")
 
 
 def test_factor_factory_signed_full_history_round_trip(tmp_path: Path) -> None:

@@ -361,6 +361,40 @@ def test_factor_research_uses_shared_nas_plane_on_bounded_weekly_schedule():
     assert "build-factor-factory" not in refresh_service
 
 
+def test_factor_factory_uses_shared_worker_and_hourly_cloud_request_only():
+    request_service = _unit("quant-lab-factor-factory-request.service")
+    request_timer = _unit("quant-lab-factor-factory-request.timer")
+    importer = _unit("quant-lab-research-result-import.service")
+    refresh_service = _unit("quant-lab-v5-research-refresh.service")
+    nas_compose = (ROOT / "deploy" / "nas_research_worker" / "docker-compose.yml").read_text(
+        encoding="utf-8"
+    )
+    nas_env = (ROOT / "deploy" / "nas_research_worker" / ".env.example").read_text(
+        encoding="utf-8"
+    )
+
+    assert "request-factor-factory" in request_service
+    assert "build-factor-factory" not in request_service
+    assert "QUANT_LAB_NAS_FACTOR_FACTORY_ENABLED" in request_service
+    assert "POLARS_MAX_THREADS=1" in request_service
+    assert "CPUQuota=30%" in request_service
+    assert "MemoryHigh=500M" in request_service
+    assert "MemoryMax=900M" in request_service
+    assert "OnCalendar=*-*-* *:38:00 UTC" in request_timer
+    assert "RandomizedDelaySec=3min" in request_timer
+    assert "--factor-factory-max-result-bytes" in importer
+    assert "--factor-factory-max-value-partition-bytes" in importer
+    assert "--factor-factory-max-file-count" in importer
+    assert "--factor-factory-max-uncompressed-bytes" in importer
+    assert "build-factor-factory" not in refresh_service
+    assert "cpus: 3.0" in nas_compose
+    assert "mem_limit: ${NAS_RESEARCH_WORKER_MEMORY_LIMIT:-8g}" in nas_compose
+    assert "pids_limit: 256" in nas_compose
+    assert "read_only: true" in nas_compose
+    assert "QUANT_RESEARCH_FACTOR_FACTORY_ENABLED=0" in nas_env
+    assert "FACTOR_FACTORY_MAX_RESULT_BYTES=2147483648" in nas_env
+
+
 def test_scheduled_compaction_covers_hot_ws_datasets():
     unit = _unit("quant-lab-lake-compaction.service")
     timer = _unit("quant-lab-lake-compaction.timer")

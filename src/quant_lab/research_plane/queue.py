@@ -43,16 +43,19 @@ from quant_lab.research.second_stage_alpha_factory import (
 from quant_lab.research_plane.contracts import (
     ALPHA_FACTORY_TASK_TYPE,
     ENTRY_QUALITY_HISTORY_TASK_TYPE,
+    FACTOR_FACTORY_TASK_TYPE,
     FACTOR_RESEARCH_TASK_TYPE,
     RESEARCH_TASK_SCHEMA,
     AlphaFactoryTask,
     AlphaFactoryTaskParameters,
     EntryQualityHistoryTaskParameters,
+    FactorFactoryTask,
     FactorResearchTask,
     ResearchTask,
     ResearchTaskState,
     ResearchTaskStatus,
 )
+from quant_lab.research_plane.factor_factory_snapshot import seal_factor_factory_snapshot
 from quant_lab.research_plane.factor_research_publish import (
     current_factor_research_generation_binding,
 )
@@ -68,6 +71,156 @@ from quant_lab.research_plane.status import (
     find_research_task_directory,
     write_research_status,
 )
+
+
+def create_factor_factory_task(
+    lake_root: str | Path,
+    queue_root: str | Path,
+    *,
+    as_of_date: date,
+    signing_key: Ed25519PrivateKey,
+    signature_key_id: str,
+    quant_lab_commit: str,
+    feature_set: str = "core",
+    feature_version: str = "v0.1",
+    factor_version: str = "v0.1",
+    timeframe: str = "1H",
+    horizon_bars: tuple[int, ...] = (4, 8, 24, 72),
+    decision_delay_bars: int = 1,
+    max_factors: int = 200,
+    min_samples: int = 100,
+    top_quantile: float = 0.2,
+    cost_quantile: str = "p75",
+    lease_seconds: int = 4 * 60 * 60,
+    max_attempts: int = 3,
+    max_input_bytes: int = 25 * 1024**3,
+    max_input_rows: int = 150_000_000,
+    max_pending_tasks: int = 1,
+) -> tuple[FactorFactoryTask, ResearchTaskStatus]:
+    """Create one coalesced signed full-history Factor Factory NAS task."""
+
+    if max_pending_tasks != 1:
+        raise ValueError("factor_factory_max_pending_tasks_must_equal_one")
+    queue = ensure_research_queue_layout(queue_root)
+    snapshot = seal_factor_factory_snapshot(
+        lake_root,
+        queue,
+        as_of_date=as_of_date,
+        feature_set=feature_set,
+        feature_version=feature_version,
+        factor_version=factor_version,
+        timeframe=timeframe,
+        horizon_bars=horizon_bars,
+        decision_delay_bars=decision_delay_bars,
+        max_factors=max_factors,
+        min_samples=min_samples,
+        top_quantile=top_quantile,
+        cost_quantile=cost_quantile,
+        signing_key=signing_key,
+        signature_key_id=signature_key_id,
+        quant_lab_commit=quant_lab_commit,
+        max_input_bytes=max_input_bytes,
+        max_input_rows=max_input_rows,
+    )
+    task_seed = model_content_sha256(
+        {
+            "schema_version": "quant_lab_factor_factory_task_identity.v1",
+            "task_type": FACTOR_FACTORY_TASK_TYPE,
+            "snapshot_id": snapshot.snapshot_id,
+            "factor_plan_digest": snapshot.factor_plan_digest,
+            "source_input_digest": snapshot.source_input_digest,
+            "cost_input_digest": snapshot.cost_input_digest,
+            "previous_generation_id": snapshot.previous_generation_id,
+            "previous_generation_digest": snapshot.previous_generation_digest,
+            "parameters": snapshot.model_dump(
+                mode="json",
+                include={
+                    "as_of_date",
+                    "feature_set",
+                    "feature_version",
+                    "factor_version",
+                    "timeframe",
+                    "horizon_bars",
+                    "decision_delay_bars",
+                    "max_factors",
+                    "min_samples",
+                    "top_quantile",
+                    "cost_quantile",
+                    "result_mode",
+                    "history_mode",
+                },
+            ),
+            "quant_lab_commit": quant_lab_commit,
+            "signature_key_id": signature_key_id,
+        }
+    )[:24]
+    task_id = f"factor-factory-{task_seed}"
+    existing = find_research_task_directory(queue, task_id)
+    if existing is not None:
+        task = FactorFactoryTask.model_validate_json((existing / "task.json").read_text("utf-8"))
+        status = ResearchTaskStatus.model_validate_json(
+            (queue / "status" / f"{task_id}.json").read_text("utf-8")
+        )
+        return task, status
+    _coalesce_factor_factory_pending(queue, successor_task_id=task_id)
+    requested_at = datetime.now(UTC)
+    provisional = FactorFactoryTask(
+        task_id=task_id,
+        snapshot_id=snapshot.snapshot_id,
+        as_of_date=snapshot.as_of_date,
+        feature_set=snapshot.feature_set,
+        feature_version=snapshot.feature_version,
+        factor_version=snapshot.factor_version,
+        timeframe=snapshot.timeframe,
+        horizon_bars=snapshot.horizon_bars,
+        decision_delay_bars=snapshot.decision_delay_bars,
+        max_factors=snapshot.max_factors,
+        min_samples=snapshot.min_samples,
+        top_quantile=snapshot.top_quantile,
+        cost_quantile=snapshot.cost_quantile,
+        factor_plan_digest=snapshot.factor_plan_digest,
+        source_input_digest=snapshot.source_input_digest,
+        cost_input_digest=snapshot.cost_input_digest,
+        quant_lab_commit=quant_lab_commit,
+        snapshot_manifest_sha256=snapshot.manifest_sha256,
+        previous_generation_id=snapshot.previous_generation_id,
+        previous_generation_digest=snapshot.previous_generation_digest,
+        requested_at=requested_at,
+        lease_seconds=lease_seconds,
+        max_attempts=max_attempts,
+        signature_key_id=signature_key_id,
+        signature="pending",
+    )
+    task = provisional.model_copy(update={"signature": sign_model(provisional, signing_key)})
+    temporary = queue / "pending" / f".{task_id}.{uuid.uuid4().hex}.partial"
+    final = queue / "pending" / task_id
+    temporary.mkdir(parents=True, exist_ok=False)
+    try:
+        (temporary / "task.json").write_text(task.model_dump_json(indent=2), encoding="utf-8")
+        (temporary / "snapshot_id").write_text(snapshot.snapshot_id + "\n", encoding="ascii")
+        for path in (temporary / "task.json", temporary / "snapshot_id"):
+            path.chmod(0o660)
+        temporary.chmod(0o2770)
+        os.replace(temporary, final)
+    except Exception:
+        shutil.rmtree(temporary, ignore_errors=True)
+        raise
+    status = ResearchTaskStatus(
+        task_id=task_id,
+        snapshot_id=snapshot.snapshot_id,
+        task_type=FACTOR_FACTORY_TASK_TYPE,
+        start_date=(snapshot.feature_min_ts or snapshot.generated_at).date(),
+        end_date=(snapshot.feature_max_ts or snapshot.generated_at).date(),
+        mode="PARITY_FULL/bootstrap_full",
+        cost_mode=f"point_in_task_{cost_quantile}",
+        state=ResearchTaskState.PENDING,
+        requested_at=requested_at,
+        max_attempts=max_attempts,
+        input_bytes=snapshot.total_input_bytes,
+        import_status="waiting_for_nas",
+    )
+    write_research_status(queue, status)
+    return task, status
 
 
 def create_factor_research_task(
@@ -117,9 +270,7 @@ def create_factor_research_task(
     # A date-only task created during the UTC day cannot assume that day's
     # closing bars already exist. Keep the full as-of day outside every label
     # horizon so the final decision has a completed forward label.
-    latest_complete_end = as_of_date - timedelta(
-        days=(max_horizon_hours + 23) // 24 + 1
-    )
+    latest_complete_end = as_of_date - timedelta(days=(max_horizon_hours + 23) // 24 + 1)
     resolved_end = end_date or latest_complete_end
     if resolved_end > latest_complete_end:
         raise ValueError("factor_research_label_horizon_incomplete")
@@ -246,6 +397,41 @@ def create_factor_research_task(
     )
     write_research_status(queue, status)
     return task, status
+
+
+def _coalesce_factor_factory_pending(queue: Path, *, successor_task_id: str) -> None:
+    """Keep at most one pending successor without interrupting an active worker."""
+
+    for status_path in sorted((queue / "status").glob("*.json")):
+        try:
+            status = ResearchTaskStatus.model_validate_json(status_path.read_text("utf-8"))
+        except (OSError, ValueError):
+            continue
+        if (
+            status.task_type != FACTOR_FACTORY_TASK_TYPE
+            or status.task_id == successor_task_id
+            or status.state is not ResearchTaskState.PENDING
+        ):
+            continue
+        pending = queue / "pending" / status.task_id
+        if not pending.is_dir():
+            continue
+        cancelled = queue / "cancelled" / status.task_id
+        if cancelled.exists():
+            raise RuntimeError("factor_factory_cancelled_destination_exists")
+        os.replace(pending, cancelled)
+        now = datetime.now(UTC)
+        write_research_status(
+            queue,
+            status.model_copy(
+                update={
+                    "state": ResearchTaskState.CANCELLED,
+                    "completed_at": now,
+                    "import_status": "superseded_before_claim",
+                    "last_error": f"superseded_by:{successor_task_id}",
+                }
+            ),
+        )
 
 
 def create_alpha_factory_task(

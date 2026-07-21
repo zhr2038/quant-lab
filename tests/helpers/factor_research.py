@@ -124,6 +124,8 @@ def seed_verified_factor_generation(
 
 
 def _normalize(frame: pl.DataFrame, schema: dict[str, pl.DataType]) -> pl.DataFrame:
+    if frame.is_empty():
+        return pl.DataFrame(schema=schema)
     normalized = frame
     for column, dtype in schema.items():
         if column not in normalized.columns:

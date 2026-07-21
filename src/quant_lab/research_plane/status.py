@@ -1,11 +1,17 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from quant_lab.export_plane.status import atomic_write_json, read_json
 from quant_lab.research_plane.contracts import (
+    RESEARCH_RESULT_ADAPTER,
+    RESEARCH_SNAPSHOT_ADAPTER,
+    RESEARCH_TASK_ADAPTER,
+    FactorFactoryResultManifest,
+    FactorFactorySnapshotManifest,
+    FactorFactoryTask,
     ResearchTaskLease,
     ResearchTaskState,
     ResearchTaskStatus,
@@ -111,17 +117,23 @@ def factor_research_plane_status(root: str | Path) -> dict[str, Any]:
     return _research_plane_status_for_type(root, "factor_research")
 
 
+def factor_factory_plane_status(root: str | Path) -> dict[str, Any]:
+    return _research_plane_status_for_type(root, "factor_factory")
+
+
 def research_plane_status(root: str | Path) -> dict[str, Any]:
     entry_quality = entry_quality_history_plane_status(root)
     alpha_factory = alpha_factory_plane_status(root)
     factor_research = factor_research_plane_status(root)
+    factor_factory = factor_factory_plane_status(root)
     return {
         "schema_version": "quant_lab_research_plane_status.v2",
-        "state": _aggregate_state([entry_quality, alpha_factory, factor_research]),
+        "state": _aggregate_state([entry_quality, alpha_factory, factor_research, factor_factory]),
         "tasks": {
             "entry_quality_history": entry_quality,
             "alpha_factory": alpha_factory,
             "factor_research": factor_research,
+            "factor_factory": factor_factory,
         },
         "nas_offline_behavior": "wait_no_local_fallback",
         "research_only": True,
@@ -179,6 +191,8 @@ def _research_plane_status_for_type(
             selected_payload["worker_heartbeat_at"] = lease.heartbeat_at.isoformat()
             selected_payload["worker_lease_expires_at"] = lease.lease_expires_at.isoformat()
             selected_payload["worker_lease_sequence"] = lease.sequence
+        if task_type == "factor_factory":
+            selected_payload.update(_factor_factory_status_details(queue_root, selected))
     return {
         "schema_version": schema_version,
         "task_type": task_type,
@@ -201,6 +215,10 @@ def _aggregate_state(statuses: list[dict[str, Any]]) -> str:
         "validating_on_cloud",
         "uploading",
         "validating_on_nas",
+        "computing_correlation",
+        "computing_evidence",
+        "computing_labels",
+        "computing_values",
         "computing",
         "syncing",
         "claimed",
@@ -209,6 +227,71 @@ def _aggregate_state(statuses: list[dict[str, Any]]) -> str:
         if state in states:
             return state
     return "completed" if "completed" in states else "idle"
+
+
+def _factor_factory_status_details(
+    queue_root: Path,
+    status: ResearchTaskStatus,
+) -> dict[str, Any]:
+    details: dict[str, Any] = {}
+    task_directory = find_research_task_directory(queue_root, status.task_id)
+    if task_directory is not None:
+        try:
+            task = RESEARCH_TASK_ADAPTER.validate_json(
+                (task_directory / "task.json").read_text("utf-8")
+            )
+        except (OSError, ValueError):
+            task = None
+        if isinstance(task, FactorFactoryTask):
+            details.update(
+                {
+                    "factor_plan_digest": task.factor_plan_digest,
+                    "as_of_date": task.as_of_date.isoformat(),
+                    "feature_set": task.feature_set,
+                    "feature_version": task.feature_version,
+                    "factor_version": task.factor_version,
+                    "timeframe": task.timeframe,
+                    "horizon_bars": list(task.horizon_bars),
+                }
+            )
+            try:
+                snapshot = RESEARCH_SNAPSHOT_ADAPTER.validate_json(
+                    (
+                        queue_root / "snapshots" / task.snapshot_id / "manifest.json"
+                    ).read_text("utf-8")
+                )
+            except (OSError, ValueError):
+                snapshot = None
+            if isinstance(snapshot, FactorFactorySnapshotManifest):
+                details["factor_count"] = snapshot.factor_plan.factor_count
+    for result_state in ("inbox", "imported"):
+        manifest_path = (
+            queue_root / "results" / result_state / status.task_id / "manifest.json"
+        )
+        if not manifest_path.is_file():
+            continue
+        try:
+            manifest = RESEARCH_RESULT_ADAPTER.validate_json(manifest_path.read_text("utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(manifest, FactorFactoryResultManifest):
+            continue
+        rows = {item.dataset_name: item.row_count for item in manifest.outputs}
+        details.update(
+            {
+                "factor_count": manifest.factor_count,
+                "value_rows": sum(item.row_count for item in manifest.value_partitions),
+                "evidence_rows": rows.get("factor_evidence", 0),
+                "correlation_rows": rows.get("factor_correlation_daily", 0),
+                "generation_id": manifest.generation_id,
+                "generation_age_seconds": max(
+                    0,
+                    int((datetime.now(UTC) - manifest.completed_at).total_seconds()),
+                ),
+            }
+        )
+        break
+    return details
 
 
 def _status_sort_key(status: ResearchTaskStatus) -> datetime:

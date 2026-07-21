@@ -52,6 +52,7 @@ function TaskStatus({ label, status }: { label: string; status: Record<string, u
   const cacheHitBytes = Number(task.cache_hit_bytes ?? 0);
   const cacheRate = inputBytes > 0 ? `${((cacheHitBytes / inputBytes) * 100).toFixed(1)}%` : "—";
   const error = stringValue(task.last_error ?? status.last_error, "");
+  const isFactorFactory = stringValue(task.task_type) === "factor_factory";
 
   return (
     <div className="research-compute-task">
@@ -70,7 +71,14 @@ function TaskStatus({ label, status }: { label: string; status: Record<string, u
         <div><span>峰值内存 / 计算</span><b>{bytes(task.peak_rss_bytes)} · {durationValue(task.compute_duration_seconds)}</b></div>
         <div><span>Anti-Leakage</span><b><ShieldCheck size={12} />{stringValue(task.anti_leakage_status, "—")}</b></div>
         <div><span>云端导入</span><b>{stringValue(task.import_status, "—")}</b></div>
-        <div><span>Gold generation</span><b title={stringValue(task.gold_generation_id)}>{stringValue(task.gold_generation_id, "—")}</b></div>
+        <div><span>Gold generation</span><b title={stringValue(task.gold_generation_id ?? task.generation_id)}>{stringValue(task.gold_generation_id ?? task.generation_id, "—")}</b></div>
+        {isFactorFactory ? <>
+          <div><span>Factor Plan</span><b title={stringValue(task.factor_plan_digest)}>{stringValue(task.factor_plan_digest, "—")}</b></div>
+          <div><span>Scope</span><b>{stringValue(task.feature_set, "—")} / {stringValue(task.feature_version, "—")} → {stringValue(task.factor_version, "—")} · {stringValue(task.timeframe, "—")}</b></div>
+          <div><span>Horizon / Factors</span><b>{Array.isArray(task.horizon_bars) ? task.horizon_bars.join(",") : "—"} · {stringValue(task.factor_count, "0")}</b></div>
+          <div><span>Value / Evidence / Corr</span><b>{stringValue(task.value_rows, "0")} / {stringValue(task.evidence_rows, "0")} / {stringValue(task.correlation_rows, "0")}</b></div>
+          <div><span>Generation age</span><b>{durationValue(task.generation_age_seconds)}</b></div>
+        </> : null}
       </div>
       {error ? <div className="research-compute-error">{error}</div> : null}
     </div>
@@ -82,6 +90,7 @@ export function ResearchComputeStatus({ status }: Props) {
   const entryQuality = objectValue(tasks.entry_quality_history);
   const alphaFactory = objectValue(tasks.alpha_factory);
   const factorResearch = objectValue(tasks.factor_research);
+  const factorFactory = objectValue(tasks.factor_factory);
   const aggregateState = stringValue(status.state, "idle");
 
   return (
@@ -97,6 +106,7 @@ export function ResearchComputeStatus({ status }: Props) {
         <TaskStatus label="Entry Quality History" status={entryQuality} />
         <TaskStatus label="Alpha Factory" status={alphaFactory} />
         <TaskStatus label="Factor Research v2" status={factorResearch} />
+        <TaskStatus label="Factor Factory" status={factorFactory} />
       </div>
     </section>
   );

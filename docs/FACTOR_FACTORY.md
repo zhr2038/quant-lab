@@ -7,6 +7,11 @@ daily review queue.
 It is read-only research infrastructure. It does not generate live orders,
 cancel orders, amend orders, write exchange state, or change V5/V7 execution.
 
+Production heavy computation is dispatched through the signed NAS Research
+Compute Plane described in [FACTOR_FACTORY_NAS_RESEARCH_PLANE.md](FACTOR_FACTORY_NAS_RESEARCH_PLANE.md).
+The local CLI is fail-closed unless an operator explicitly sets
+`QUANT_LAB_LOCAL_FACTOR_FACTORY_ENABLED=1` for a maintenance or parity run.
+
 ## Data Flow
 
 ```text
@@ -129,6 +134,9 @@ qlab factor-factory-health \
   --lake-root /var/lib/quant-lab/lake
 ```
 
+The production request path is `qlab request-factor-factory`; it seals a signed
+full-history Snapshot and does not compute or publish Factor Gold locally.
+
 ## Anti-Leakage Rules
 
 - Factors consume only previously published `feature_value`.
@@ -155,5 +163,7 @@ qlab factor-factory-health \
 - `core.liquidity_adjusted_momentum_24`
 - `core.mean_reversion_vol_adjusted_4`
 
-The discovery pass also creates `auto.single.<feature_name>` for any available
-feature not already covered by a default factor.
+The ordinary local registry defaults to the curated factors. The signed
+`PARITY_FULL` NAS compatibility plan explicitly includes sorted
+`auto.single.<feature_name>` factors to preserve the audited pre-migration
+semantics; that choice is recorded in the plan and cannot be expanded by NAS.

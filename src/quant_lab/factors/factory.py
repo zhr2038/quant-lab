@@ -4,6 +4,8 @@ import math
 import subprocess
 import tempfile
 from collections import Counter
+from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -30,6 +32,8 @@ from quant_lab.strategy_telemetry.sanitize import safe_json_dumps
 
 SOURCE_NAME = "factors.factory.v0.1"
 CODE_VERSION_PREFIX = "factors.factory"
+LEGACY_MAIN_DECISION_POLICY = "factor_factory.main_49ad71f.v1"
+CURRENT_DECISION_POLICY = "factor_factory.hypothesis_bridge.v2"
 
 FEATURE_VALUE_DATASET = Path("gold") / "feature_value"
 MARKET_BAR_DATASET = Path("silver") / "market_bar"
@@ -291,6 +295,161 @@ class FactorHealthResult(BaseModel):
     live_order_effect: str = "none_read_only_research"
 
 
+@dataclass(frozen=True)
+class FactorFactoryPureResult:
+    """In-memory Factor Factory artifacts with no Lake publication side effects."""
+
+    generated_at: datetime
+    definitions: pl.DataFrame
+    values: pl.DataFrame
+    evidence: pl.DataFrame
+    correlations: pl.DataFrame
+    warnings: tuple[str, ...]
+    no_update_reason: str | None = None
+
+
+def compute_factor_factory_frames(
+    *,
+    features: pl.DataFrame,
+    market_bars: pl.DataFrame,
+    costs: pl.DataFrame,
+    specs: list[FactorSpec],
+    as_of_date: date,
+    factor_version: str,
+    timeframe: str,
+    horizon_bars: tuple[int, ...],
+    decision_delay_bars: int,
+    min_samples: int,
+    top_quantile: float,
+    cost_quantile: str,
+    generated_at: datetime,
+    decision_policy: str = CURRENT_DECISION_POLICY,
+    stage_callback: Callable[[str], None] | None = None,
+) -> FactorFactoryPureResult:
+    """Compute the legacy Factor Factory outputs without reading or writing the Lake."""
+
+    if decision_delay_bars < 1:
+        raise ValueError("decision_delay_bars must be at least 1")
+    horizons = tuple(sorted({int(item) for item in horizon_bars if int(item) > 0}))
+    if not horizons:
+        raise ValueError("horizon_bars must not be empty")
+    if decision_policy not in {CURRENT_DECISION_POLICY, LEGACY_MAIN_DECISION_POLICY}:
+        raise ValueError("unsupported factor factory decision policy")
+    warnings: list[str] = []
+    if stage_callback is not None:
+        stage_callback("computing_values")
+    lineage_specs = apply_factor_semantic_lineage(specs)
+    definitions = build_factor_definition_frame(lineage_specs, created_at=generated_at)
+    if features.is_empty() or not lineage_specs:
+        return FactorFactoryPureResult(
+            generated_at=generated_at,
+            definitions=definitions,
+            values=pl.DataFrame(schema=FACTOR_VALUE_SCHEMA),
+            evidence=pl.DataFrame(schema=FACTOR_EVIDENCE_SCHEMA),
+            correlations=pl.DataFrame(schema=FACTOR_CORRELATION_SCHEMA),
+            warnings=("feature_value missing or empty for factor factory",),
+            no_update_reason="feature_value_missing_or_empty",
+        )
+    normalized_features = _normalize_datetime(features, "ts")
+    values = build_factor_value_frame(
+        normalized_features,
+        lineage_specs,
+        created_at=generated_at,
+    )
+    if values.is_empty():
+        return FactorFactoryPureResult(
+            generated_at=generated_at,
+            definitions=definitions,
+            values=values,
+            evidence=pl.DataFrame(schema=FACTOR_EVIDENCE_SCHEMA),
+            correlations=pl.DataFrame(schema=FACTOR_CORRELATION_SCHEMA),
+            warnings=("no factor values computed",),
+            no_update_reason="factor_value_empty",
+        )
+    normalized_market = (
+        _normalize_datetime(market_bars, "ts") if not market_bars.is_empty() else market_bars
+    )
+    if not normalized_market.is_empty():
+        if "is_closed" in normalized_market.columns:
+            normalized_market = normalized_market.filter(pl.col("is_closed"))
+        normalized_market = normalized_market.filter(pl.col("timeframe") == timeframe).sort(
+            ["symbol", "timeframe", "ts"]
+        )
+    if normalized_market.is_empty():
+        if stage_callback is not None:
+            stage_callback("computing_correlation")
+        return FactorFactoryPureResult(
+            generated_at=generated_at,
+            definitions=definitions,
+            values=values,
+            evidence=pl.DataFrame(schema=FACTOR_EVIDENCE_SCHEMA),
+            correlations=build_factor_correlation_frame(
+                values,
+                as_of_date=as_of_date,
+                factor_version=factor_version,
+                timeframe=timeframe,
+                created_at=generated_at,
+            ),
+            warnings=("market_bar missing or empty for factor evidence",),
+            no_update_reason="market_bar_missing_or_empty",
+        )
+    if stage_callback is not None:
+        stage_callback("computing_labels")
+    evidence, evidence_warnings = build_factor_evidence_frame(
+        values,
+        normalized_market,
+        costs,
+        as_of_date=as_of_date,
+        horizon_bars=horizons,
+        decision_delay_bars=decision_delay_bars,
+        min_samples=min_samples,
+        top_quantile=top_quantile,
+        cost_quantile=cost_quantile,
+        created_at=generated_at,
+        decision_policy=decision_policy,
+        stage_callback=stage_callback,
+    )
+    warnings.extend(evidence_warnings)
+    if stage_callback is not None:
+        stage_callback("computing_correlation")
+    correlations = build_factor_correlation_frame(
+        values,
+        as_of_date=as_of_date,
+        factor_version=factor_version,
+        timeframe=timeframe,
+        created_at=generated_at,
+    )
+    return FactorFactoryPureResult(
+        generated_at=generated_at,
+        definitions=definitions,
+        values=values,
+        evidence=evidence,
+        correlations=correlations,
+        warnings=tuple(_dedupe(warnings)),
+    )
+
+
+def build_factor_definition_frame(
+    specs: list[FactorSpec],
+    *,
+    created_at: datetime,
+) -> pl.DataFrame:
+    lineage_specs = apply_factor_semantic_lineage(specs)
+    return _schema_frame(
+        [spec.definition_row(created_at=created_at, source=SOURCE_NAME) for spec in lineage_specs],
+        FACTOR_DEFINITION_SCHEMA,
+    )
+
+
+def build_factor_value_frame(
+    features: pl.DataFrame,
+    specs: list[FactorSpec],
+    *,
+    created_at: datetime,
+) -> pl.DataFrame:
+    return _build_factor_value_frame(features, specs, created_at=created_at)
+
+
 def build_and_publish_factor_factory(
     lake_root: str | Path,
     *,
@@ -306,6 +465,7 @@ def build_and_publish_factor_factory(
     top_quantile: float = 0.2,
     cost_quantile: str = "p75",
     legacy_enumeration: bool = False,
+    decision_policy: str = CURRENT_DECISION_POLICY,
     dry_run: bool = False,
 ) -> FactorFactoryBuildResult:
     if dry_run:
@@ -323,6 +483,7 @@ def build_and_publish_factor_factory(
             top_quantile=top_quantile,
             cost_quantile=cost_quantile,
             legacy_enumeration=legacy_enumeration,
+            decision_policy=decision_policy,
         )
     published = publish_factor_values(
         lake_root,
@@ -345,6 +506,7 @@ def build_and_publish_factor_factory(
         top_quantile=top_quantile,
         cost_quantile=cost_quantile,
         legacy_enumeration=legacy_enumeration,
+        decision_policy=decision_policy,
         dry_run=dry_run,
     )
     return FactorFactoryBuildResult(
@@ -377,6 +539,7 @@ def _build_factor_factory_dry_run(
     top_quantile: float,
     cost_quantile: str,
     legacy_enumeration: bool,
+    decision_policy: str,
 ) -> FactorFactoryBuildResult:
     source_root = Path(lake_root)
     with tempfile.TemporaryDirectory(prefix="quant_lab_factor_factory_") as tmp:
@@ -399,6 +562,7 @@ def _build_factor_factory_dry_run(
             top_quantile=top_quantile,
             cost_quantile=cost_quantile,
             legacy_enumeration=legacy_enumeration,
+            decision_policy=decision_policy,
             dry_run=False,
         )
     return result.model_copy(
@@ -543,6 +707,7 @@ def evaluate_and_publish_factor_evidence(
     top_quantile: float = 0.2,
     cost_quantile: str = "p75",
     legacy_enumeration: bool = False,
+    decision_policy: str = CURRENT_DECISION_POLICY,
     dry_run: bool = False,
 ) -> FactorEvidenceBuildResult:
     if decision_delay_bars < 1:
@@ -619,10 +784,12 @@ def evaluate_and_publish_factor_evidence(
                     min_samples=min_samples,
                     top_quantile=top_quantile,
                     created_at=now,
+                    decision_policy=decision_policy,
                 )
             )
 
-    rows = _apply_multiple_testing(rows)
+    if decision_policy != LEGACY_MAIN_DECISION_POLICY:
+        rows = _apply_multiple_testing(rows)
     evidence = _schema_frame(rows, FACTOR_EVIDENCE_SCHEMA)
     candidates = _candidate_frame_from_evidence(evidence, as_of_date=day, created_at=now)
     correlations = _factor_correlation_frame(
@@ -661,6 +828,103 @@ def evaluate_and_publish_factor_evidence(
         correlation_rows=correlation_rows,
         decision_counts=_decision_counts(evidence),
         warnings=_dedupe(warnings),
+    )
+
+
+def build_factor_evidence_frame(
+    values: pl.DataFrame,
+    market_bars: pl.DataFrame,
+    costs: pl.DataFrame,
+    *,
+    as_of_date: date,
+    horizon_bars: tuple[int, ...],
+    decision_delay_bars: int,
+    min_samples: int,
+    top_quantile: float,
+    cost_quantile: str,
+    created_at: datetime,
+    decision_policy: str = CURRENT_DECISION_POLICY,
+    stage_callback: Callable[[str], None] | None = None,
+) -> tuple[pl.DataFrame, list[str]]:
+    """Build Factor Evidence from immutable frames without Lake side effects."""
+
+    if decision_delay_bars < 1:
+        raise ValueError("decision_delay_bars must be at least 1")
+    horizons = tuple(sorted({int(item) for item in horizon_bars if int(item) > 0}))
+    if not horizons:
+        raise ValueError("horizon_bars must not be empty")
+    warnings: list[str] = []
+    rows: list[dict[str, Any]] = []
+    factor_keys = [
+        "factor_id",
+        "factor_name",
+        "factor_family",
+        "factor_version",
+        "timeframe",
+        "factor_hash",
+        "canonical_factor_id",
+        "formula_hash",
+        "independence_weight",
+    ]
+    cost_frame = build_latest_symbol_cost_frame(
+        costs,
+        cost_quantile=cost_quantile,
+        warnings=warnings,
+    )
+    evidence_stage_reported = False
+    for horizon in horizons:
+        labels = build_forward_return_labels(
+            market_bars,
+            horizon_bars=horizon,
+            decision_delay_bars=decision_delay_bars,
+        )
+        validate_no_label_lookahead(labels)
+        if labels.is_empty():
+            warnings.append(f"horizon_{horizon}_labels_empty")
+            continue
+        if stage_callback is not None and not evidence_stage_reported:
+            stage_callback("computing_evidence")
+            evidence_stage_reported = True
+        evidence_dataset = values.rename({"ts": "feature_ts"}).join(
+            labels,
+            on=["symbol", "timeframe", "feature_ts"],
+            how="inner",
+        )
+        evidence_dataset = attach_symbol_cost_frame(evidence_dataset, cost_frame)
+        for factor_key, group in evidence_dataset.group_by(factor_keys, maintain_order=True):
+            factor_meta = dict(
+                zip(factor_keys, _as_tuple(factor_key, len(factor_keys)), strict=True)
+            )
+            rows.append(
+                _factor_evidence_row(
+                    group,
+                    factor_meta=factor_meta,
+                    as_of_date=as_of_date,
+                    horizon_bars=horizon,
+                    decision_delay_bars=decision_delay_bars,
+                    min_samples=min_samples,
+                    top_quantile=top_quantile,
+                    created_at=created_at,
+                    decision_policy=decision_policy,
+                )
+            )
+    if decision_policy != LEGACY_MAIN_DECISION_POLICY:
+        rows = _apply_multiple_testing(rows)
+    return _schema_frame(rows, FACTOR_EVIDENCE_SCHEMA), _dedupe(warnings)
+
+
+def derive_factor_candidate_frame(
+    evidence: pl.DataFrame,
+    *,
+    as_of_date: date,
+    created_at: datetime,
+) -> pl.DataFrame:
+    """Cloud-owned Factor Candidate derivation from strictly validated evidence."""
+
+    return _candidate_frame_from_evidence(
+        evidence,
+        as_of_date=as_of_date,
+        created_at=created_at,
     )
 
 
@@ -865,9 +1129,7 @@ def _build_factor_value_frame(
                 pl.lit(spec.factor_formula_hash).alias("formula_hash"),
                 pl.lit(spec.operator_graph_hash).alias("operator_graph_hash"),
                 pl.lit(spec.correlation_cluster_id).alias("correlation_cluster_id"),
-                pl.lit(spec.effective_independence_weight).alias(
-                    "effective_independence_weight"
-                ),
+                pl.lit(spec.effective_independence_weight).alias("effective_independence_weight"),
                 pl.lit(spec.effective_independence_weight).alias("independence_weight"),
                 pl.lit(safe_json_dumps(list(spec.input_features))).alias("input_features_json"),
                 pl.lit(input_dataset_version).alias("input_dataset_version"),
@@ -899,37 +1161,43 @@ def _build_factor_value_frame(
             pl.col("_clean_raw_value").rank("average").over(group).alias("_rank"),
         ]
     )
-    normalized = clean.with_columns(
-        [
-            (
-                pl.col("_clean_raw_value").is_not_null()
-                & (pl.col("_valid_count") >= pl.col("_min_cross_section"))
-            ).alias("is_valid"),
-            pl.when(pl.col("_clean_raw_value").is_null())
-            .then(pl.lit("invalid_or_insufficient_input"))
-            .when(pl.col("_valid_count") < pl.col("_min_cross_section"))
-            .then(pl.lit("insufficient_cross_section"))
+    normalized = (
+        clean.with_columns(
+            [
+                (
+                    pl.col("_clean_raw_value").is_not_null()
+                    & (pl.col("_valid_count") >= pl.col("_min_cross_section"))
+                ).alias("is_valid"),
+                pl.when(pl.col("_clean_raw_value").is_null())
+                .then(pl.lit("invalid_or_insufficient_input"))
+                .when(pl.col("_valid_count") < pl.col("_min_cross_section"))
+                .then(pl.lit("insufficient_cross_section"))
+                .otherwise(None)
+                .alias("invalid_reason"),
+                pl.when((pl.col("_group_std") > 0) & (pl.col("_valid_count") > 1))
+                .then((pl.col("_clean_raw_value") - pl.col("_group_mean")) / pl.col("_group_std"))
+                .otherwise(None)
+                .alias("normalized_value"),
+                pl.when(pl.col("_valid_count") > 1)
+                .then((pl.col("_rank") - 1.0) / (pl.col("_valid_count") - 1.0))
+                .otherwise(0.5)
+                .alias("rank_value"),
+            ]
+        )
+        .with_columns(
+            pl.when(pl.col("is_valid"))
+            .then(pl.col("normalized_value") * pl.col("_direction"))
             .otherwise(None)
-            .alias("invalid_reason"),
-            pl.when((pl.col("_group_std") > 0) & (pl.col("_valid_count") > 1))
-            .then((pl.col("_clean_raw_value") - pl.col("_group_mean")) / pl.col("_group_std"))
-            .otherwise(None)
-            .alias("normalized_value"),
-            pl.when(pl.col("_valid_count") > 1)
-            .then((pl.col("_rank") - 1.0) / (pl.col("_valid_count") - 1.0))
-            .otherwise(0.5)
-            .alias("rank_value"),
-        ]
-    ).with_columns(
-        pl.when(pl.col("is_valid"))
-        .then(pl.col("normalized_value") * pl.col("_direction"))
-        .otherwise(None)
-        .alias("value")
-    ).with_columns(
-        pl.when(pl.col("is_valid"))
-        .then(pl.lit("[]"))
-        .otherwise(pl.format('["{}"]', pl.col("invalid_reason").fill_null("invalid_factor_value")))
-        .alias("quality_flags_json")
+            .alias("value")
+        )
+        .with_columns(
+            pl.when(pl.col("is_valid"))
+            .then(pl.lit("[]"))
+            .otherwise(
+                pl.format('["{}"]', pl.col("invalid_reason").fill_null("invalid_factor_value"))
+            )
+            .alias("quality_flags_json")
+        )
     )
     return normalized.select(list(FACTOR_VALUE_SCHEMA)).sort(
         ["factor_id", "symbol", "timeframe", "ts"]
@@ -1012,6 +1280,12 @@ def _attach_symbol_costs(
     warnings: list[str],
 ) -> pl.DataFrame:
     cost_frame = _latest_cost_frame(root, cost_quantile=cost_quantile, warnings=warnings)
+    return attach_symbol_cost_frame(dataset, cost_frame)
+
+
+def attach_symbol_cost_frame(dataset: pl.DataFrame, cost_frame: pl.DataFrame) -> pl.DataFrame:
+    """Attach an already selected point-in-task symbol cost frame without I/O."""
+
     if cost_frame.is_empty():
         return dataset.with_columns(
             [
@@ -1032,6 +1306,21 @@ def _attach_symbol_costs(
 
 def _latest_cost_frame(root: Path, *, cost_quantile: str, warnings: list[str]) -> pl.DataFrame:
     costs = read_parquet_dataset(root / COST_BUCKET_DAILY_DATASET)
+    return build_latest_symbol_cost_frame(
+        costs,
+        cost_quantile=cost_quantile,
+        warnings=warnings,
+    )
+
+
+def build_latest_symbol_cost_frame(
+    costs: pl.DataFrame,
+    *,
+    cost_quantile: str,
+    warnings: list[str],
+) -> pl.DataFrame:
+    """Preserve the legacy latest-row-per-symbol cost selection exactly."""
+
     cost_column = f"total_cost_bps_{cost_quantile}"
     if costs.is_empty() or cost_column not in costs.columns:
         warnings.append("cost_bucket_daily missing; using research global default cost")
@@ -1068,6 +1357,7 @@ def _factor_evidence_row(
     min_samples: int,
     top_quantile: float,
     created_at: datetime,
+    decision_policy: str = CURRENT_DECISION_POLICY,
 ) -> dict[str, Any]:
     total_rows = dataset.height
     valid = dataset.filter(
@@ -1093,12 +1383,22 @@ def _factor_evidence_row(
         ),
     )
     portfolio = _portfolio_stats(valid, top_quantile=top_quantile)
-    decision, score, reasons, decision_warnings = _factor_decision(
+    decision_rank_ic_tstat = (
+        rank_ic_stats.tstat
+        if decision_policy == LEGACY_MAIN_DECISION_POLICY
+        else overlap_stats.confirmatory_hac_tstat
+    )
+    decision_function = (
+        _legacy_main_factor_decision
+        if decision_policy == LEGACY_MAIN_DECISION_POLICY
+        else _factor_decision
+    )
+    decision, score, reasons, decision_warnings = decision_function(
         valid_sample_count=valid_rows,
         min_samples=min_samples,
         coverage=coverage,
         rank_ic_mean=rank_ic_stats.mean,
-        rank_ic_tstat=overlap_stats.confirmatory_hac_tstat,
+        rank_ic_tstat=decision_rank_ic_tstat,
         long_short_mean_bps=portfolio["long_short_mean_bps"],
         edge_cost_ratio=portfolio["edge_cost_ratio"],
     )
@@ -1121,7 +1421,7 @@ def _factor_evidence_row(
         "ic_mean": ic_stats.mean,
         "ic_tstat": ic_stats.tstat,
         "rank_ic_mean": rank_ic_stats.mean,
-        "rank_ic_tstat": overlap_stats.confirmatory_hac_tstat,
+        "rank_ic_tstat": decision_rank_ic_tstat,
         "naive_rank_ic_tstat": rank_ic_stats.tstat,
         "hac_rank_ic_tstat_horizon_half": overlap_stats.hac_tstat_horizon_half,
         "hac_rank_ic_tstat_horizon": overlap_stats.hac_tstat_horizon,
@@ -1147,8 +1447,7 @@ def _factor_evidence_row(
         **portfolio,
         "decision": decision,
         "score": score,
-        "independence_adjusted_score": score
-        * float(factor_meta.get("independence_weight") or 1.0),
+        "independence_adjusted_score": score * float(factor_meta.get("independence_weight") or 1.0),
         "reasons_json": safe_json_dumps(reasons),
         "warnings_json": safe_json_dumps(_dedupe(warnings)),
         "start_ts": start_ts,
@@ -1204,8 +1503,7 @@ def _portfolio_stats(valid: pl.DataFrame, *, top_quantile: float) -> dict[str, A
         .sort("decision_ts")
     )
     period_values = [
-        value / 10_000.0
-        for value in _float_values(period_returns, "_period_after_cost_bps")
+        value / 10_000.0 for value in _float_values(period_returns, "_period_after_cost_bps")
     ]
     return {
         "long_only_mean_bps": top_after,
@@ -1220,6 +1518,52 @@ def _portfolio_stats(valid: pl.DataFrame, *, top_quantile: float) -> dict[str, A
         "cost_ratio": mean_cost / abs(long_short) if long_short else 0.0,
         "period_count": period_returns.height,
     }
+
+
+def _legacy_main_factor_decision(
+    *,
+    valid_sample_count: int,
+    min_samples: int,
+    coverage: float,
+    rank_ic_mean: float,
+    rank_ic_tstat: float,
+    long_short_mean_bps: float,
+    edge_cost_ratio: float,
+) -> tuple[str, float, list[str], list[str]]:
+    """Decision ladder from the recorded GitHub main migration baseline."""
+
+    reasons: list[str] = []
+    warnings: list[str] = []
+    score = (
+        rank_ic_mean * 100.0
+        + rank_ic_tstat
+        + min(edge_cost_ratio, 5.0)
+        + long_short_mean_bps / 100.0
+    )
+    if valid_sample_count < min_samples:
+        reasons.append("sample_count_below_min")
+        warnings.append("insufficient_samples")
+        return "RESEARCH", score, reasons, warnings
+    if coverage < 0.50:
+        reasons.append("coverage_below_0_50")
+        return "KILL", score, reasons, warnings
+    if rank_ic_mean < -0.01 and long_short_mean_bps < 0:
+        reasons.append("negative_rank_ic_and_spread")
+        return "KILL", score, reasons, warnings
+    if (
+        coverage >= 0.80
+        and rank_ic_mean > 0.0
+        and rank_ic_tstat >= 1.0
+        and long_short_mean_bps > 0
+        and edge_cost_ratio > 1.0
+    ):
+        reasons.append("positive_rank_ic_after_cost_spread")
+        return "PAPER_READY", score, reasons, warnings
+    if rank_ic_mean > 0.0 or long_short_mean_bps > 0:
+        reasons.append("positive_but_not_paper_ready")
+        return "KEEP_SHADOW", score, reasons, warnings
+    reasons.append("weak_or_neutral_evidence")
+    return "RESEARCH", score, reasons, warnings
 
 
 def _factor_decision(
@@ -1250,11 +1594,7 @@ def _factor_decision(
     if rank_ic_mean < -0.01 and long_short_mean_bps < 0:
         reasons.append("negative_rank_ic_and_spread")
         return "KILL", score, reasons, warnings
-    if (
-        coverage >= 0.80
-        and rank_ic_mean > 0.03
-        and rank_ic_tstat >= 2.0
-    ):
+    if coverage >= 0.80 and rank_ic_mean > 0.03 and rank_ic_tstat >= 2.0:
         reasons.append("development_signal_requires_confirmatory_trial")
         return "SIGNAL_CANDIDATE", score, reasons, warnings
     if rank_ic_mean > 0.0 or long_short_mean_bps > 0:
@@ -1309,9 +1649,7 @@ def _candidate_frame_from_evidence(
                 "candidate_state": decision,
                 "recommended_action": _recommended_action(decision),
                 "promotion_block_reasons_json": (
-                    "[]"
-                    if decision == "PAPER_READY"
-                    else str(best.get("reasons_json") or "[]")
+                    "[]" if decision == "PAPER_READY" else str(best.get("reasons_json") or "[]")
                 ),
                 "manual_review_required": True,
                 "created_at": created_at,
@@ -1559,9 +1897,7 @@ def _dedupe(values: list[str]) -> list[str]:
 
 
 def _apply_multiple_testing(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    pvalues = {
-        _evidence_test_id(row): float(row.get("raw_pvalue") or 1.0) for row in rows
-    }
+    pvalues = {_evidence_test_id(row): float(row.get("raw_pvalue") or 1.0) for row in rows}
     adjustments = adjust_multiple_testing(pvalues)
     for row in rows:
         adjustment = adjustments.get(_evidence_test_id(row))

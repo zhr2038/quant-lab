@@ -22,11 +22,14 @@ except ImportError:  # pragma: no cover - Linux NAS always provides resource.
     resource = None  # type: ignore[assignment]
 
 from quant_lab.research_plane.contracts import (
+    DEFAULT_FACTOR_FACTORY_MAX_RESULT_BYTES,
     DEFAULT_RESEARCH_MAX_RESULT_BYTES,
     RESEARCH_SNAPSHOT_ADAPTER,
     RESEARCH_TASK_ADAPTER,
     AlphaFactorySnapshotManifest,
     AlphaFactoryTask,
+    FactorFactorySnapshotManifest,
+    FactorFactoryTask,
     FactorResearchSnapshotManifest,
     FactorResearchTask,
     ResearchTaskEnvelope,
@@ -43,10 +46,12 @@ from quant_lab.research_worker.alpha_factory import compute_alpha_factory_from_s
 from quant_lab.research_worker.entry_quality_history import (
     compute_entry_quality_history_from_snapshot,
 )
+from quant_lab.research_worker.factor_factory import compute_factor_factory_result
 from quant_lab.research_worker.factor_research import compute_factor_research_result
 from quant_lab.research_worker.result_writer import (
     write_alpha_factory_result_bundle,
     write_entry_quality_history_result_bundle,
+    write_factor_factory_result_bundle,
     write_factor_research_result_bundle,
 )
 from quant_lab.transfer.snapshot_sync import sync_snapshot_blobs
@@ -82,6 +87,11 @@ class Config:
     max_result_bytes: int
     heavy_job_lock: Path
     batch_fetch_workers: int
+    factor_factory_max_result_bytes: int = DEFAULT_FACTOR_FACTORY_MAX_RESULT_BYTES
+    factor_factory_max_value_partition_bytes: int = 256 * 1024**2
+    factor_factory_enabled: bool = False
+    factor_factory_max_file_count: int = 20_000
+    factor_factory_max_uncompressed_bytes: int = 16 * 1024**3
     ssh_timeout_seconds: int = 90
     scp_timeout_seconds: int = 900
 
@@ -110,6 +120,25 @@ class Config:
             max_snapshot_bytes=int(os.environ.get("MAX_SNAPSHOT_BYTES", str(250 * 1024**3))),
             max_result_bytes=int(
                 os.environ.get("MAX_RESULT_BYTES", str(DEFAULT_RESEARCH_MAX_RESULT_BYTES))
+            ),
+            factor_factory_max_result_bytes=int(
+                os.environ.get(
+                    "FACTOR_FACTORY_MAX_RESULT_BYTES",
+                    str(DEFAULT_FACTOR_FACTORY_MAX_RESULT_BYTES),
+                )
+            ),
+            factor_factory_max_value_partition_bytes=int(
+                os.environ.get(
+                    "FACTOR_FACTORY_MAX_VALUE_PARTITION_BYTES",
+                    str(256 * 1024**2),
+                )
+            ),
+            factor_factory_enabled=_bool_env("QUANT_RESEARCH_FACTOR_FACTORY_ENABLED", False),
+            factor_factory_max_file_count=int(
+                os.environ.get("FACTOR_FACTORY_MAX_FILE_COUNT", "20000")
+            ),
+            factor_factory_max_uncompressed_bytes=int(
+                os.environ.get("FACTOR_FACTORY_MAX_UNCOMPRESSED_BYTES", str(16 * 1024**3))
             ),
             heavy_job_lock=Path(
                 os.environ.get("QUANT_HEAVY_JOB_LOCK", "/runtime/quant-runtime/heavy-job.lock")
@@ -151,11 +180,19 @@ def main() -> int:
 
 def claim_next_task(config: Config) -> str | None:
     root = shlex.quote(config.cloud_queue_root)
+    allow_factor_factory = "1" if config.factor_factory_enabled else "0"
     script = (
         "set -eu; "
         f"root={root}; "
-        'task=$(find "$root/pending" -mindepth 1 -maxdepth 1 -type d '
-        "-printf '%f\\n' 2>/dev/null | LC_ALL=C sort | head -n 1); "
+        f"allow_factor_factory={allow_factor_factory}; "
+        'task=""; '
+        'for candidate in $(find "$root/pending" -mindepth 1 -maxdepth 1 -type d '
+        "-printf '%f\\n' 2>/dev/null | LC_ALL=C sort); do "
+        'case "$candidate" in *[!A-Za-z0-9_.:-]*|\'\') continue;; esac; '
+        'if [ "$allow_factor_factory" != "1" ] && '
+        'grep -Eq \'"task_type"[[:space:]]*:[[:space:]]*"factor_factory"\' '
+        '"$root/pending/$candidate/task.json"; then continue; fi; '
+        'task="$candidate"; break; done; '
         '[ -n "$task" ] || exit 44; '
         "case \"$task\" in *[!A-Za-z0-9_.:-]*|'') exit 45;; esac; "
         'mv "$root/pending/$task" "$root/running/$task"; '
@@ -179,7 +216,7 @@ def recover_expired_leases(config: Config, *, now: datetime | None = None) -> in
     root = shlex.quote(config.cloud_queue_root)
     result = _ssh(
         config,
-        f'find {root}/running -mindepth 1 -maxdepth 1 -type d '
+        f"find {root}/running -mindepth 1 -maxdepth 1 -type d "
         "-printf '%f\\n' 2>/dev/null | LC_ALL=C sort",
         check=False,
     )
@@ -293,7 +330,7 @@ def _conditional_remote_transition(
         f"test ! -e {shlex.quote(destination)} || exit 48; "
         f"test ! -e {shlex.quote(root + '/results/inbox/' + task_id)} || exit 49; "
         f"actual=$(sha256sum {shlex.quote(status_path)} | cut -d' ' -f1); "
-        f"test \"$actual\" = {shlex.quote(expected_status_sha)} || exit 46; "
+        f'test "$actual" = {shlex.quote(expected_status_sha)} || exit 46; '
         f"mv {shlex.quote(source)} {shlex.quote(destination)}; "
         f"rm -f -- {shlex.quote(root + '/lease/' + task_id + '.json')}"
     )
@@ -314,6 +351,8 @@ def process_claimed_task(config: Config, task_id: str) -> None:
     task_public_key = load_public_key(config.task_public_key_path)
     if task.task_id != task_id:
         raise ValueError("research_task_id_mismatch")
+    if isinstance(task, FactorFactoryTask) and not config.factor_factory_enabled:
+        raise RuntimeError("factor_factory_worker_disabled")
     if task.quant_lab_commit != config.worker_commit:
         raise ValueError("worker_code_mismatch")
     snapshot_dir = work / "snapshot-control"
@@ -400,7 +439,21 @@ def process_claimed_task(config: Config, task_id: str) -> None:
         _upload_status(config, status, work)
         started = time.perf_counter()
         with _heavy_job_lock(config.heavy_job_lock):
-            if isinstance(task, AlphaFactoryTask):
+            if isinstance(task, FactorFactoryTask):
+                if not isinstance(snapshot, FactorFactorySnapshotManifest):
+                    raise ValueError("research_task_snapshot_type_mismatch")
+                compute = compute_factor_factory_result(
+                    sync_result.snapshot_root,
+                    snapshot,
+                    task,
+                    stage_callback=lambda stage: _upload_factor_factory_stage(
+                        config,
+                        status,
+                        work,
+                        stage,
+                    ),
+                )
+            elif isinstance(task, AlphaFactoryTask):
                 if not isinstance(snapshot, AlphaFactorySnapshotManifest):
                     raise ValueError("research_task_snapshot_type_mismatch")
                 compute = compute_alpha_factory_from_snapshot(
@@ -431,7 +484,30 @@ def process_claimed_task(config: Config, task_id: str) -> None:
             _upload_status(config, status, work)
             peak_rss = _peak_rss_bytes()
             signing_key = load_signing_key(config.worker_signing_key_path)
-            if isinstance(task, AlphaFactoryTask):
+            if isinstance(task, FactorFactoryTask):
+                if not isinstance(snapshot, FactorFactorySnapshotManifest):
+                    raise ValueError("research_task_snapshot_type_mismatch")
+                result_root, manifest, receipt = write_factor_factory_result_bundle(
+                    config.data_root / "results",
+                    task=task,
+                    snapshot=snapshot,
+                    compute=compute,
+                    worker_id=config.worker_id,
+                    worker_commit=config.worker_commit,
+                    worker_key_id=config.worker_key_id,
+                    worker_signing_key=signing_key,
+                    claimed_at=claimed_at,
+                    input_bytes=snapshot.total_input_bytes,
+                    cache_hit_bytes=status.cache_hit_bytes,
+                    downloaded_bytes=status.downloaded_bytes,
+                    peak_rss_bytes=peak_rss,
+                    compute_duration_seconds=time.perf_counter() - started,
+                    max_result_bytes=config.factor_factory_max_result_bytes,
+                    max_value_partition_bytes=(config.factor_factory_max_value_partition_bytes),
+                    max_file_count=config.factor_factory_max_file_count,
+                    max_uncompressed_bytes=config.factor_factory_max_uncompressed_bytes,
+                )
+            elif isinstance(task, AlphaFactoryTask):
                 if not isinstance(snapshot, AlphaFactorySnapshotManifest):
                     raise ValueError("research_task_snapshot_type_mismatch")
                 result_root, manifest, receipt = write_alpha_factory_result_bundle(
@@ -489,7 +565,7 @@ def process_claimed_task(config: Config, task_id: str) -> None:
                     compute_duration_seconds=time.perf_counter() - started,
                     max_result_bytes=config.max_result_bytes,
                 )
-        if manifest.output_bytes > config.max_result_bytes:
+        if manifest.output_bytes > _max_result_bytes_for_task(config, task):
             raise RuntimeError("research_result_size_limit_exceeded")
         status = status.model_copy(
             update={
@@ -518,6 +594,13 @@ def process_claimed_task(config: Config, task_id: str) -> None:
 
 
 def _task_status_dimensions(task: ResearchTaskEnvelope) -> tuple[Any, Any, str, str]:
+    if isinstance(task, FactorFactoryTask):
+        return (
+            task.as_of_date,
+            task.as_of_date,
+            "PARITY_FULL/bootstrap_full",
+            f"point_in_task_{task.cost_quantile}",
+        )
     if isinstance(task, AlphaFactoryTask):
         return (
             task.as_of_date,
@@ -538,6 +621,38 @@ def _task_status_dimensions(task: ResearchTaskEnvelope) -> tuple[Any, Any, str, 
         task.parameters.mode,
         task.parameters.cost_mode,
     )
+
+
+def _upload_factor_factory_stage(
+    config: Config,
+    status: ResearchTaskStatus,
+    work: Path,
+    stage: str,
+) -> None:
+    allowed = {
+        ResearchTaskState.COMPUTING_VALUES.value,
+        ResearchTaskState.COMPUTING_LABELS.value,
+        ResearchTaskState.COMPUTING_EVIDENCE.value,
+        ResearchTaskState.COMPUTING_CORRELATION.value,
+    }
+    if stage not in allowed:
+        raise ValueError(f"unknown_factor_factory_stage:{stage}")
+    _upload_status(
+        config,
+        status.model_copy(
+            update={
+                "state": ResearchTaskState(stage),
+                "heartbeat_at": datetime.now(UTC),
+            }
+        ),
+        work,
+    )
+
+
+def _max_result_bytes_for_task(config: Config, task: ResearchTaskEnvelope) -> int:
+    if isinstance(task, FactorFactoryTask):
+        return config.factor_factory_max_result_bytes
+    return config.max_result_bytes
 
 
 def _heartbeat_loop(
@@ -907,6 +1022,14 @@ def _validate_config(config: Config) -> None:
     ):
         if not path.is_file():
             raise FileNotFoundError(path)
+    if config.factor_factory_max_result_bytes <= 0:
+        raise ValueError("FACTOR_FACTORY_MAX_RESULT_BYTES must be positive")
+    if config.factor_factory_max_value_partition_bytes <= 0:
+        raise ValueError("FACTOR_FACTORY_MAX_VALUE_PARTITION_BYTES must be positive")
+    if config.factor_factory_max_file_count <= 0:
+        raise ValueError("FACTOR_FACTORY_MAX_FILE_COUNT must be positive")
+    if config.factor_factory_max_uncompressed_bytes <= 0:
+        raise ValueError("FACTOR_FACTORY_MAX_UNCOMPRESSED_BYTES must be positive")
     config.data_root.mkdir(parents=True, exist_ok=True)
 
 
@@ -918,25 +1041,25 @@ def _ssh(config: Config, command: str, *, check: bool = True) -> subprocess.Comp
     try:
         result = subprocess.run(
             [
-            "ssh",
-            "-p",
-            str(config.cloud_port),
-            "-i",
-            str(config.ssh_key_path),
-            "-o",
-            "BatchMode=yes",
-            "-o",
-            "StrictHostKeyChecking=yes",
-            "-o",
-            f"UserKnownHostsFile={config.known_hosts_path}",
-            "-o",
-            "ConnectTimeout=15",
-            "-o",
-            "ServerAliveInterval=15",
-            "-o",
-            "ServerAliveCountMax=3",
-            f"{config.cloud_user}@{config.cloud_host}",
-            command,
+                "ssh",
+                "-p",
+                str(config.cloud_port),
+                "-i",
+                str(config.ssh_key_path),
+                "-o",
+                "BatchMode=yes",
+                "-o",
+                "StrictHostKeyChecking=yes",
+                "-o",
+                f"UserKnownHostsFile={config.known_hosts_path}",
+                "-o",
+                "ConnectTimeout=15",
+                "-o",
+                "ServerAliveInterval=15",
+                "-o",
+                "ServerAliveCountMax=3",
+                f"{config.cloud_user}@{config.cloud_host}",
+                command,
             ],
             text=True,
             capture_output=True,
@@ -961,25 +1084,25 @@ def _scp_from(
     try:
         result = subprocess.run(
             [
-            "scp",
-            "-P",
-            str(config.cloud_port),
-            "-i",
-            str(config.ssh_key_path),
-            "-o",
-            "BatchMode=yes",
-            "-o",
-            "StrictHostKeyChecking=yes",
-            "-o",
-            f"UserKnownHostsFile={config.known_hosts_path}",
-            "-o",
-            "ConnectTimeout=15",
-            "-o",
-            "ServerAliveInterval=15",
-            "-o",
-            "ServerAliveCountMax=3",
-            f"{config.cloud_user}@{config.cloud_host}:{remote_path}",
-            str(local_path),
+                "scp",
+                "-P",
+                str(config.cloud_port),
+                "-i",
+                str(config.ssh_key_path),
+                "-o",
+                "BatchMode=yes",
+                "-o",
+                "StrictHostKeyChecking=yes",
+                "-o",
+                f"UserKnownHostsFile={config.known_hosts_path}",
+                "-o",
+                "ConnectTimeout=15",
+                "-o",
+                "ServerAliveInterval=15",
+                "-o",
+                "ServerAliveCountMax=3",
+                f"{config.cloud_user}@{config.cloud_host}:{remote_path}",
+                str(local_path),
             ],
             text=True,
             capture_output=True,

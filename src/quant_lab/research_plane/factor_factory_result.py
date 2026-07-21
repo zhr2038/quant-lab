@@ -551,12 +551,18 @@ def _validate_declared_file_set(root: Path, manifest: FactorFactoryResultManifes
     expected.update(item.relative_path for item in manifest.outputs)
     expected.update(item.relative_path for item in manifest.value_partitions)
     expected.update(item.relative_path for item in manifest.reports)
+    handoff_marker = root / ".HANDOFF_READY"
+    if handoff_marker.exists() and (
+        not handoff_marker.is_file() or handoff_marker.stat().st_size != 0
+    ):
+        raise ValueError("factor_factory_result_handoff_marker_invalid")
     observed: set[str] = set()
     for path in root.rglob("*"):
         if path.is_symlink():
             raise ValueError("factor_factory_result_symlink_forbidden")
         if path.is_file():
             observed.add(str(path.relative_to(root)).replace("\\", "/"))
+    observed.discard(".HANDOFF_READY")
     if observed != expected:
         raise ValueError("factor_factory_result_undeclared_file_set")
 

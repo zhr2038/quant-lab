@@ -298,6 +298,8 @@ def test_factor_factory_nas_round_trip_matches_legacy_full_fixture(tmp_path: Pat
         compute_duration_seconds=1.0,
         max_result_bytes=2 * 1024**3,
     )
+    handoff_marker = result_root / ".HANDOFF_READY"
+    handoff_marker.touch()
     with pytest.raises(ValueError, match="file_count_limit"):
         validate_factor_factory_result_bundle(
             result_root,
@@ -310,6 +312,19 @@ def test_factor_factory_nas_round_trip_matches_legacy_full_fixture(tmp_path: Pat
             max_result_bytes=2 * 1024**3,
             max_file_count=1,
         )
+    handoff_marker.write_text("not-empty", encoding="utf-8")
+    with pytest.raises(ValueError, match="handoff_marker_invalid"):
+        validate_factor_factory_result_bundle(
+            result_root,
+            manifest=manifest,
+            receipt=receipt,
+            task=task,
+            snapshot=snapshot,
+            worker_public_key=worker_key.public_key(),
+            expected_worker_key_id=WORKER_KEY_ID,
+            max_result_bytes=2 * 1024**3,
+        )
+    handoff_marker.write_bytes(b"")
     validated = validate_factor_factory_result_bundle(
         result_root,
         manifest=manifest,

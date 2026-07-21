@@ -47,6 +47,7 @@ export function AIResearchPanel({ research }: { research: Record<string, unknown
   const routeSections = jsonStringList(latest.route_sections_json);
   const usesFactorProposalFallback = !hypotheses.length && factorProposals.length > 0;
   const usesExperimentProposalFallback = !attributionExperiments.length && experimentProposals.length > 0;
+  const findingCount = metricCount(latest.finding_count, findings.length);
   const hypothesisCount = metricCount(
     usesFactorProposalFallback ? latest.factor_proposal_count : latest.hypothesis_draft_count,
     usesFactorProposalFallback ? factorProposals.length : hypotheses.length
@@ -84,7 +85,7 @@ export function AIResearchPanel({ research }: { research: Record<string, unknown
 
       <div className="ai-metrics">
         <Metric icon={Layers3} label="历史运行" value={counts.run_count} />
-        <Metric icon={FileSearch} label="本轮发现" value={latest.finding_count} />
+        <Metric icon={FileSearch} label="本轮发现" value={findingCount} />
         <Metric icon={Sparkles} label={usesFactorProposalFallback ? "本轮因子草案" : "本轮研究假设"} value={hypothesisCount} />
         <Metric icon={FileSearch} label="数据采集建议" value={dataProposalCount} />
         <Metric icon={FlaskConical} label={usesExperimentProposalFallback ? "验证实验草案" : "归因实验"} value={experimentCount} />
@@ -141,7 +142,7 @@ export function AIResearchPanel({ research }: { research: Record<string, unknown
         </section>
 
         <div className="ai-evidence-grid">
-          <EvidenceList title="诊断发现" rows={findings} primary="summary" secondary="category" trailing="severity" empty="等待 Stage 1 诊断" />
+          <EvidenceList title="诊断发现" rows={findings} totalCount={findingCount} primary="summary" secondary="category" trailing="severity" empty="等待 Stage 1 诊断" />
           {usesFactorProposalFallback
             ? <EvidenceList title="因子研究草案" rows={factorProposals} primary="factor_name" fallbackPrimary="proposal_id" secondary="hypothesis" trailing="proposal_state" empty="暂无因子研究草案" />
             : <EvidenceList title="研究假设草案" rows={hypotheses} primary="title" fallbackPrimary="hypothesis_id" secondary="economic_return_payer" trailing="proposal_state" empty="暂无通过证据门槛的研究假设" />}
@@ -182,18 +183,27 @@ function Metric({ icon: Icon, label, value, sub }: { icon: typeof BrainCircuit; 
   );
 }
 
-function EvidenceList({ title, rows, primary, fallbackPrimary, secondary, trailing, empty }: {
+function EvidenceList({ title, rows, totalCount, primary, fallbackPrimary, secondary, trailing, empty }: {
   title: string;
   rows: Record<string, unknown>[];
+  totalCount?: number;
   primary: string;
   fallbackPrimary?: string;
   secondary: string;
   trailing: string;
   empty: string;
 }) {
+  const shownCount = Math.min(rows.length, 6);
+  const resolvedTotal = metricCount(totalCount, rows.length);
+  const countLabel = resolvedTotal > rows.length
+    ? `显示 ${shownCount} / 已载入 ${rows.length} / 总计 ${resolvedTotal}`
+    : shownCount < rows.length
+      ? `显示 ${shownCount} / 共 ${rows.length}`
+      : String(resolvedTotal);
+
   return (
     <section className="ai-evidence-list">
-      <h3>{title}<span>{rows.length}</span></h3>
+      <h3>{title}<span>{countLabel}</span></h3>
       <div>
         {rows.length ? rows.slice(0, 6).map((row, index) => (
           <article

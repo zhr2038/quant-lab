@@ -113,28 +113,8 @@ def test_show_frame_falls_back_for_older_streamlit_dataframe_api():
     assert fake.calls == [{"use_container_width": True, "hide_index": True}]
 
 
-def test_bigscreen_v2_prefers_streamlit_iframe_api():
-    class ModernStreamlit:
-        def __init__(self) -> None:
-            self.calls: list[tuple[str, object]] = []
-
-        def iframe(self, url, **kwargs) -> None:
-            self.calls.append(("iframe", {"url": url, **kwargs}))
-
-    fake = ModernStreamlit()
-
-    bigscreen_v2.show_iframe(fake, "http://example.test/web-v2", height=920, scrolling=False)
-
-    assert fake.calls == [
-        (
-            "iframe",
-            {"url": "http://example.test/web-v2", "height": 920, "scrolling": False},
-        )
-    ]
-
-
-def test_bigscreen_v2_falls_back_for_older_streamlit_iframe_api():
-    class LegacyComponents:
+def test_bigscreen_v2_prefers_components_iframe_api():
+    class Components:
         def __init__(self, calls: list[tuple[str, object]]) -> None:
             self.v1 = self
             self._calls = calls
@@ -142,12 +122,15 @@ def test_bigscreen_v2_falls_back_for_older_streamlit_iframe_api():
         def iframe(self, url, **kwargs) -> None:
             self._calls.append(("components_iframe", {"url": url, **kwargs}))
 
-    class LegacyStreamlit:
+    class StreamlitWithBothApis:
         def __init__(self) -> None:
             self.calls: list[tuple[str, object]] = []
-            self.components = LegacyComponents(self.calls)
+            self.components = Components(self.calls)
 
-    fake = LegacyStreamlit()
+        def iframe(self, _url, **_kwargs) -> None:
+            raise AssertionError("top-level iframe must not be used when components.v1 exists")
+
+    fake = StreamlitWithBothApis()
 
     bigscreen_v2.show_iframe(fake, "http://example.test/web-v2", height=920, scrolling=False)
 
@@ -155,6 +138,28 @@ def test_bigscreen_v2_falls_back_for_older_streamlit_iframe_api():
         (
             "components_iframe",
             {"url": "http://example.test/web-v2", "height": 920, "scrolling": False},
+        )
+    ]
+
+
+def test_bigscreen_v2_falls_back_to_top_level_iframe_without_scrolling():
+    class TopLevelOnlyStreamlit:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, object]] = []
+
+        def iframe(self, url, **kwargs) -> None:
+            if "scrolling" in kwargs:
+                raise TypeError("scrolling is not supported")
+            self.calls.append(("iframe", {"url": url, **kwargs}))
+
+    fake = TopLevelOnlyStreamlit()
+
+    bigscreen_v2.show_iframe(fake, "http://example.test/web-v2", height=920, scrolling=False)
+
+    assert fake.calls == [
+        (
+            "iframe",
+            {"url": "http://example.test/web-v2", "height": 920},
         )
     ]
 

@@ -2566,6 +2566,19 @@ def test_web_v2_ai_panel_keeps_current_legacy_stage2_outputs_visible():
     assert "function metricCount(value: unknown, fallback: number): number" in panel
 
 
+def test_web_v2_displays_bounded_ai_and_stale_dataset_counts_truthfully():
+    app_source = Path("frontend-bigscreen/src/App.tsx").read_text(encoding="utf-8")
+    panel = Path("frontend-bigscreen/src/components/AIResearchPanel.tsx").read_text(
+        encoding="utf-8"
+    )
+
+    stale_table = app_source.split('title="Stale datasets"', 1)[1].split("/>", 1)[0]
+    assert 'columns={["dataset", "status", "rows", "path", "latest_timestamp"]}' in stale_table
+    assert "freshness_status" not in stale_table
+    assert "totalCount={findingCount}" in panel
+    assert "已载入 ${rows.length} / 总计 ${resolvedTotal}" in panel
+
+
 def test_web_v2_legacy_hashes_open_ops_drilldowns():
     app_source = Path("frontend-bigscreen/src/App.tsx").read_text(encoding="utf-8")
 

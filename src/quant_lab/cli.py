@@ -107,6 +107,9 @@ from quant_lab.research.sol_protect_paper_loss import (
 from quant_lab.research.strategy_evidence import build_and_publish_strategy_evidence
 from quant_lab.research_plane.contracts import (
     DEFAULT_FACTOR_FACTORY_MAX_RESULT_BYTES,
+    DEFAULT_FACTOR_FACTORY_MAX_SNAPSHOT_BYTES,
+    DEFAULT_FACTOR_FACTORY_MAX_UNCOMPRESSED_BYTES,
+    DEFAULT_FACTOR_FACTORY_MAX_VALUE_PARTITION_BYTES,
     DEFAULT_RESEARCH_MAX_RESULT_BYTES,
 )
 from quant_lab.research_plane.importer import (
@@ -2009,11 +2012,14 @@ def request_factor_factory_command(
     min_samples: Annotated[int, typer.Option("--min-samples", min=1)] = 100,
     top_quantile: Annotated[float, typer.Option("--top-quantile", min=0.01, max=0.50)] = 0.2,
     cost_quantile: Annotated[str, typer.Option("--cost-quantile")] = "p75",
-    max_input_bytes: Annotated[int, typer.Option("--max-input-bytes", min=1)] = 25 * 1024**3,
+    max_input_bytes: Annotated[
+        int, typer.Option("--max-input-bytes", min=1)
+    ] = DEFAULT_FACTOR_FACTORY_MAX_SNAPSHOT_BYTES,
     max_input_rows: Annotated[int, typer.Option("--max-input-rows", min=1)] = 150_000_000,
-    max_pending_tasks: Annotated[
-        int, typer.Option("--max-pending-tasks", min=1, max=1)
-    ] = 1,
+    max_pending_tasks: Annotated[int, typer.Option("--max-pending-tasks", min=1, max=1)] = 1,
+    min_recompute_interval_seconds: Annotated[
+        int, typer.Option("--min-recompute-interval-seconds", min=0)
+    ] = 6 * 60 * 60,
 ) -> None:
     if not _enabled_environment("QUANT_LAB_NAS_RESEARCH_ENABLED"):
         raise typer.BadParameter("QUANT_LAB_NAS_RESEARCH_ENABLED must be 1")
@@ -2023,7 +2029,7 @@ def request_factor_factory_command(
     horizons = tuple(
         sorted({int(value.strip()) for value in horizon_bars.split(",") if value.strip()})
     )
-    task, status = create_factor_factory_task(
+    result = create_factor_factory_task(
         lake_root,
         queue_root,
         as_of_date=day,
@@ -2043,12 +2049,22 @@ def request_factor_factory_command(
         max_input_bytes=max_input_bytes,
         max_input_rows=max_input_rows,
         max_pending_tasks=max_pending_tasks,
+        min_recompute_interval_seconds=min_recompute_interval_seconds,
     )
+    event_by_state = {
+        "task_created": "FACTOR_FACTORY_TASK_CREATED",
+        "already_current": "FACTOR_FACTORY_ALREADY_CURRENT",
+        "already_current_no_update": "FACTOR_FACTORY_ALREADY_CURRENT_NO_UPDATE",
+        "recompute_deferred": "FACTOR_FACTORY_RECOMPUTE_DEFERRED",
+    }
+    events = [event_by_state[result.state]]
+    if result.snapshot_rehydrated:
+        events.insert(0, "FACTOR_FACTORY_SNAPSHOT_REHYDRATED")
     typer.echo(
         json.dumps(
             {
-                "task": task.model_dump(mode="json"),
-                "status": status.model_dump(mode="json"),
+                "events": events,
+                **result.model_dump(),
             },
             ensure_ascii=True,
             sort_keys=True,
@@ -2350,13 +2366,13 @@ def import_entry_quality_history_results_command(
     ] = DEFAULT_FACTOR_FACTORY_MAX_RESULT_BYTES,
     factor_factory_max_value_partition_bytes: Annotated[
         int, typer.Option("--factor-factory-max-value-partition-bytes", min=1)
-    ] = 256 * 1024**2,
+    ] = DEFAULT_FACTOR_FACTORY_MAX_VALUE_PARTITION_BYTES,
     factor_factory_max_file_count: Annotated[
         int, typer.Option("--factor-factory-max-file-count", min=1)
     ] = 20_000,
     factor_factory_max_uncompressed_bytes: Annotated[
         int, typer.Option("--factor-factory-max-uncompressed-bytes", min=1)
-    ] = 16 * 1024**3,
+    ] = DEFAULT_FACTOR_FACTORY_MAX_UNCOMPRESSED_BYTES,
     validate_only: Annotated[
         bool,
         typer.Option(

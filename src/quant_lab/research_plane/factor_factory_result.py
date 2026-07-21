@@ -15,8 +15,11 @@ from quant_lab.factors.factory import (
     build_factor_definition_frame,
 )
 from quant_lab.research_plane.contracts import (
+    DEFAULT_FACTOR_FACTORY_MAX_UNCOMPRESSED_BYTES,
+    DEFAULT_FACTOR_FACTORY_MAX_VALUE_PARTITION_BYTES,
     FACTOR_FACTORY_RECEIPT_SCHEMA,
     FACTOR_FACTORY_RESULT_SCHEMA,
+    FactorFactoryPartitionReference,
     FactorFactoryResultManifest,
     FactorFactorySnapshotManifest,
     FactorFactoryTask,
@@ -66,9 +69,9 @@ def validate_factor_factory_result_bundle(
     worker_public_key: Ed25519PublicKey,
     expected_worker_key_id: str,
     max_result_bytes: int,
-    max_value_partition_bytes: int = 256 * 1024**2,
+    max_value_partition_bytes: int = DEFAULT_FACTOR_FACTORY_MAX_VALUE_PARTITION_BYTES,
     max_file_count: int = 20_000,
-    max_uncompressed_bytes: int = 16 * 1024**3,
+    max_uncompressed_bytes: int = DEFAULT_FACTOR_FACTORY_MAX_UNCOMPRESSED_BYTES,
 ) -> ValidatedFactorFactoryResult:
     root = Path(bundle_root).resolve(strict=True)
     if manifest.schema_version != FACTOR_FACTORY_RESULT_SCHEMA:
@@ -87,8 +90,8 @@ def validate_factor_factory_result_bundle(
         raise ValueError("factor_factory_receipt_manifest_sha256_mismatch")
     if manifest.output_bytes > max_result_bytes:
         raise ValueError("factor_factory_result_size_limit_exceeded")
-    declared_file_count = 2 + len(manifest.outputs) + len(manifest.value_partitions) + len(
-        manifest.reports
+    declared_file_count = (
+        2 + len(manifest.outputs) + len(manifest.value_partitions) + len(manifest.reports)
     )
     if declared_file_count > max_file_count:
         raise ValueError("factor_factory_result_file_count_limit_exceeded")
@@ -97,6 +100,30 @@ def validate_factor_factory_result_bundle(
         FACTOR_FACTORY_REQUIRED_REPORTS
     ):
         raise ValueError("factor_factory_result_report_set_mismatch")
+
+    # Capacity and declared-set gates must run before any global Unique/GroupBy scan.
+    declared_references = (*manifest.outputs, *manifest.value_partitions, *manifest.reports)
+    declared_paths: list[Path] = []
+    for reference in declared_references:
+        if isinstance(reference, FactorFactoryPartitionReference) and (
+            reference.size_bytes > max_value_partition_bytes
+        ):
+            raise ValueError("factor_factory_value_partition_size_limit_exceeded")
+        path = _safe_bundle_path(root, reference.relative_path)
+        _validate_file_integrity(
+            path,
+            size_bytes=reference.size_bytes,
+            sha256=reference.sha256,
+            label=reference.relative_path,
+        )
+        declared_paths.append(path)
+    receipt_path = _safe_bundle_path(root, "receipt.json")
+    _validate_declared_file_set(root, manifest)
+    uncompressed_bytes = sum(
+        _file_uncompressed_bytes(path) for path in (manifest_path, receipt_path, *declared_paths)
+    )
+    if uncompressed_bytes > max_uncompressed_bytes:
+        raise ValueError("factor_factory_result_uncompressed_size_limit_exceeded")
 
     output_paths: dict[str, Path] = {}
     for output in manifest.outputs:
@@ -150,19 +177,6 @@ def validate_factor_factory_result_bundle(
 
     _validate_output_scope(output_paths, value_paths, manifest, task, snapshot)
     reports = _validate_reports(root, manifest, task, snapshot)
-    _validate_declared_file_set(root, manifest)
-    uncompressed_bytes = sum(
-        _file_uncompressed_bytes(path)
-        for path in (
-            manifest_path,
-            _safe_bundle_path(root, "receipt.json"),
-            *output_paths.values(),
-            *value_paths,
-            *(_safe_bundle_path(root, item.relative_path) for item in manifest.reports),
-        )
-    )
-    if uncompressed_bytes > max_uncompressed_bytes:
-        raise ValueError("factor_factory_result_uncompressed_size_limit_exceeded")
     output_rows = sum(item.row_count for item in manifest.outputs) + sum(
         item.row_count for item in manifest.value_partitions
     )
@@ -234,11 +248,16 @@ def _validate_binding(
         raise ValueError("factor_factory_result_task_binding_mismatch")
     if receipt.task_id != task.task_id or receipt.snapshot_id != task.snapshot_id:
         raise ValueError("factor_factory_receipt_task_binding_mismatch")
-    if (
-        task.snapshot_id != snapshot.snapshot_id
-        or task.parameters.model_dump() != manifest_parameters(snapshot)
-    ):
+    if task.snapshot_id != snapshot.snapshot_id or task.parameters.model_dump(
+        exclude={"as_of_date"}
+    ) != manifest_parameters(snapshot):
         raise ValueError("factor_factory_result_snapshot_binding_mismatch")
+    if snapshot.schema_version == "quant_lab_factor_factory_snapshot.v1" and (
+        task.as_of_date != snapshot.as_of_date
+        or task.previous_generation_id != snapshot.previous_generation_id
+        or task.previous_generation_digest != snapshot.previous_generation_digest
+    ):
+        raise ValueError("factor_factory_result_snapshot_legacy_binding_mismatch")
     if (
         manifest.worker_commit != task.quant_lab_commit
         or receipt.worker_commit != task.quant_lab_commit
@@ -420,13 +439,9 @@ def _validate_value_metadata(values: pl.LazyFrame, definitions: pl.DataFrame) ->
         "status",
     ]
     value_columns = [*definition_columns[:-1], "factor_status"]
-    observed = values.select(value_columns).unique().collect(engine="streaming").sort(
-        "factor_id"
-    )
+    observed = values.select(value_columns).unique().collect(engine="streaming").sort("factor_id")
     expected = (
-        definitions.select(definition_columns)
-        .rename({"status": "factor_status"})
-        .sort("factor_id")
+        definitions.select(definition_columns).rename({"status": "factor_status"}).sort("factor_id")
     )
     if not observed.equals(expected, null_equal=True):
         raise ValueError("factor_factory_value_definition_metadata_mismatch")

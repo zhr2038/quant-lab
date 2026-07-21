@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
 import uuid
 from datetime import UTC, datetime
@@ -44,6 +45,7 @@ from quant_lab.research_plane.factor_research_publish import (
 )
 
 FACTOR_FACTORY_GENERATION_POINTER = Path("gold") / "factor_factory_generation.json"
+FACTOR_FACTORY_NO_UPDATE_POINTER = Path("gold") / "factor_factory_no_update_state.json"
 FACTOR_FACTORY_GENERATION_SCHEMA = "factor_factory_generation.v1"
 FACTOR_FACTORY_TRANSACTION_NAME = "factor_factory"
 FACTOR_FACTORY_DATASETS = {
@@ -90,6 +92,7 @@ def publish_factor_factory_generation(
     recover_factor_factory_publication(root)
     manifest = validated.manifest
     if manifest.completed_no_update:
+        record_factor_factory_no_update_state(root, validated)
         return {
             "published": False,
             "completed_no_update": True,
@@ -162,9 +165,7 @@ def publish_factor_factory_generation(
             row_counts[dataset_name] = rows
             items.append(AtomicPublishItem(target=target, staged=staged.relative_to(root)))
 
-        dataset_hashes = {
-            name: _dataset_digest(path) for name, path in staged_by_dataset.items()
-        }
+        dataset_hashes = {name: _dataset_digest(path) for name, path in staged_by_dataset.items()}
         generation_digest = _generation_digest(validated, candidate_path)
         generation_payload = {
             "schema_version": FACTOR_FACTORY_GENERATION_SCHEMA,
@@ -181,6 +182,7 @@ def publish_factor_factory_generation(
             "timeframe": manifest.timeframe,
             "horizon_bars": list(manifest.horizon_bars),
             "decision_delay_bars": manifest.decision_delay_bars,
+            "max_factors": validated.snapshot.max_factors,
             "min_samples": validated.snapshot.min_samples,
             "top_quantile": validated.snapshot.top_quantile,
             "cost_quantile": validated.snapshot.cost_quantile,
@@ -257,6 +259,47 @@ def publish_factor_factory_generation(
         }
     finally:
         shutil.rmtree(staging_root, ignore_errors=True)
+
+
+def record_factor_factory_no_update_state(
+    lake_root: str | Path,
+    validated: ValidatedFactorFactoryResult,
+) -> Path:
+    manifest = validated.manifest
+    snapshot = validated.snapshot
+    if not manifest.completed_no_update or not manifest.no_update_reason:
+        raise ValueError("factor_factory_no_update_state_requires_no_update_result")
+    payload = {
+        "schema_version": "factor_factory_no_update_state.v1",
+        "snapshot_id": manifest.snapshot_id,
+        "task_id": manifest.task_id,
+        "factor_plan_digest": manifest.factor_plan_digest,
+        "source_input_digest": manifest.source_input_digest,
+        "cost_input_digest": manifest.cost_input_digest,
+        "reason": manifest.no_update_reason,
+        "observed_at": datetime.now(UTC).isoformat(),
+        "quant_lab_commit": manifest.quant_lab_commit,
+        "feature_set": manifest.feature_set,
+        "feature_version": manifest.feature_version,
+        "factor_version": manifest.factor_version,
+        "timeframe": manifest.timeframe,
+        "horizon_bars": list(manifest.horizon_bars),
+        "decision_delay_bars": manifest.decision_delay_bars,
+        "max_factors": snapshot.max_factors,
+        "min_samples": manifest.min_samples,
+        "top_quantile": manifest.top_quantile,
+        "cost_quantile": manifest.cost_quantile,
+        "result_mode": manifest.result_mode,
+        "history_mode": manifest.history_mode,
+        "diagnostic_only": True,
+        "research_only": True,
+        "live_order_effect": "none_read_only_research",
+        "automatic_promotion": False,
+        "max_live_notional_usdt": 0,
+    }
+    path = Path(lake_root) / FACTOR_FACTORY_NO_UPDATE_POINTER
+    atomic_write_json(path, payload)
+    return path
 
 
 def recover_factor_factory_publication(lake_root: str | Path) -> bool:
@@ -361,6 +404,7 @@ def _stage_streaming_upsert(
     output_path = staged_root / "data.parquet"
     temp_directory = staged_root / ".duckdb_tmp"
     temp_directory.mkdir(parents=True, exist_ok=False)
+    _require_writable_spill_directory(temp_directory)
     existing_paths = (
         sorted(path for path in existing_root.rglob("*.parquet") if path.is_file())
         if existing_root.is_dir()
@@ -368,10 +412,7 @@ def _stage_streaming_upsert(
     )
     connection = duckdb.connect(database=":memory:", read_only=False)
     try:
-        connection.execute("SET threads = 2")
-        connection.execute("SET preserve_insertion_order = false")
-        connection.execute("SET memory_limit = '768MB'")
-        connection.execute(f"SET temp_directory = {_sql_literal(temp_directory)}")
+        _configure_duckdb_for_bounded_scan(connection, temp_directory)
         incoming_sql = _read_parquet_sql(incoming_paths)
         if existing_paths:
             existing_sql = _read_parquet_sql(existing_paths)
@@ -406,6 +447,26 @@ def _stage_streaming_upsert(
     return count_parquet_rows(staged_root)
 
 
+def _require_writable_spill_directory(temp_directory: Path) -> None:
+    probe = temp_directory / f".write-probe-{uuid.uuid4().hex}"
+    try:
+        with probe.open("xb") as handle:
+            handle.write(b"factor-factory-duckdb-spill-probe\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+    except OSError as exc:
+        raise RuntimeError("factor_factory_duckdb_spill_directory_not_writable") from exc
+    finally:
+        probe.unlink(missing_ok=True)
+
+
+def _configure_duckdb_for_bounded_scan(connection: Any, temp_directory: Path) -> None:
+    connection.execute("SET threads = 2")
+    connection.execute("SET preserve_insertion_order = false")
+    connection.execute("SET memory_limit = '768MB'")
+    connection.execute(f"SET temp_directory = {_sql_literal(temp_directory)}")
+
+
 def _validate_staged_dataset(
     dataset_root: Path,
     *,
@@ -415,8 +476,13 @@ def _validate_staged_dataset(
     files = sorted(path for path in dataset_root.rglob("*.parquet") if path.is_file())
     if not files:
         raise ValueError(f"factor_factory_publish_dataset_missing:{dataset_name}")
-    connection = duckdb.connect(database=":memory:", read_only=False)
+    temp_directory = dataset_root.parent / f".duckdb-validate-{uuid.uuid4().hex}"
+    temp_directory.mkdir(parents=True, exist_ok=False)
+    connection = None
     try:
+        _require_writable_spill_directory(temp_directory)
+        connection = duckdb.connect(database=":memory:", read_only=False)
+        _configure_duckdb_for_bounded_scan(connection, temp_directory)
         source = _read_parquet_sql(files)
         columns = {str(row[0]) for row in connection.execute(f"DESCRIBE {source}").fetchall()}
         missing = sorted(set(key_columns) - columns)
@@ -437,7 +503,9 @@ def _validate_staged_dataset(
         if null_row is not None:
             raise ValueError(f"factor_factory_publish_null_key:{dataset_name}")
     finally:
-        connection.close()
+        if connection is not None:
+            connection.close()
+        shutil.rmtree(temp_directory, ignore_errors=True)
 
 
 def _validate_cloud_candidate(

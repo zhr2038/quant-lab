@@ -28,6 +28,8 @@ from quant_lab.research.factor_research.outputs import FACTOR_RESEARCH_OUTPUT_SP
 from quant_lab.research_plane.contracts import (
     ALPHA_FACTORY_RECEIPT_SCHEMA,
     ALPHA_FACTORY_RESULT_SCHEMA,
+    DEFAULT_FACTOR_FACTORY_MAX_UNCOMPRESSED_BYTES,
+    DEFAULT_FACTOR_FACTORY_MAX_VALUE_PARTITION_BYTES,
     FACTOR_FACTORY_RECEIPT_SCHEMA,
     FACTOR_FACTORY_RESULT_SCHEMA,
     FACTOR_RESEARCH_RECEIPT_SCHEMA,
@@ -122,10 +124,10 @@ def write_factor_factory_result_bundle(
     peak_rss_bytes: int,
     compute_duration_seconds: float,
     max_result_bytes: int,
-    max_value_partition_bytes: int = 256 * 1024**2,
+    max_value_partition_bytes: int = DEFAULT_FACTOR_FACTORY_MAX_VALUE_PARTITION_BYTES,
     max_value_partition_rows: int = 1_000_000,
     max_file_count: int = 20_000,
-    max_uncompressed_bytes: int = 16 * 1024**3,
+    max_uncompressed_bytes: int = DEFAULT_FACTOR_FACTORY_MAX_UNCOMPRESSED_BYTES,
 ) -> tuple[Path, FactorFactoryResultManifest, FactorFactoryWorkerReceipt]:
     root = Path(destination_root)
     root.mkdir(parents=True, exist_ok=True)
@@ -326,9 +328,9 @@ def _write_factor_value_partitions(
     for value in [*version_values, *timeframe_values]:
         _require_safe_partition_segment(str(value))
     partition_keys = ["factor_version", "timeframe", "_partition_date"]
-    with_dates = normalized.with_columns(
-        pl.col("ts").dt.date().alias("_partition_date")
-    ).sort([*partition_keys, "factor_id", "symbol", "ts"])
+    with_dates = normalized.with_columns(pl.col("ts").dt.date().alias("_partition_date")).sort(
+        [*partition_keys, "factor_id", "symbol", "ts"]
+    )
     references: list[FactorFactoryPartitionReference] = []
     group_counts = with_dates.group_by(partition_keys, maintain_order=True).len()
     group_offset = 0

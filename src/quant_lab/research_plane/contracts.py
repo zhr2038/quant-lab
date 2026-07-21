@@ -28,14 +28,18 @@ FACTOR_RESEARCH_TASK_SCHEMA = "quant_lab_factor_research_task.v1"
 FACTOR_RESEARCH_RESULT_SCHEMA = "quant_lab_factor_research_result.v1"
 FACTOR_RESEARCH_RECEIPT_SCHEMA = "quant_lab_factor_research_receipt.v1"
 FACTOR_FACTORY_TASK_TYPE = "factor_factory"
-FACTOR_FACTORY_SNAPSHOT_SCHEMA = "quant_lab_factor_factory_snapshot.v1"
+FACTOR_FACTORY_SNAPSHOT_SCHEMA_V1 = "quant_lab_factor_factory_snapshot.v1"
+FACTOR_FACTORY_SNAPSHOT_SCHEMA = "quant_lab_factor_factory_snapshot.v2"
 FACTOR_FACTORY_TASK_SCHEMA = "quant_lab_factor_factory_task.v1"
 FACTOR_FACTORY_RESULT_SCHEMA = "quant_lab_factor_factory_result.v1"
 FACTOR_FACTORY_RECEIPT_SCHEMA = "quant_lab_factor_factory_receipt.v1"
 DEFAULT_RESEARCH_MAX_RESULT_BYTES = 256 * 1024**2
-DEFAULT_FACTOR_FACTORY_MAX_RESULT_BYTES = 2 * 1024**3
+DEFAULT_FACTOR_FACTORY_MAX_SNAPSHOT_BYTES = 2 * 1024**3
+DEFAULT_FACTOR_FACTORY_MAX_INPUT_UNCOMPRESSED_BYTES = 4 * 1024**3
+DEFAULT_FACTOR_FACTORY_MAX_RESULT_BYTES = 512 * 1024**2
+DEFAULT_FACTOR_FACTORY_MAX_VALUE_PARTITION_BYTES = 128 * 1024**2
 DEFAULT_FACTOR_FACTORY_MAX_FILE_COUNT = 20_000
-DEFAULT_FACTOR_FACTORY_MAX_UNCOMPRESSED_BYTES = 16 * 1024**3
+DEFAULT_FACTOR_FACTORY_MAX_UNCOMPRESSED_BYTES = 1024**3
 
 
 class StrictModel(BaseModel):
@@ -72,6 +76,8 @@ class ResearchDatasetReference(StrictModel):
     mtime_ns: int = Field(ge=0)
     min_ts: datetime | None = None
     max_ts: datetime | None = None
+    schema_fingerprint: str | None = Field(default=None, min_length=64, max_length=64)
+    uncompressed_bytes: int | None = Field(default=None, ge=0)
     media_type: Literal["application/x-parquet"] = "application/x-parquet"
 
     @field_validator("source_relative_path", "relative_path")
@@ -91,6 +97,45 @@ class ResearchDatasetReference(StrictModel):
     def validate_optional_utc(cls, value: datetime | None) -> datetime | None:
         if value is not None:
             _require_utc(value, "dataset timestamp")
+        return value
+
+    @field_validator("schema_fingerprint")
+    @classmethod
+    def validate_optional_schema_fingerprint(cls, value: str | None) -> str | None:
+        if value is not None:
+            _require_sha(value, "schema_fingerprint")
+        return value
+
+
+class FactorFactorySourceFileIdentity(StrictModel):
+    dataset_name: str = Field(min_length=1, max_length=180)
+    relative_path: str = Field(min_length=1, max_length=1024)
+    sha256: str = Field(min_length=64, max_length=64)
+    size_bytes: int = Field(ge=0)
+    mtime_ns: int = Field(ge=0)
+    row_count: int = Field(ge=0)
+    min_ts: datetime | None = None
+    max_ts: datetime | None = None
+    schema_fingerprint: str = Field(min_length=64, max_length=64)
+    uncompressed_bytes: int = Field(ge=0)
+
+    @field_validator("relative_path")
+    @classmethod
+    def validate_relative_path(cls, value: str) -> str:
+        _require_safe_relative_path(value)
+        return value
+
+    @field_validator("sha256", "schema_fingerprint")
+    @classmethod
+    def validate_hash(cls, value: str) -> str:
+        _require_sha(value, "source file hash")
+        return value
+
+    @field_validator("min_ts", "max_ts")
+    @classmethod
+    def validate_optional_utc(cls, value: datetime | None) -> datetime | None:
+        if value is not None:
+            _require_utc(value, "source file timestamp")
         return value
 
 
@@ -543,7 +588,10 @@ class FactorFactoryPreviousGeneration(StrictModel):
 
 
 class FactorFactorySnapshotManifest(StrictModel):
-    schema_version: Literal["quant_lab_factor_factory_snapshot.v1"] = FACTOR_FACTORY_SNAPSHOT_SCHEMA
+    schema_version: Literal[
+        "quant_lab_factor_factory_snapshot.v1",
+        "quant_lab_factor_factory_snapshot.v2",
+    ] = FACTOR_FACTORY_SNAPSHOT_SCHEMA
     task_type: Literal["factor_factory"] = FACTOR_FACTORY_TASK_TYPE
     snapshot_id: str = Field(min_length=1, max_length=180)
     generated_at: datetime
@@ -573,6 +621,11 @@ class FactorFactorySnapshotManifest(StrictModel):
     previous_generation_id: str | None = Field(default=None, min_length=1, max_length=180)
     previous_generation_digest: str | None = Field(default=None, min_length=64, max_length=64)
     previous_generation_manifest: FactorFactoryPreviousGeneration | None = None
+    source_files: tuple[FactorFactorySourceFileIdentity, ...] = ()
+    feature_estimated_uncompressed_bytes: int = Field(default=0, ge=0)
+    market_estimated_uncompressed_bytes: int = Field(default=0, ge=0)
+    cost_estimated_uncompressed_bytes: int = Field(default=0, ge=0)
+    estimated_uncompressed_bytes: int = Field(default=0, ge=0)
     datasets: list[str]
     files: list[ResearchDatasetReference]
     total_input_bytes: int = Field(ge=0)
@@ -623,16 +676,53 @@ class FactorFactorySnapshotManifest(StrictModel):
             or self.factor_plan.max_factors != self.max_factors
         ):
             raise ValueError("factor factory snapshot plan scope mismatch")
-        _validate_previous_generation(self)
-        if self.previous_generation_manifest is None:
-            if self.previous_generation_id is not None:
-                raise ValueError("factor factory previous generation manifest missing")
-        elif (
-            self.previous_generation_manifest.generation_id != self.previous_generation_id
-            or self.previous_generation_manifest.generation_digest
-            != self.previous_generation_digest
-        ):
-            raise ValueError("factor factory previous generation manifest mismatch")
+        if self.schema_version == FACTOR_FACTORY_SNAPSHOT_SCHEMA_V1:
+            _validate_previous_generation(self)
+            if self.previous_generation_manifest is None:
+                if self.previous_generation_id is not None:
+                    raise ValueError("factor factory previous generation manifest missing")
+            elif (
+                self.previous_generation_manifest.generation_id != self.previous_generation_id
+                or self.previous_generation_manifest.generation_digest
+                != self.previous_generation_digest
+            ):
+                raise ValueError("factor factory previous generation manifest mismatch")
+        else:
+            if any(
+                value is not None
+                for value in (
+                    self.previous_generation_id,
+                    self.previous_generation_digest,
+                    self.previous_generation_manifest,
+                )
+            ):
+                raise ValueError("factor factory v2 snapshot must not bind previous generation")
+            source_paths = [item.relative_path for item in self.source_files]
+            if len(source_paths) != len(set(source_paths)):
+                raise ValueError("factor factory source file paths must be unique")
+            expected_uncompressed = sum(item.uncompressed_bytes for item in self.source_files)
+            if expected_uncompressed != self.estimated_uncompressed_bytes:
+                raise ValueError("factor factory estimated uncompressed bytes mismatch")
+            by_dataset = {
+                dataset: sum(
+                    item.uncompressed_bytes
+                    for item in self.source_files
+                    if item.dataset_name == dataset
+                )
+                for dataset in self.datasets
+            }
+            if self.feature_estimated_uncompressed_bytes != by_dataset.get("gold/feature_value", 0):
+                raise ValueError("factor factory feature uncompressed estimate mismatch")
+            if self.market_estimated_uncompressed_bytes != by_dataset.get("silver/market_bar", 0):
+                raise ValueError("factor factory market uncompressed estimate mismatch")
+            if self.cost_estimated_uncompressed_bytes != by_dataset.get(
+                "gold/cost_bucket_daily", 0
+            ):
+                raise ValueError("factor factory cost uncompressed estimate mismatch")
+            if any(item.schema_fingerprint is None for item in self.files):
+                raise ValueError("factor factory v2 snapshot file schema fingerprint missing")
+            if any(item.uncompressed_bytes is None for item in self.files):
+                raise ValueError("factor factory v2 snapshot file uncompressed size missing")
         cost_symbols = [item.symbol for item in self.cost_snapshot]
         if len(cost_symbols) != len(set(cost_symbols)):
             raise ValueError("factor factory cost snapshot symbols must be unique")

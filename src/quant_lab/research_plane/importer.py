@@ -33,6 +33,8 @@ from quant_lab.research_plane.alpha_factory_publish import (
 )
 from quant_lab.research_plane.contracts import (
     DEFAULT_FACTOR_FACTORY_MAX_RESULT_BYTES,
+    DEFAULT_FACTOR_FACTORY_MAX_UNCOMPRESSED_BYTES,
+    DEFAULT_FACTOR_FACTORY_MAX_VALUE_PARTITION_BYTES,
     DEFAULT_RESEARCH_MAX_RESULT_BYTES,
     RESEARCH_RECEIPT_ADAPTER,
     RESEARCH_RESULT_ADAPTER,
@@ -120,9 +122,11 @@ def validate_entry_quality_history_result_for_import(
     expected_quant_lab_commit: str,
     max_result_bytes: int = DEFAULT_RESEARCH_MAX_RESULT_BYTES,
     factor_factory_max_result_bytes: int = DEFAULT_FACTOR_FACTORY_MAX_RESULT_BYTES,
-    factor_factory_max_value_partition_bytes: int = 256 * 1024**2,
+    factor_factory_max_value_partition_bytes: int = (
+        DEFAULT_FACTOR_FACTORY_MAX_VALUE_PARTITION_BYTES
+    ),
     factor_factory_max_file_count: int = 20_000,
-    factor_factory_max_uncompressed_bytes: int = 16 * 1024**3,
+    factor_factory_max_uncompressed_bytes: int = DEFAULT_FACTOR_FACTORY_MAX_UNCOMPRESSED_BYTES,
 ) -> ResearchImportValidationResult:
     """Validate one inbox result without changing queue state or publishing Gold."""
 
@@ -256,9 +260,11 @@ def validate_pending_entry_quality_history_results(
     expected_quant_lab_commit: str,
     max_result_bytes: int = DEFAULT_RESEARCH_MAX_RESULT_BYTES,
     factor_factory_max_result_bytes: int = DEFAULT_FACTOR_FACTORY_MAX_RESULT_BYTES,
-    factor_factory_max_value_partition_bytes: int = 256 * 1024**2,
+    factor_factory_max_value_partition_bytes: int = (
+        DEFAULT_FACTOR_FACTORY_MAX_VALUE_PARTITION_BYTES
+    ),
     factor_factory_max_file_count: int = 20_000,
-    factor_factory_max_uncompressed_bytes: int = 16 * 1024**3,
+    factor_factory_max_uncompressed_bytes: int = DEFAULT_FACTOR_FACTORY_MAX_UNCOMPRESSED_BYTES,
 ) -> list[ResearchImportValidationResult]:
     """Validate every current inbox result without creating or moving queue files."""
 
@@ -300,9 +306,11 @@ def import_entry_quality_history_result(
     expected_quant_lab_commit: str,
     max_result_bytes: int = DEFAULT_RESEARCH_MAX_RESULT_BYTES,
     factor_factory_max_result_bytes: int = DEFAULT_FACTOR_FACTORY_MAX_RESULT_BYTES,
-    factor_factory_max_value_partition_bytes: int = 256 * 1024**2,
+    factor_factory_max_value_partition_bytes: int = (
+        DEFAULT_FACTOR_FACTORY_MAX_VALUE_PARTITION_BYTES
+    ),
     factor_factory_max_file_count: int = 20_000,
-    factor_factory_max_uncompressed_bytes: int = 16 * 1024**3,
+    factor_factory_max_uncompressed_bytes: int = DEFAULT_FACTOR_FACTORY_MAX_UNCOMPRESSED_BYTES,
 ) -> ResearchImportResult:
     queue = ensure_research_queue_layout(queue_root)
     task_envelope = _load_task_envelope(queue, task_id)
@@ -1030,9 +1038,11 @@ def import_pending_entry_quality_history_results(
     expected_quant_lab_commit: str,
     max_result_bytes: int = DEFAULT_RESEARCH_MAX_RESULT_BYTES,
     factor_factory_max_result_bytes: int = DEFAULT_FACTOR_FACTORY_MAX_RESULT_BYTES,
-    factor_factory_max_value_partition_bytes: int = 256 * 1024**2,
+    factor_factory_max_value_partition_bytes: int = (
+        DEFAULT_FACTOR_FACTORY_MAX_VALUE_PARTITION_BYTES
+    ),
     factor_factory_max_file_count: int = 20_000,
-    factor_factory_max_uncompressed_bytes: int = 16 * 1024**3,
+    factor_factory_max_uncompressed_bytes: int = DEFAULT_FACTOR_FACTORY_MAX_UNCOMPRESSED_BYTES,
 ) -> list[ResearchImportResult]:
     queue = ensure_research_queue_layout(queue_root)
     results: list[ResearchImportResult] = []

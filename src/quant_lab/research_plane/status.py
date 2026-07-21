@@ -184,6 +184,11 @@ def _research_plane_status_for_type(
         None,
     )
     selected = active or latest
+    request_status = (
+        read_json(queue_root / "status" / "factor_factory_request.json")
+        if task_type == "factor_factory"
+        else None
+    )
     selected_payload = selected.model_dump(mode="json") if selected else None
     if selected_payload is not None:
         lease = read_research_lease(queue_root, selected.task_id)
@@ -193,11 +198,23 @@ def _research_plane_status_for_type(
             selected_payload["worker_lease_sequence"] = lease.sequence
         if task_type == "factor_factory":
             selected_payload.update(_factor_factory_status_details(queue_root, selected))
+    state = selected.state.value if selected else "idle"
+    if (
+        active is None
+        and request_status
+        and request_status.get("state")
+        in {
+            "already_current",
+            "already_current_no_update",
+        }
+    ):
+        state = "up_to_date"
     return {
         "schema_version": schema_version,
         "task_type": task_type,
-        "state": selected.state.value if selected else "idle",
+        "state": state,
         "task": selected_payload,
+        "request": request_status,
         "recent": [status.model_dump(mode="json") for status in statuses[:12]],
         "nas_offline_behavior": "wait_no_local_fallback",
         "research_only": True,
@@ -256,18 +273,16 @@ def _factor_factory_status_details(
             )
             try:
                 snapshot = RESEARCH_SNAPSHOT_ADAPTER.validate_json(
-                    (
-                        queue_root / "snapshots" / task.snapshot_id / "manifest.json"
-                    ).read_text("utf-8")
+                    (queue_root / "snapshots" / task.snapshot_id / "manifest.json").read_text(
+                        "utf-8"
+                    )
                 )
             except (OSError, ValueError):
                 snapshot = None
             if isinstance(snapshot, FactorFactorySnapshotManifest):
                 details["factor_count"] = snapshot.factor_plan.factor_count
     for result_state in ("inbox", "imported"):
-        manifest_path = (
-            queue_root / "results" / result_state / status.task_id / "manifest.json"
-        )
+        manifest_path = queue_root / "results" / result_state / status.task_id / "manifest.json"
         if not manifest_path.is_file():
             continue
         try:

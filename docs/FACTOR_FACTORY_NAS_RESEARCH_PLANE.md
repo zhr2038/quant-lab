@@ -94,6 +94,16 @@ correlations. The relevant single Parquet files were approximately 684 KB for
 Feature Value, 4.4 MB for Market Bar, 124 KB for Cost, and 4.6 MB for Factor
 Value. These are observations, not fixed limits.
 
+The remediation audit found seven retained Factor Factory v1 Snapshots on
+2026-07-21. Their projected payload averaged 1,250,943 bytes and peaked at
+1,252,162 bytes. All seven had distinct source identities and changing row
+counts, so the maximum observed input-change count for the retained UTC day was
+six. This is a one-day, partial-day sample, not a long-run arrival-rate claim.
+The previously observed NAS shadow peak was 605,286,400 bytes. Historical
+`MemoryPeak`, `IOReadBytes`, and `IOWriteBytes` were not available for the cloud
+request unit, and Importer peak RSS was not recorded; final-SHA acceptance must
+measure them rather than infer them from the limits.
+
 The existing shared plane was checked before adding the task: result handoff is
 hidden/atomic before inbox exposure, heartbeat and lease state are separate,
 the queue permission upgrader is repeatable, GC protects active snapshots, the
@@ -149,10 +159,52 @@ cache, and bound by path, SHA-256, byte count, row count, source mtime, and time
 bounds. A changed source during sealing fails. Snapshot byte/row limits fail
 closed; history is never silently shortened.
 
-Only `PARITY_FULL/bootstrap_full` is implemented. The contracts bind a previous
-accepted generation, but no incremental or unchanged-shard claim is made yet.
-Incremental computation remains a later optimization and must satisfy plan,
-hash, version, cache, and historical-integrity preconditions before activation.
+Lake File Index v0.3 records dataset/path, size, mtime, real SHA-256, row count,
+timestamp bounds, schema fingerprint, Parquet uncompressed bytes, and index
+time. SHA and metadata are reused only while size and mtime are unchanged; only
+new or changed files are re-read. Source mutation during indexing fails closed,
+and the index replacement is atomic. `reused_from_previous_index` is diagnostic
+metadata and does not force a second index rewrite.
+
+Factor Snapshot v2 identity is computed before payload creation from exactly:
+
+```text
+quant_lab_commit + factor_plan_digest + source_input_digest + cost_input_digest
++ feature/factor scope + timeframe + horizons + delay + max_factors
++ min_samples + top_quantile + cost_quantile + result/history mode
+```
+
+The projected source digest binds real source SHA values, deterministic filter
+and projection versions, valid/closed-row rules, time boundaries, schema, rows,
+and uncompressed metadata. `as_of_date`, `generated_at`, and every previous
+generation field are excluded. Factor Plan v2 likewise excludes its audit-only
+`created_at` from `plan_digest`. A Task continues to bind Snapshot ID, previous
+generation ID/digest, task parameters (including output `as_of_date`), commit,
+and signing key ID. Snapshot v1 remains verifiable with its legacy digest and
+signature rules, but it is never rewritten into v2.
+
+Request order is now File Index/preflight identity, current/no-update pointer
+comparison, minimum-interval check, then conditional materialization. A matching
+generation returns `already_current`; a matching empty-input pointer returns
+`already_current_no_update`. Both return success without Snapshot payload or NAS
+Task creation even when the requested date changes. An accepted empty result is
+recorded atomically at `gold/factor_factory_no_update_state.json`, and any new
+input identity makes it eligible to run again.
+
+Released v2 payload is a legal state. A same-identity request takes a
+Snapshot-specific advisory lock, verifies the retained manifest/signature/seal,
+reprojects from the current indexed sources into one `.rehydrate.*.partial`, and
+compares path, SHA, bytes, rows, schema, and time bounds with every retained
+reference. Only an exact match is installed atomically; the release marker is
+removed and the tree returns to read-only mode without changing manifest bytes
+or signature. Mismatch is `snapshot_rehydrate_identity_mismatch`. GC takes the
+same lock, protects active partials, and independently removes only stale
+partials. A legacy v1 released Snapshot lacks the v2 source contract and is
+therefore rejected rather than guessed or mutated.
+
+Only `PARITY_FULL/bootstrap_full` is implemented. Previous generation is a Task
+and publication concurrency boundary, not a Snapshot or NAS input boundary.
+No incremental or unchanged-shard claim is made in this remediation.
 
 ## NAS computation and result
 
@@ -240,12 +292,14 @@ the immutable research-only safety boundary.
 
 ## Scheduling, limits, and status
 
-`quant-lab-factor-factory-request.timer` requests hourly at minute 38 UTC with a
-bounded three-minute randomized delay. The slot was chosen from the deployed
-timer inventory to avoid the hourly V5 refresh and the 15-minute Feature publish
-boundaries. Request work is limited to one Polars thread, 30% CPU, 500 MB high
-memory, and 900 MB hard memory. Pending requests coalesce to at most one latest
-successor; a running task is never killed.
+`quant-lab-factor-factory-request.timer` polls input identity hourly at minute 38
+UTC with a bounded three-minute randomized delay. It does not unconditionally
+run full history: unchanged input exits through No-Change, and changed input is
+subject to a six-hour minimum recompute interval. This bounds full-history Task
+creation to four per UTC day while retaining `PARITY_FULL/bootstrap_full`.
+Pending requests coalesce to at most one latest successor; a running task is
+never killed. Request work is limited to one Polars thread, 30% CPU, 500 MB high
+memory, and 900 MB hard memory.
 
 The unified status response includes the Factor plan/scope/horizon, factor and
 output row counts, anti-leakage/import state, generation identity and age, worker
@@ -257,11 +311,12 @@ Cloud settings:
 ```text
 QUANT_LAB_NAS_FACTOR_FACTORY_ENABLED=0
 QUANT_LAB_LOCAL_FACTOR_FACTORY_ENABLED=0
-QUANT_LAB_FACTOR_FACTORY_MAX_RESULT_BYTES=2147483648
-QUANT_LAB_FACTOR_FACTORY_MAX_VALUE_PARTITION_BYTES=268435456
+QUANT_LAB_FACTOR_FACTORY_MAX_RESULT_BYTES=536870912
+QUANT_LAB_FACTOR_FACTORY_MAX_VALUE_PARTITION_BYTES=134217728
 QUANT_LAB_FACTOR_FACTORY_MAX_FILE_COUNT=20000
-QUANT_LAB_FACTOR_FACTORY_MAX_UNCOMPRESSED_BYTES=17179869184
-QUANT_LAB_FACTOR_FACTORY_MAX_SNAPSHOT_BYTES=26843545600
+QUANT_LAB_FACTOR_FACTORY_MAX_UNCOMPRESSED_BYTES=1073741824
+QUANT_LAB_FACTOR_FACTORY_MAX_SNAPSHOT_BYTES=2147483648
+QUANT_LAB_FACTOR_FACTORY_MIN_RECOMPUTE_INTERVAL_SECONDS=21600
 QUANT_LAB_FACTOR_FACTORY_MAX_PENDING_TASKS=1
 ```
 
@@ -269,11 +324,26 @@ NAS settings:
 
 ```text
 QUANT_RESEARCH_FACTOR_FACTORY_ENABLED=0
-FACTOR_FACTORY_MAX_RESULT_BYTES=2147483648
-FACTOR_FACTORY_MAX_VALUE_PARTITION_BYTES=268435456
+FACTOR_FACTORY_MAX_SNAPSHOT_BYTES=2147483648
+FACTOR_FACTORY_MAX_INPUT_UNCOMPRESSED_BYTES=4294967296
+FACTOR_FACTORY_MAX_RESULT_BYTES=536870912
+FACTOR_FACTORY_MAX_VALUE_PARTITION_BYTES=134217728
 FACTOR_FACTORY_MAX_FILE_COUNT=20000
-FACTOR_FACTORY_MAX_UNCOMPRESSED_BYTES=17179869184
+FACTOR_FACTORY_MAX_UNCOMPRESSED_BYTES=1073741824
 ```
+
+The NAS rejects compressed input over 2 GiB and estimated uncompressed input
+over 4 GiB before transfer/compute. The current compute remains monolithic, so
+these are fail-closed limits for an 8 GiB container, not a claim that 20–25 GiB
+Factor inputs are supported. A staged/lazy Value/Evidence refactor remains
+future work.
+
+The cloud Importer verifies declared file count, file set, compressed bytes,
+Parquet metadata, per-file size, and total uncompressed bytes before any global
+Unique/GroupBy scan. Defaults are 512 MiB compressed result, 128 MiB per Value
+partition, and 1 GiB uncompressed result under `MemoryMax=3G`. Gold merge and
+global key validation use DuckDB with two threads, a 768 MB memory limit, and a
+fail-fast writable spill directory inside the staging transaction.
 
 The container remains the single existing worker with 3 CPUs, 8 GiB memory,
 256 PIDs, read-only root, no-new-privileges, UID/GID isolation, and the shared
@@ -302,7 +372,8 @@ Before enabling the hourly timer:
    run. Required NAS peak RSS is below 6 GiB; cloud request must remain below
    900 MB and cloud import below 1.2 GiB.
 8. Only if both shadows and all parity/resource gates pass, enable the hourly
-   request timer. Keep local fallback at zero.
+   identity-poll timer with the six-hour recompute floor. Keep local fallback at
+   zero.
 
 The V5 research refresh must not wait for the NAS. The heavy Factor command was
 already absent on the production baseline used by this stacked change; cutover
@@ -329,8 +400,24 @@ order state.
 
 ## Deferred work
 
-Changed-shard references and Factor/Evidence compute caches are not claimed in
-the bootstrap implementation. They should be added only after measured cold and
-warm runs prove their keys and invalidation behavior. Candidate Labels and
-Strategy Evidence are the next plausible NAS migrations, but must use separate
-audits and PRs and must not inherit any Factor publication authority.
+Changed-shard references and Factor/Evidence compute caches are intentionally
+deferred to an independent `factor-factory-changed-shard` PR. That PR must add
+`changed` and `unchanged_reference` partition states; the latter must bind the
+accepted previous generation ID/digest, partition identity, SHA, rows, and time
+bounds, and the cloud must validate the referenced published partition before
+reuse. It may not change `PARITY_FULL`, factor math, thresholds, or publication
+authority.
+
+The present one-day retained sample observed six input-identity changes, while
+the six-hour floor permits at most four full runs per day. Continue collecting
+14 UTC days of v2 request identities and cold/warm resource evidence. Changed
+Shard becomes required before shortening the six-hour floor, or when any of the
+following persists for seven days: more than four changed identities per day,
+full-run p95 above 20 minutes, NAS peak RSS above 5 GiB, compressed Snapshot
+above 512 MiB, or result transfer above 256 MiB per run. Its acceptance requires
+two consecutive exact `PARITY_FULL` shadow comparisons, at least 80% avoided
+unchanged-partition transfer bytes, 40/40 Anti-Leakage PASS, and no increase in
+NAS/Importer peak limits.
+
+Candidate Labels and Strategy Evidence remain separate future migrations and
+must use separate audits/PRs without inheriting Factor publication authority.

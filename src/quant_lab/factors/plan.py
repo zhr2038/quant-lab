@@ -15,7 +15,8 @@ from quant_lab.factors.registry import (
     discover_factor_specs,
 )
 
-FACTOR_PLAN_SCHEMA_VERSION = "quant_lab_factor_plan.v1"
+FACTOR_PLAN_SCHEMA_VERSION_V1 = "quant_lab_factor_plan.v1"
+FACTOR_PLAN_SCHEMA_VERSION = "quant_lab_factor_plan.v2"
 FACTOR_FACTORY_DECISION_POLICY = "factor_factory.main_49ad71f.v1"
 
 FactorParameterValue = str | int | float | bool | None
@@ -226,7 +227,9 @@ class EffectiveFactorSpec(StrictPlanModel):
 
 
 class EffectiveFactorPlan(StrictPlanModel):
-    schema_version: Literal["quant_lab_factor_plan.v1"] = FACTOR_PLAN_SCHEMA_VERSION
+    schema_version: Literal["quant_lab_factor_plan.v1", "quant_lab_factor_plan.v2"] = (
+        FACTOR_PLAN_SCHEMA_VERSION
+    )
     feature_set: str = Field(min_length=1, max_length=80)
     feature_version: str = Field(min_length=1, max_length=80)
     factor_version: str = Field(min_length=1, max_length=80)
@@ -341,7 +344,11 @@ def build_effective_factor_plan(
 
 
 def factor_plan_digest(plan: EffectiveFactorPlan) -> str:
-    payload = plan.model_dump(mode="json", exclude={"plan_digest"})
+    excluded = {"plan_digest"}
+    if plan.schema_version != FACTOR_PLAN_SCHEMA_VERSION_V1:
+        # created_at is audit metadata, not Factor membership or formula identity.
+        excluded.add("created_at")
+    payload = plan.model_dump(mode="json", exclude=excluded)
     encoded = json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 

@@ -22,7 +22,11 @@ except ImportError:  # pragma: no cover - Linux NAS always provides resource.
     resource = None  # type: ignore[assignment]
 
 from quant_lab.research_plane.contracts import (
+    DEFAULT_FACTOR_FACTORY_MAX_INPUT_UNCOMPRESSED_BYTES,
     DEFAULT_FACTOR_FACTORY_MAX_RESULT_BYTES,
+    DEFAULT_FACTOR_FACTORY_MAX_SNAPSHOT_BYTES,
+    DEFAULT_FACTOR_FACTORY_MAX_UNCOMPRESSED_BYTES,
+    DEFAULT_FACTOR_FACTORY_MAX_VALUE_PARTITION_BYTES,
     DEFAULT_RESEARCH_MAX_RESULT_BYTES,
     RESEARCH_SNAPSHOT_ADAPTER,
     RESEARCH_TASK_ADAPTER,
@@ -88,10 +92,14 @@ class Config:
     heavy_job_lock: Path
     batch_fetch_workers: int
     factor_factory_max_result_bytes: int = DEFAULT_FACTOR_FACTORY_MAX_RESULT_BYTES
-    factor_factory_max_value_partition_bytes: int = 256 * 1024**2
+    factor_factory_max_snapshot_bytes: int = DEFAULT_FACTOR_FACTORY_MAX_SNAPSHOT_BYTES
+    factor_factory_max_value_partition_bytes: int = DEFAULT_FACTOR_FACTORY_MAX_VALUE_PARTITION_BYTES
     factor_factory_enabled: bool = False
     factor_factory_max_file_count: int = 20_000
-    factor_factory_max_uncompressed_bytes: int = 16 * 1024**3
+    factor_factory_max_uncompressed_bytes: int = DEFAULT_FACTOR_FACTORY_MAX_UNCOMPRESSED_BYTES
+    factor_factory_max_input_uncompressed_bytes: int = (
+        DEFAULT_FACTOR_FACTORY_MAX_INPUT_UNCOMPRESSED_BYTES
+    )
     ssh_timeout_seconds: int = 90
     scp_timeout_seconds: int = 900
 
@@ -127,10 +135,16 @@ class Config:
                     str(DEFAULT_FACTOR_FACTORY_MAX_RESULT_BYTES),
                 )
             ),
+            factor_factory_max_snapshot_bytes=int(
+                os.environ.get(
+                    "FACTOR_FACTORY_MAX_SNAPSHOT_BYTES",
+                    str(DEFAULT_FACTOR_FACTORY_MAX_SNAPSHOT_BYTES),
+                )
+            ),
             factor_factory_max_value_partition_bytes=int(
                 os.environ.get(
                     "FACTOR_FACTORY_MAX_VALUE_PARTITION_BYTES",
-                    str(256 * 1024**2),
+                    str(DEFAULT_FACTOR_FACTORY_MAX_VALUE_PARTITION_BYTES),
                 )
             ),
             factor_factory_enabled=_bool_env("QUANT_RESEARCH_FACTOR_FACTORY_ENABLED", False),
@@ -138,7 +152,16 @@ class Config:
                 os.environ.get("FACTOR_FACTORY_MAX_FILE_COUNT", "20000")
             ),
             factor_factory_max_uncompressed_bytes=int(
-                os.environ.get("FACTOR_FACTORY_MAX_UNCOMPRESSED_BYTES", str(16 * 1024**3))
+                os.environ.get(
+                    "FACTOR_FACTORY_MAX_UNCOMPRESSED_BYTES",
+                    str(DEFAULT_FACTOR_FACTORY_MAX_UNCOMPRESSED_BYTES),
+                )
+            ),
+            factor_factory_max_input_uncompressed_bytes=int(
+                os.environ.get(
+                    "FACTOR_FACTORY_MAX_INPUT_UNCOMPRESSED_BYTES",
+                    str(DEFAULT_FACTOR_FACTORY_MAX_INPUT_UNCOMPRESSED_BYTES),
+                )
             ),
             heavy_job_lock=Path(
                 os.environ.get("QUANT_HEAVY_JOB_LOCK", "/runtime/quant-runtime/heavy-job.lock")
@@ -188,7 +211,7 @@ def claim_next_task(config: Config) -> str | None:
         'task=""; '
         'for candidate in $(find "$root/pending" -mindepth 1 -maxdepth 1 -type d '
         "-printf '%f\\n' 2>/dev/null | LC_ALL=C sort); do "
-        'case "$candidate" in *[!A-Za-z0-9_.:-]*|\'\') continue;; esac; '
+        "case \"$candidate\" in *[!A-Za-z0-9_.:-]*|'') continue;; esac; "
         'if [ "$allow_factor_factory" != "1" ] && '
         'grep -Eq \'"task_type"[[:space:]]*:[[:space:]]*"factor_factory"\' '
         '"$root/pending/$candidate/task.json"; then continue; fi; '
@@ -412,6 +435,14 @@ def process_claimed_task(config: Config, task_id: str) -> None:
     )
     heartbeat.start()
     try:
+        if isinstance(snapshot, FactorFactorySnapshotManifest):
+            if snapshot.total_input_bytes > config.factor_factory_max_snapshot_bytes:
+                raise ValueError("factor_factory_snapshot_input_size_limit_exceeded")
+            if (
+                snapshot.estimated_uncompressed_bytes
+                > config.factor_factory_max_input_uncompressed_bytes
+            ):
+                raise ValueError("factor_factory_input_uncompressed_size_limit_exceeded")
         sync_result = sync_snapshot_blobs(
             snapshot,
             data_root=config.data_root,
@@ -451,6 +482,9 @@ def process_claimed_task(config: Config, task_id: str) -> None:
                         status,
                         work,
                         stage,
+                    ),
+                    max_input_uncompressed_bytes=(
+                        config.factor_factory_max_input_uncompressed_bytes
                     ),
                 )
             elif isinstance(task, AlphaFactoryTask):
@@ -1035,8 +1069,12 @@ def _validate_config(config: Config) -> None:
         raise ValueError("FACTOR_FACTORY_MAX_VALUE_PARTITION_BYTES must be positive")
     if config.factor_factory_max_file_count <= 0:
         raise ValueError("FACTOR_FACTORY_MAX_FILE_COUNT must be positive")
+    if config.factor_factory_max_snapshot_bytes <= 0:
+        raise ValueError("FACTOR_FACTORY_MAX_SNAPSHOT_BYTES must be positive")
     if config.factor_factory_max_uncompressed_bytes <= 0:
         raise ValueError("FACTOR_FACTORY_MAX_UNCOMPRESSED_BYTES must be positive")
+    if config.factor_factory_max_input_uncompressed_bytes <= 0:
+        raise ValueError("FACTOR_FACTORY_MAX_INPUT_UNCOMPRESSED_BYTES must be positive")
     config.data_root.mkdir(parents=True, exist_ok=True)
 
 

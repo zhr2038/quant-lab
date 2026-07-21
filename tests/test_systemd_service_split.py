@@ -15,6 +15,8 @@ def test_export_plane_units_share_the_low_privilege_queue_group() -> None:
         unit = (SYSTEMD / name).read_text(encoding="utf-8")
         assert "User=quantlab" in unit
         assert "SupplementaryGroups=quant-export" in unit
+
+
 SCRIPTS = ROOT / "deploy" / "scripts"
 
 
@@ -228,11 +230,11 @@ def test_storage_retention_does_not_create_root_owned_lake_files():
 def test_lake_permission_repair_script_targets_service_user():
     script = _script("repair_lake_permissions.sh")
 
-    assert "LAKE_ROOT=\"${LAKE_ROOT:-/var/lib/quant-lab/lake}\"" in script
+    assert 'LAKE_ROOT="${LAKE_ROOT:-/var/lib/quant-lab/lake}"' in script
     assert "QUANT_LAB_BASE_DIR=" in script
     assert "EXPORTS_DIR=" in script
-    assert "QUANT_LAB_USER=\"${QUANT_LAB_USER:-quantlab}\"" in script
-    assert "QUANT_LAB_GROUP=\"${QUANT_LAB_GROUP:-quantlab}\"" in script
+    assert 'QUANT_LAB_USER="${QUANT_LAB_USER:-quantlab}"' in script
+    assert 'QUANT_LAB_GROUP="${QUANT_LAB_GROUP:-quantlab}"' in script
     assert "install -d" in script
     assert "chown -R" in script
     assert "chmod u+rwX,g+rwX,o+rX,g+s" in script
@@ -242,11 +244,11 @@ def test_lake_permission_repair_script_targets_service_user():
 def test_deploy_permission_repair_script_targets_deploy_user():
     script = _script("repair_deploy_permissions.sh")
 
-    assert "APP_ROOT=\"${APP_ROOT:-/opt/quant-lab}\"" in script
-    assert "DEPLOY_USER=\"${DEPLOY_USER:-ubuntu}\"" in script
-    assert "SERVICE_GROUP=\"${SERVICE_GROUP:-quantlab}\"" in script
+    assert 'APP_ROOT="${APP_ROOT:-/opt/quant-lab}"' in script
+    assert 'DEPLOY_USER="${DEPLOY_USER:-ubuntu}"' in script
+    assert 'SERVICE_GROUP="${SERVICE_GROUP:-quantlab}"' in script
     assert "START_REPAIR_DEPLOY_PERMISSIONS" in script
-    assert "chown -R \"${DEPLOY_USER}:${SERVICE_GROUP}\" \"${APP_ROOT}\"" in script
+    assert 'chown -R "${DEPLOY_USER}:${SERVICE_GROUP}" "${APP_ROOT}"' in script
     assert "chmod u=rwx,g=rx,o=,g+s" in script
     assert "chmod u=rwX,g=rX,o=" in script
     assert "g+rw" not in script
@@ -369,9 +371,7 @@ def test_factor_factory_uses_shared_worker_and_hourly_cloud_request_only():
     nas_compose = (ROOT / "deploy" / "nas_research_worker" / "docker-compose.yml").read_text(
         encoding="utf-8"
     )
-    nas_env = (ROOT / "deploy" / "nas_research_worker" / ".env.example").read_text(
-        encoding="utf-8"
-    )
+    nas_env = (ROOT / "deploy" / "nas_research_worker" / ".env.example").read_text(encoding="utf-8")
 
     assert "request-factor-factory" in request_service
     assert "build-factor-factory" not in request_service
@@ -382,6 +382,8 @@ def test_factor_factory_uses_shared_worker_and_hourly_cloud_request_only():
     assert "MemoryMax=900M" in request_service
     assert "OnCalendar=*-*-* *:38:00 UTC" in request_timer
     assert "RandomizedDelaySec=3min" in request_timer
+    assert "--min-recompute-interval-seconds" in request_service
+    assert "21600" in request_service
     assert "--factor-factory-max-result-bytes" in importer
     assert "--factor-factory-max-value-partition-bytes" in importer
     assert "--factor-factory-max-file-count" in importer
@@ -392,7 +394,12 @@ def test_factor_factory_uses_shared_worker_and_hourly_cloud_request_only():
     assert "pids_limit: 256" in nas_compose
     assert "read_only: true" in nas_compose
     assert "QUANT_RESEARCH_FACTOR_FACTORY_ENABLED=0" in nas_env
-    assert "FACTOR_FACTORY_MAX_RESULT_BYTES=2147483648" in nas_env
+    assert "FACTOR_FACTORY_MAX_RESULT_BYTES=536870912" in nas_env
+    assert "FACTOR_FACTORY_MAX_VALUE_PARTITION_BYTES=134217728" in nas_env
+    assert "FACTOR_FACTORY_MAX_UNCOMPRESSED_BYTES=1073741824" in nas_env
+    assert "FACTOR_FACTORY_MAX_INPUT_UNCOMPRESSED_BYTES=4294967296" in nas_env
+    assert "FACTOR_FACTORY_MAX_SNAPSHOT_BYTES=2147483648" in nas_env
+    assert "MAX_SNAPSHOT_BYTES=21474836480" in nas_env
 
 
 def test_scheduled_compaction_covers_hot_ws_datasets():
@@ -495,10 +502,7 @@ def test_scheduled_compaction_covers_hot_ws_datasets():
     assert '"silver/orderbook_snapshot"' in script
     assert 'compact_hot_ws_dataset "bronze/okx_public_ws" 500000 100 64 20' in script
     assert 'compact_hot_ws_dataset "silver/trade_print" 500000 100 20 20' in script
-    assert (
-        'compact_hot_ws_dataset "silver/orderbook_snapshot" 500000 100 64 10'
-        in script
-    )
+    assert 'compact_hot_ws_dataset "silver/orderbook_snapshot" 500000 100 64 10' in script
     assert 'compact_if_file_count_at_least "${dataset}" 250000 100 10' in script
     assert 'compact_if_file_count_at_least "${dataset}" 250000 100 20' in script
     assert "cleanup_internal_compaction_dirs" in script
@@ -603,8 +607,7 @@ def test_web_export_request_worker_is_scheduled_outside_dashboard_cgroup():
     assert "PermissionsStartOnly=true" in service
     assert "QUANT_LAB_EXPORT_PULL_V5_REMOTE=1" in service
     assert (
-        "ExecStartPre=/usr/bin/systemctl start quant-lab-v5-telemetry-sync.service"
-        not in service
+        "ExecStartPre=/usr/bin/systemctl start quant-lab-v5-telemetry-sync.service" not in service
     )
     assert "flock -E 75 -w 2400 /var/lock/quant-lab-heavy.lock" in service
     assert "flock -E 75 -w 600 /var/lock/quant-lab-v5-telemetry-sync.lock" in service

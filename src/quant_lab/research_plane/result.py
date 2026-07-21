@@ -174,13 +174,18 @@ def validate_research_task_snapshot(
     if snapshot.signature_key_id != expected_key_id:
         raise ValueError("research_snapshot_unknown_signature_key")
     verify_payload(task, task.signature, task_public_key)
-    verify_payload(snapshot, snapshot.signature, task_public_key)
+    if not isinstance(snapshot, FactorFactorySnapshotManifest):
+        verify_payload(snapshot, snapshot.signature, task_public_key)
     if isinstance(snapshot, AlphaFactorySnapshotManifest):
         verify_alpha_factory_snapshot_manifest(snapshot, final_root=snapshot_root)
     elif isinstance(snapshot, FactorResearchSnapshotManifest):
         verify_factor_research_snapshot_manifest(snapshot, final_root=snapshot_root)
     elif isinstance(snapshot, FactorFactorySnapshotManifest):
-        verify_factor_factory_snapshot_manifest(snapshot, final_root=snapshot_root)
+        verify_factor_factory_snapshot_manifest(
+            snapshot,
+            final_root=snapshot_root,
+            public_key=task_public_key,
+        )
     else:
         verify_snapshot_manifest(snapshot, final_root=snapshot_root)
     if task.snapshot_id != snapshot.snapshot_id:
@@ -260,16 +265,13 @@ def validate_research_task_snapshot(
         FactorFactorySnapshotManifest,
     ):
         expected_identity = (
-            task.parameters.model_dump(),
+            task.parameters.model_dump(exclude={"as_of_date"}),
             task.factor_plan_digest,
             task.source_input_digest,
             task.cost_input_digest,
-            task.previous_generation_id,
-            task.previous_generation_digest,
         )
         observed_identity = (
             {
-                "as_of_date": snapshot.as_of_date,
                 "feature_set": snapshot.feature_set,
                 "feature_version": snapshot.feature_version,
                 "factor_version": snapshot.factor_version,
@@ -286,9 +288,18 @@ def validate_research_task_snapshot(
             snapshot.factor_plan_digest,
             snapshot.source_input_digest,
             snapshot.cost_input_digest,
-            snapshot.previous_generation_id,
-            snapshot.previous_generation_digest,
         )
+        if snapshot.schema_version == "quant_lab_factor_factory_snapshot.v1":
+            expected_identity += (
+                task.previous_generation_id,
+                task.previous_generation_digest,
+                task.as_of_date,
+            )
+            observed_identity += (
+                snapshot.previous_generation_id,
+                snapshot.previous_generation_digest,
+                snapshot.as_of_date,
+            )
         if observed_identity != expected_identity:
             raise ValueError("research_task_snapshot_factor_factory_identity_mismatch")
     elif isinstance(task, ResearchTask) and isinstance(snapshot, ResearchSnapshotManifest):

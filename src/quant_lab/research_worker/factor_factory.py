@@ -16,6 +16,8 @@ from quant_lab.factors.factory import (
     compute_factor_factory_frames,
 )
 from quant_lab.research_plane.contracts import (
+    DEFAULT_FACTOR_FACTORY_MAX_INPUT_UNCOMPRESSED_BYTES,
+    FACTOR_FACTORY_SNAPSHOT_SCHEMA_V1,
     FactorFactorySnapshotManifest,
     FactorFactoryTask,
 )
@@ -89,12 +91,21 @@ def compute_factor_factory_result(
     manifest: FactorFactorySnapshotManifest,
     task: FactorFactoryTask,
     stage_callback: Callable[[str], None] | None = None,
+    max_input_uncompressed_bytes: int = (DEFAULT_FACTOR_FACTORY_MAX_INPUT_UNCOMPRESSED_BYTES),
 ) -> FactorFactoryComputeArtifacts:
     """Execute only the cloud-authored immutable Factor Factory plan on NAS."""
 
     started = time.perf_counter()
     _validate_task_manifest_binding(task, manifest)
     root = Path(snapshot_root) / "files"
+    estimated_uncompressed_bytes = manifest.estimated_uncompressed_bytes
+    if manifest.schema_version == FACTOR_FACTORY_SNAPSHOT_SCHEMA_V1:
+        estimated_uncompressed_bytes = sum(
+            _parquet_uncompressed_bytes(root / reference.relative_path)
+            for reference in manifest.files
+        )
+    if estimated_uncompressed_bytes > max_input_uncompressed_bytes:
+        raise ValueError("factor_factory_input_uncompressed_size_limit_exceeded")
     features = read_parquet_dataset(root / FEATURE_VALUE_DATASET)
     market = read_parquet_dataset(root / MARKET_BAR_DATASET)
     costs = read_parquet_dataset(root / COST_BUCKET_DAILY_DATASET)
@@ -215,25 +226,22 @@ def _validate_task_manifest_binding(
         "factor_plan_digest": (task.factor_plan_digest, manifest.factor_plan_digest),
         "source_input_digest": (task.source_input_digest, manifest.source_input_digest),
         "cost_input_digest": (task.cost_input_digest, manifest.cost_input_digest),
-        "previous_generation_id": (
-            task.previous_generation_id,
-            manifest.previous_generation_id,
-        ),
-        "previous_generation_digest": (
-            task.previous_generation_digest,
-            manifest.previous_generation_digest,
-        ),
     }
     mismatch = [name for name, values in pairs.items() if values[0] != values[1]]
     if mismatch:
         raise ValueError(f"factor_factory_task_snapshot_mismatch:{','.join(mismatch)}")
-    if task.parameters.model_dump() != manifest_parameters(manifest):
+    if task.parameters.model_dump(exclude={"as_of_date"}) != manifest_parameters(manifest):
         raise ValueError("factor_factory_task_snapshot_parameter_mismatch")
+    if manifest.schema_version == FACTOR_FACTORY_SNAPSHOT_SCHEMA_V1 and (
+        task.as_of_date != manifest.as_of_date
+        or task.previous_generation_id != manifest.previous_generation_id
+        or task.previous_generation_digest != manifest.previous_generation_digest
+    ):
+        raise ValueError("factor_factory_task_snapshot_legacy_binding_mismatch")
 
 
 def manifest_parameters(manifest: FactorFactorySnapshotManifest) -> dict[str, Any]:
     return {
-        "as_of_date": manifest.as_of_date,
         "feature_set": manifest.feature_set,
         "feature_version": manifest.feature_version,
         "factor_version": manifest.factor_version,
@@ -247,6 +255,17 @@ def manifest_parameters(manifest: FactorFactorySnapshotManifest) -> dict[str, An
         "result_mode": manifest.result_mode,
         "history_mode": manifest.history_mode,
     }
+
+
+def _parquet_uncompressed_bytes(path: Path) -> int:
+    import pyarrow.parquet as pq  # noqa: PLC0415
+
+    metadata = pq.ParquetFile(path).metadata
+    return sum(
+        metadata.row_group(row_group).column(column).total_uncompressed_size
+        for row_group in range(metadata.num_row_groups)
+        for column in range(metadata.num_columns)
+    )
 
 
 def _anti_leakage_report(
@@ -304,10 +323,26 @@ def _anti_leakage_report(
         ),
         "previous_generation_binding_matches": (
             int(
-                task.previous_generation_id != manifest.previous_generation_id
-                or task.previous_generation_digest != manifest.previous_generation_digest
+                (
+                    manifest.schema_version == FACTOR_FACTORY_SNAPSHOT_SCHEMA_V1
+                    and (
+                        task.previous_generation_id != manifest.previous_generation_id
+                        or task.previous_generation_digest != manifest.previous_generation_digest
+                    )
+                )
+                or (
+                    manifest.schema_version != FACTOR_FACTORY_SNAPSHOT_SCHEMA_V1
+                    and any(
+                        value is not None
+                        for value in (
+                            manifest.previous_generation_id,
+                            manifest.previous_generation_digest,
+                            manifest.previous_generation_manifest,
+                        )
+                    )
+                )
             ),
-            "previous Gold generation binding is unchanged",
+            "v1 previous Gold matches Task; v2 keeps previous Gold task-only",
         ),
         "result_mode_is_parity_full": (
             int(task.result_mode != "PARITY_FULL"),

@@ -56,6 +56,7 @@ STOP = threading.Event()
 _STATUS_UPLOAD_LOCK = threading.RLock()
 _LEASE_UPLOAD_LOCK = threading.RLock()
 _HANDOFF_READY_MARKER = ".HANDOFF_READY"
+_NON_RETRYABLE_TASK_ERRORS = frozenset({"worker_code_mismatch"})
 
 
 @dataclass(frozen=True)
@@ -722,19 +723,37 @@ def _handle_failure(config: Config, task_id: str, exc: Exception) -> None:
         )
         return
     current = _read_local_or_remote_status(config, task_id, work)
-    attempt = current.attempt if current is not None else 1
+    attempt = current.attempt if current is not None else 0
+    if current is None or current.state == ResearchTaskState.PENDING:
+        attempt += 1
     max_attempts = current.max_attempts if current is not None else 3
-    retry = attempt < max_attempts
+    rejected = isinstance(exc, ValueError) and str(exc) in _NON_RETRYABLE_TASK_ERRORS
+    retry = not rejected and attempt < max_attempts
     now = datetime.now(UTC)
     if current is not None:
         status = current.model_copy(
             update={
-                "state": ResearchTaskState.PENDING if retry else ResearchTaskState.FAILED,
+                "state": (
+                    ResearchTaskState.REJECTED
+                    if rejected
+                    else ResearchTaskState.PENDING
+                    if retry
+                    else ResearchTaskState.FAILED
+                ),
+                "worker_id": current.worker_id or config.worker_id,
+                "claimed_at": current.claimed_at or now,
                 "heartbeat_at": now,
                 "completed_at": None if retry else now,
                 "lease_expires_at": None,
+                "attempt": attempt,
                 "last_error": f"{type(exc).__name__}:{str(exc)[:800]}",
-                "import_status": "retry_pending" if retry else "worker_failed",
+                "import_status": (
+                    "worker_rejected_code_mismatch"
+                    if rejected
+                    else "retry_pending"
+                    if retry
+                    else "worker_failed"
+                ),
             }
         )
         with contextlib.suppress(Exception):

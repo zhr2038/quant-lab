@@ -1024,9 +1024,12 @@ def _select_factor_research_inputs(
     }
     required_paths = tuple(Path(name) for name in sorted(executable_requirements))
     index = _load_required_file_index(root, required_paths)
+    executable_index = index.filter(
+        pl.col("dataset").is_in(sorted(executable_requirements))
+    )
     selected = [
         item
-        for item in _select_indexed_files(root, index, windows)
+        for item in _select_indexed_files(root, executable_index, windows)
         if item[0] in executable_requirements
     ]
     selected_by_dataset: dict[str, list[Path]] = {}

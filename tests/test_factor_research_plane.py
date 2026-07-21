@@ -10,10 +10,12 @@ import polars as pl
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
+from quant_lab.data.file_index import build_lake_file_index
 from quant_lab.data.lake import read_parquet_dataset
 from quant_lab.research.factor_research.registry import (
     RESEARCH_HYPOTHESIS_REGISTRY_DATASET,
     RESEARCH_TRIAL_LEDGER_DATASET,
+    default_hypothesis_registry,
 )
 from quant_lab.research_plane.contracts import FactorResearchSnapshotManifest
 from quant_lab.research_plane.factor_research_publish import (
@@ -26,7 +28,10 @@ from quant_lab.research_plane.importer import import_entry_quality_history_resul
 from quant_lab.research_plane.queue import create_factor_research_task
 from quant_lab.research_plane.result import validate_factor_research_result_bundle
 from quant_lab.research_plane.signatures import verify_payload
-from quant_lab.research_plane.snapshot import verify_factor_research_snapshot_manifest
+from quant_lab.research_plane.snapshot import (
+    _select_factor_research_inputs,
+    verify_factor_research_snapshot_manifest,
+)
 from quant_lab.research_plane.status import research_plane_status
 from quant_lab.research_worker.factor_research import (
     _point_in_time_market_universe,
@@ -155,6 +160,30 @@ def _write_source_data(root: Path, *, include_regime: bool = True) -> None:
                 "current_regime": ["SIDEWAYS", "TREND_UP"],
             }
         ).write_parquet(regime / "part-regime.parquet")
+
+
+def test_factor_research_ignores_stale_index_rows_outside_executable_requirements(
+    tmp_path: Path,
+) -> None:
+    lake = tmp_path / "lake"
+    _write_source_data(lake)
+    build_lake_file_index(lake, ["gold/market_regime_daily"])
+    (lake / "gold/market_regime_daily/part-regime.parquet").unlink()
+
+    selected, _windows, _symbols = _select_factor_research_inputs(
+        lake,
+        start_date=date(2024, 7, 18),
+        end_date=date(2026, 7, 17),
+        hypotheses=[default_hypothesis_registry()[0]],
+    )
+
+    datasets = {dataset for dataset, _path, _min_ts, _max_ts in selected}
+    assert "gold/market_regime_daily" not in datasets
+    assert datasets == {
+        "gold/cost_bucket_daily",
+        "silver/market_bar",
+        "silver/orderbook_spread_1m",
+    }
 
 
 def test_factor_research_task_is_content_addressed_signed_and_idempotent(tmp_path: Path) -> None:

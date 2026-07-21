@@ -162,13 +162,20 @@ def _write_source_data(root: Path, *, include_regime: bool = True) -> None:
         ).write_parquet(regime / "part-regime.parquet")
 
 
-def test_factor_research_ignores_stale_index_rows_outside_executable_requirements(
+def test_factor_research_refreshes_locked_regime_control_for_low_vol_only(
     tmp_path: Path,
 ) -> None:
     lake = tmp_path / "lake"
     _write_source_data(lake)
     build_lake_file_index(lake, ["gold/market_regime_daily"])
     (lake / "gold/market_regime_daily/part-regime.parquet").unlink()
+    replacement = lake / "gold/market_regime_daily/part-regime-current.parquet"
+    pl.DataFrame(
+        {
+            "as_of_date": [date(2024, 7, 18), date(2026, 7, 16)],
+            "current_regime": ["SIDEWAYS", "TREND_UP"],
+        }
+    ).write_parquet(replacement)
 
     selected, _windows, _symbols = _select_factor_research_inputs(
         lake,
@@ -178,12 +185,13 @@ def test_factor_research_ignores_stale_index_rows_outside_executable_requirement
     )
 
     datasets = {dataset for dataset, _path, _min_ts, _max_ts in selected}
-    assert "gold/market_regime_daily" not in datasets
     assert datasets == {
         "gold/cost_bucket_daily",
+        "gold/market_regime_daily",
         "silver/market_bar",
         "silver/orderbook_spread_1m",
     }
+    assert replacement.resolve() in {path for _dataset, path, _min_ts, _max_ts in selected}
 
 
 def test_factor_research_task_is_content_addressed_signed_and_idempotent(tmp_path: Path) -> None:

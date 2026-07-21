@@ -1005,6 +1005,11 @@ def _select_factor_research_inputs(
     executable_requirements.setdefault("silver/orderbook_spread_1m", set()).update(
         {"symbol", "minute_ts", "spread_bps"}
     )
+    # Every trial uses the locked regime neutralization control even when an
+    # individual hypothesis does not repeat it in its own data requirements.
+    executable_requirements.setdefault("gold/market_regime_daily", set()).update(
+        {"as_of_date", "current_regime"}
+    )
     start = datetime.combine(start_date, time.min, tzinfo=UTC)
     end = datetime.combine(end_date + timedelta(days=1), time.min, tzinfo=UTC)
     windows = {

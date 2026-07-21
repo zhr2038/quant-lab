@@ -704,6 +704,12 @@ def _upload_result_partial(config: Config, task_id: str, result_root: Path) -> s
     )
     try:
         _scp_to(config, result_root, remote_partial, recursive=True)
+        quoted_partial = shlex.quote(remote_partial)
+        _ssh(
+            config,
+            f"find {quoted_partial} -type d -exec chmod 2770 {{}} + && "
+            f"find {quoted_partial} -type f -exec chmod 0660 {{}} +",
+        )
     except Exception:
         with contextlib.suppress(Exception):
             _ssh(config, f"rm -rf -- {shlex.quote(remote_partial)}", check=False)
@@ -713,7 +719,8 @@ def _upload_result_partial(config: Config, task_id: str, result_root: Path) -> s
 
 def _mark_result_partial_ready(config: Config, remote_partial: str) -> None:
     marker = f"{remote_partial}/{_HANDOFF_READY_MARKER}"
-    _ssh(config, f"touch {shlex.quote(marker)}")
+    quoted_marker = shlex.quote(marker)
+    _ssh(config, f"touch {quoted_marker} && chmod 0660 {quoted_marker}")
 
 
 def _handoff_result_to_cloud(

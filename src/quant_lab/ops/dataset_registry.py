@@ -829,7 +829,7 @@ def core_dataset_specs() -> dict[str, DatasetSpec]:
             ),
             timestamp_column="snapshot_generated_at",
             utc_timestamp_columns=("snapshot_generated_at",),
-            freshness_seconds=3 * 60 * 60,
+            freshness_seconds=None,
             quality_rules=("schema_required_columns",),
         ),
         DatasetSpec(

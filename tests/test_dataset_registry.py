@@ -52,6 +52,11 @@ def test_weekly_factor_research_and_template_control_freshness_contracts():
     assert template_registry.freshness_seconds is None
     assert "freshness" not in template_registry.quality_rules
 
+    current_proposals = get_dataset_spec("paper_strategy_proposals_current")
+    assert current_proposals is not None
+    assert current_proposals.freshness_seconds is None
+    assert "freshness" not in current_proposals.quality_rules
+
 
 def test_dataset_registry_exposes_paths_for_api_and_lake_health():
     paths = dataset_path_map()

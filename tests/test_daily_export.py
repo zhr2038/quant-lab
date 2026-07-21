@@ -1421,6 +1421,43 @@ def test_snapshot_meta_written_for_api_dependency_datasets(tmp_path):
     assert row["source_sha"]
 
 
+def test_export_time_snapshot_meta_prefers_current_evaluation_time(tmp_path):
+    old_snapshot_at = datetime(2026, 7, 15, 10, tzinfo=UTC)
+    current_evaluation_at = datetime(2026, 7, 21, 3, tzinfo=UTC)
+    cases = {
+        "paper_proposal_propagation_status": pl.DataFrame(
+            [
+                {
+                    "snapshot_generated_at": old_snapshot_at,
+                    "generated_at": current_evaluation_at,
+                }
+            ]
+        ),
+        "paper_strategy_proposal_snapshot": pl.DataFrame(
+            [
+                {
+                    "snapshot_generated_at": old_snapshot_at,
+                    "last_evaluated_at": current_evaluation_at,
+                }
+            ]
+        ),
+    }
+
+    for dataset_name, frame in cases.items():
+        dataset_path = tmp_path / dataset_name
+        daily_export_module._write_snapshot_meta(
+            dataset_path,
+            dataset_name=dataset_name,
+            frame=frame,
+        )
+        meta = json.loads(
+            (dataset_path / "_snapshot_meta.json").read_text(encoding="utf-8")
+        )
+        assert meta["generated_at"] == current_evaluation_at.isoformat().replace(
+            "+00:00", "Z"
+        )
+
+
 def test_bnb_paper_summary_uses_latest_strategy_day_view():
     from quant_lab.strategy_telemetry.analyze import _latest_bnb_paper_strategy_daily
 

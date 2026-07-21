@@ -943,6 +943,74 @@ def test_data_health_hides_stale_audit_table_without_freshness_sla(tmp_path):
     }
 
 
+def test_data_health_honors_weekly_registry_freshness_sla(tmp_path):
+    lake_root = tmp_path / "lake"
+    created_at = datetime.now(UTC) - timedelta(days=2)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "as_of_date": created_at.date().isoformat(),
+                    "trial_id": "trial-1",
+                    "factor_id": "factor-1",
+                    "created_at": created_at,
+                }
+            ]
+        ),
+        lake_root / "gold" / "factor_attribution",
+    )
+
+    snapshot = readers._dataset_snapshot(lake_root, "factor_attribution")
+    stale_rows = readers.data_health_summary(lake_root)["stale_datasets"].to_dicts()
+
+    assert snapshot.freshness["freshness_status"] == "stale"
+    assert "factor_attribution" not in {row["dataset"] for row in stale_rows}
+
+
+def test_data_health_still_reports_dataset_beyond_registry_sla(tmp_path):
+    lake_root = tmp_path / "lake"
+    created_at = datetime.now(UTC) - timedelta(days=9)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "as_of_date": created_at.date().isoformat(),
+                    "trial_id": "trial-1",
+                    "factor_id": "factor-1",
+                    "created_at": created_at,
+                }
+            ]
+        ),
+        lake_root / "gold" / "factor_attribution",
+    )
+
+    stale_rows = readers.data_health_summary(lake_root)["stale_datasets"].to_dicts()
+
+    assert "factor_attribution" in {row["dataset"] for row in stale_rows}
+
+
+def test_data_health_does_not_age_out_versioned_alpha_template_controls(tmp_path):
+    lake_root = tmp_path / "lake"
+    created_at = datetime.now(UTC) - timedelta(days=30)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "template_id": "template-1",
+                    "created_at": created_at,
+                }
+            ]
+        ),
+        lake_root / "gold" / "alpha_factory_template_registry",
+    )
+
+    stale_rows = readers.data_health_summary(lake_root)["stale_datasets"].to_dicts()
+
+    assert "alpha_factory_template_registry" not in {
+        row["dataset"] for row in stale_rows
+    }
+
+
 def test_dataset_snapshot_falls_back_when_sidecar_lacks_business_time(tmp_path):
     lake_root = tmp_path / "lake"
     dataset = lake_root / "gold" / "paper_strategy_proposal_snapshot"

@@ -498,6 +498,11 @@ def _merge_managed_factor_rows(
         if "as_of_date" in current.columns:
             managed &= pl.col("as_of_date") == as_of_date
         current = current.filter(~managed.fill_null(False))
+    elif not current.is_empty() and "research_only" in current.columns:
+        managed = pl.col("research_only").fill_null(False)
+        if "as_of_date" in current.columns:
+            managed &= pl.col("as_of_date") == as_of_date
+        current = current.filter(~managed.fill_null(False))
     merged = pl.concat([current, replacement], how="vertical_relaxed")
     return merged.select(list(schema)).cast(schema, strict=True)
 

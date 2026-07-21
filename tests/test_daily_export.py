@@ -636,6 +636,33 @@ def test_refresh_web_derived_snapshots_updates_export_backed_gold_tables(
             transient_frames=snapshot.transient_frames,
         )
 
+    def fake_ops(
+        root,
+        snapshot,
+        *,
+        generated_at,
+        pre_export_v5=None,
+        persist=True,
+        include_auth=True,
+    ):
+        assert root == lake_root
+        assert generated_at == datetime(2026, 7, 3, 12, 0, tzinfo=UTC)
+        assert pre_export_v5 is None
+        assert persist is True
+        assert include_auth is False
+        calls.append("ops")
+        frames = {
+            **snapshot.frames,
+            "paper_runtime_freshness": pl.DataFrame({"id": [1, 2, 3, 4, 5]}),
+            "paper_proposal_propagation_status": pl.DataFrame({"id": [1]}),
+        }
+        return daily_export_module._DatasetSnapshot(
+            frames=frames,
+            row_counts={**snapshot.row_counts, **row_counts(frames)},
+            warnings=snapshot.warnings,
+            transient_frames=snapshot.transient_frames,
+        )
+
     monkeypatch.setattr(daily_export_module, "_load_snapshot", fake_load)
     monkeypatch.setattr(
         daily_export_module,
@@ -648,18 +675,21 @@ def test_refresh_web_derived_snapshots_updates_export_backed_gold_tables(
         "_publish_cost_bootstrap_readiness_snapshot",
         fake_cost,
     )
+    monkeypatch.setattr(daily_export_module, "_publish_ops_truthfulness_snapshot", fake_ops)
 
     result = daily_export_module.refresh_web_derived_snapshots(
         lake_root,
         generated_at=generated_at,
     )
 
-    assert calls == ["load", "strategy", "missed", "cost"]
+    assert calls == ["load", "strategy", "missed", "cost", "ops"]
     assert result.generated_at == generated_at
     assert result.live_order_effect == "none_read_only_lake_refresh"
     assert result.refreshed_datasets == list(daily_export_module.WEB_DERIVED_SNAPSHOT_DATASETS)
     assert result.row_counts["factor_strategy_bridge_candidates"] == 2
     assert result.row_counts["cost_bootstrap_readiness"] == 4
+    assert result.row_counts["paper_runtime_freshness"] == 5
+    assert result.row_counts["paper_proposal_propagation_status"] == 1
     assert result.row_counts["v5_enforce_readiness"] == 1
     assert "fallback_rate_breakdown" in result.row_counts
     assert result.warnings == ["example warning"]

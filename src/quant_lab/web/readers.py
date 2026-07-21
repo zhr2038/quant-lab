@@ -284,6 +284,7 @@ OPTIONAL_EMPTY_DATASET_STATUSES = {
     "cost_probe_optional_audit",
     "registry_optional_empty",
     "registry_freshness_not_required",
+    "registry_freshness_within_sla",
     DERIVED_LATEST_SOURCE_CURRENT_STATUS,
     "event_driven_no_recent_cost_probe_p3_preflight",
     "event_driven_no_recent_cost_probe_order_event",
@@ -6433,7 +6434,11 @@ def _stale_dataset_rows(lake_root: str | Path) -> pl.DataFrame:
             status = EVENT_DRIVEN_OKX_READONLY_DATASET_STATUSES[name]
         if name in HISTORICAL_RESEARCH_DATASETS and status == "stale":
             status = "historical_research_snapshot"
-        status = _optional_stale_status_from_registry(name, status)
+        status = _optional_stale_status_from_registry(
+            name,
+            status,
+            freshness_seconds=freshness["freshness_seconds"],
+        )
         status = _derived_rollup_status(lake_root, name, snapshot, status)
         status = _derived_latest_status(lake_root, name, snapshot, status)
         if _should_show_stale_dataset_row(snapshot, status):
@@ -6655,7 +6660,12 @@ def _empty_dataset_status(dataset_name: str) -> str:
     return "missing"
 
 
-def _optional_stale_status_from_registry(dataset_name: str, status: str) -> str:
+def _optional_stale_status_from_registry(
+    dataset_name: str,
+    status: str,
+    *,
+    freshness_seconds: int | None = None,
+) -> str:
     if status != "stale":
         return status
     spec = get_dataset_spec(dataset_name)
@@ -6665,6 +6675,12 @@ def _optional_stale_status_from_registry(dataset_name: str, status: str) -> str:
         if dataset_name in ENTRY_QUALITY_DATASETS:
             return "entry_quality_optional"
         return "registry_freshness_not_required"
+    if (
+        spec.freshness_seconds is not None
+        and freshness_seconds is not None
+        and freshness_seconds <= spec.freshness_seconds
+    ):
+        return "registry_freshness_within_sla"
     return status
 
 

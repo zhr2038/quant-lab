@@ -19,6 +19,7 @@ from quant_lab.research_plane.contracts import FactorResearchSnapshotManifest
 from quant_lab.research_plane.factor_research_publish import (
     FACTOR_RESEARCH_GENERATION_POINTER,
     FACTOR_RESEARCH_GENERATION_SCHEMA,
+    _merge_managed_factor_rows,
     current_factor_research_generation_binding,
 )
 from quant_lab.research_plane.importer import import_entry_quality_history_result
@@ -37,6 +38,57 @@ COMMIT = "a" * 40
 NEXT_COMMIT = "c" * 40
 TASK_KEY_ID = "cloud-research-v1"
 BUNDLE_ID = "v5-bundle-sha256:" + "b" * 64
+
+
+def test_factor_research_correlation_replaces_same_day_research_rows() -> None:
+    schema = {
+        "as_of_date": pl.Utf8,
+        "factor_id_left": pl.Utf8,
+        "factor_id_right": pl.Utf8,
+        "research_only": pl.Boolean,
+        "correlation": pl.Float64,
+    }
+    existing = pl.DataFrame(
+        [
+            {
+                "as_of_date": "2026-07-19",
+                "factor_id_left": "legacy-a",
+                "factor_id_right": "legacy-b",
+                "research_only": None,
+                "correlation": 0.1,
+            },
+            {
+                "as_of_date": "2026-07-19",
+                "factor_id_left": "research-a",
+                "factor_id_right": "research-b",
+                "research_only": True,
+                "correlation": 0.2,
+            },
+        ]
+    )
+    incoming = pl.DataFrame(
+        [
+            {
+                "as_of_date": "2026-07-19",
+                "factor_id_left": "research-a",
+                "factor_id_right": "research-b",
+                "research_only": True,
+                "correlation": 0.3,
+            }
+        ]
+    )
+
+    merged = _merge_managed_factor_rows(
+        existing,
+        incoming,
+        schema=schema,
+        primary_keys=("as_of_date", "factor_id_left", "factor_id_right"),
+        hypothesis_ids={"unused-for-correlation"},
+        as_of_date="2026-07-19",
+    )
+
+    assert merged.height == 2
+    assert merged.filter(pl.col("research_only").fill_null(False))["correlation"].item() == 0.3
 
 
 def _write_source_data(root: Path, *, include_regime: bool = True) -> None:
@@ -165,6 +217,8 @@ def test_factor_research_task_is_content_addressed_signed_and_idempotent(tmp_pat
     compute = compute_factor_research_result(snapshot_root, manifest, first)
     assert compute.definitions.height == 4
     assert compute.evidence.height == 8
+    assert "research_only" in compute.correlations.columns
+    assert "live_order_effect" in compute.correlations.columns
     assert compute.candidates.height == 4
     assert "PAPER_CANDIDATE" not in set(compute.candidates.get_column("candidate_state").to_list())
     assert compute.anti_leakage["status"] == "PASS"
@@ -204,6 +258,7 @@ def test_factor_research_task_is_content_addressed_signed_and_idempotent(tmp_pat
         "factor_evidence",
         "factor_attribution",
         "factor_portfolio_validation",
+        "factor_correlation_daily",
         "factor_candidate",
     }
     assert result_manifest.research_only is True

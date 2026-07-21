@@ -1373,6 +1373,25 @@ def _factor_correlation_frame(
     return _schema_frame(rows, FACTOR_CORRELATION_SCHEMA)
 
 
+def build_factor_correlation_frame(
+    values: pl.DataFrame,
+    *,
+    as_of_date: date,
+    factor_version: str,
+    timeframe: str,
+    created_at: datetime,
+) -> pl.DataFrame:
+    """Build a bounded correlation snapshot without publishing it to the lake."""
+
+    return _factor_correlation_frame(
+        values,
+        as_of_date=as_of_date,
+        factor_version=factor_version,
+        timeframe=timeframe,
+        created_at=created_at,
+    )
+
+
 def _recommended_action(decision: str) -> str:
     return {
         "KILL": "drop_or_quarantine",

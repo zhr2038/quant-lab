@@ -12,6 +12,7 @@ from typing import Any
 import polars as pl
 
 from quant_lab.data.lake import read_parquet_dataset
+from quant_lab.factors.factory import build_factor_correlation_frame
 from quant_lab.research.factor_research.attribution import (
     FactorAttributionResult,
 )
@@ -42,6 +43,7 @@ from quant_lab.research.factor_research.outputs import (
     FACTOR_ATTRIBUTION_SCHEMA,
     FACTOR_PORTFOLIO_VALIDATION_SCHEMA,
     FACTOR_RESEARCH_CANDIDATE_SCHEMA,
+    FACTOR_RESEARCH_CORRELATION_SCHEMA,
     FACTOR_RESEARCH_DEFINITION_SCHEMA,
     FACTOR_RESEARCH_EVIDENCE_SCHEMA,
     FACTOR_RESEARCH_VALUE_SCHEMA,
@@ -110,6 +112,7 @@ class FactorResearchComputeArtifacts:
     evidence: pl.DataFrame
     attribution: pl.DataFrame
     portfolio_validation: pl.DataFrame
+    correlations: pl.DataFrame
     candidates: pl.DataFrame
     anti_leakage: dict[str, Any]
     worker_report: dict[str, Any]
@@ -122,6 +125,7 @@ class FactorResearchComputeArtifacts:
             "factor_evidence": self.evidence,
             "factor_attribution": self.attribution,
             "factor_portfolio_validation": self.portfolio_validation,
+            "factor_correlation_daily": self.correlations,
             "factor_candidate": self.candidates,
         }
 
@@ -544,6 +548,21 @@ def compute_factor_research_result(
         generated_at=generated_at,
     )
     candidates = _candidate_frame(evidence, generated_at=generated_at)
+    correlations = build_factor_correlation_frame(
+        values,
+        as_of_date=task.as_of_date,
+        factor_version="factor_research.v2",
+        timeframe="1h",
+        created_at=generated_at,
+    ).with_columns(
+        pl.lit(SOURCE).alias("source"),
+        pl.lit(True).alias("research_only"),
+        pl.lit("none").alias("live_order_effect"),
+    )
+    correlations = correlations.select(list(FACTOR_RESEARCH_CORRELATION_SCHEMA)).cast(
+        FACTOR_RESEARCH_CORRELATION_SCHEMA,
+        strict=False,
+    )
     anti_leakage = _anti_leakage_report(
         manifest=manifest,
         task=task,
@@ -561,6 +580,7 @@ def compute_factor_research_result(
         "factor_evidence": evidence,
         "factor_attribution": attribution_frame,
         "factor_portfolio_validation": portfolio_frame,
+        "factor_correlation_daily": correlations,
         "factor_candidate": candidates,
     }
     worker_report = {
@@ -606,6 +626,7 @@ def compute_factor_research_result(
         evidence=evidence,
         attribution=attribution_frame,
         portfolio_validation=portfolio_frame,
+        correlations=correlations,
         candidates=candidates,
         anti_leakage=anti_leakage,
         worker_report=worker_report,

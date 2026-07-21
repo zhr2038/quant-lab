@@ -911,3 +911,24 @@ def test_snapshot_meta_uses_canonical_proposal_snapshot_time(tmp_path):
 
     meta = json.loads((dataset / "_snapshot_meta.json").read_text(encoding="utf-8"))
     assert meta["generated_at"] == snapshot_generated_at
+
+
+def test_snapshot_meta_prefers_updated_at_over_entity_creation_time(tmp_path):
+    dataset = tmp_path / "lake" / "silver" / "v5_paper_strategy_registry_current"
+
+    write_snapshot_meta(
+        dataset,
+        dataset_name="v5_paper_strategy_registry_current",
+        frame=pl.DataFrame(
+            [
+                {
+                    "proposal_id": "proposal-1",
+                    "created_at": "2026-07-13T01:00:00Z",
+                    "updated_at": "2026-07-21T03:00:00Z",
+                }
+            ]
+        ),
+    )
+
+    meta = json.loads((dataset / "_snapshot_meta.json").read_text(encoding="utf-8"))
+    assert meta["generated_at"] == "2026-07-21T03:00:00Z"

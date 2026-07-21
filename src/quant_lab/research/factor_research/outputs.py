@@ -8,12 +8,16 @@ import polars as pl
 
 from quant_lab.factors.factory import (
     FACTOR_CANDIDATE_DATASET,
+    FACTOR_CORRELATION_DAILY_DATASET,
     FACTOR_DEFINITION_DATASET,
     FACTOR_EVIDENCE_DATASET,
     FACTOR_VALUE_DATASET,
 )
 from quant_lab.factors.factory import (
     FACTOR_CANDIDATE_SCHEMA as LEGACY_FACTOR_CANDIDATE_SCHEMA,
+)
+from quant_lab.factors.factory import (
+    FACTOR_CORRELATION_SCHEMA as LEGACY_FACTOR_CORRELATION_SCHEMA,
 )
 from quant_lab.factors.factory import (
     FACTOR_DEFINITION_SCHEMA as LEGACY_FACTOR_DEFINITION_SCHEMA,
@@ -92,6 +96,12 @@ FACTOR_RESEARCH_CANDIDATE_SCHEMA: dict[str, Any] = {
     "live_order_effect": pl.Utf8,
     "automatic_promotion": pl.Boolean,
     "max_live_notional_usdt": pl.Float64,
+}
+
+FACTOR_RESEARCH_CORRELATION_SCHEMA: dict[str, Any] = {
+    **LEGACY_FACTOR_CORRELATION_SCHEMA,
+    "research_only": pl.Boolean,
+    "live_order_effect": pl.Utf8,
 }
 
 FACTOR_ATTRIBUTION_SCHEMA: dict[str, Any] = {
@@ -220,6 +230,19 @@ FACTOR_RESEARCH_OUTPUT_SPECS = (
         FACTOR_PORTFOLIO_VALIDATION_DATASET,
         FACTOR_PORTFOLIO_VALIDATION_SCHEMA,
         ("as_of_date", "trial_id"),
+        ("as_of_date",),
+    ),
+    FactorResearchOutputSpec(
+        "factor_correlation_daily",
+        FACTOR_CORRELATION_DAILY_DATASET,
+        FACTOR_RESEARCH_CORRELATION_SCHEMA,
+        (
+            "as_of_date",
+            "factor_id_left",
+            "factor_id_right",
+            "factor_version",
+            "timeframe",
+        ),
         ("as_of_date",),
     ),
     FactorResearchOutputSpec(

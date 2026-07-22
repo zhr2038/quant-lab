@@ -1692,6 +1692,103 @@ def test_worker_failure_does_not_regress_cloud_owned_inbox(
     )
 
 
+def test_worker_code_mismatch_is_rejected_without_retry(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config = _research_worker_config(tmp_path)
+    task_id = "entry-quality-history-old-code"
+    status = ResearchTaskStatus(
+        task_id=task_id,
+        snapshot_id="entry-quality-history-snapshot-test",
+        start_date=date(2026, 6, 19),
+        end_date=date(2026, 7, 18),
+        mode="recent_30d",
+        cost_mode="conservative",
+        state=ResearchTaskState.PENDING,
+        requested_at=GENERATED_AT,
+        attempt=0,
+        max_attempts=3,
+    )
+    uploaded: list[ResearchTaskStatus] = []
+    commands: list[str] = []
+    monkeypatch.setattr(runner_module, "_recover_handoff_visibility", lambda *_args: False)
+    monkeypatch.setattr(
+        runner_module,
+        "_read_local_or_remote_status",
+        lambda *_args: status,
+    )
+    monkeypatch.setattr(
+        runner_module,
+        "_upload_status",
+        lambda _config, value, _work: uploaded.append(value),
+    )
+    monkeypatch.setattr(
+        runner_module,
+        "_ssh",
+        lambda _config, command, **_kwargs: commands.append(command),
+    )
+
+    runner_module._handle_failure(config, task_id, ValueError("worker_code_mismatch"))
+
+    rejected = uploaded[-1]
+    assert rejected.state == ResearchTaskState.REJECTED
+    assert rejected.attempt == 1
+    assert rejected.worker_id == config.worker_id
+    assert rejected.claimed_at is not None
+    assert rejected.completed_at is not None
+    assert rejected.import_status == "worker_rejected_code_mismatch"
+    assert "/failed/" in commands[-1]
+    assert "/pending/" not in commands[-1]
+
+
+def test_worker_prevalidation_failure_counts_attempt_before_retry(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config = _research_worker_config(tmp_path)
+    task_id = "entry-quality-history-transient"
+    status = ResearchTaskStatus(
+        task_id=task_id,
+        snapshot_id="entry-quality-history-snapshot-test",
+        start_date=date(2026, 6, 19),
+        end_date=date(2026, 7, 18),
+        mode="recent_30d",
+        cost_mode="conservative",
+        state=ResearchTaskState.PENDING,
+        requested_at=GENERATED_AT,
+        attempt=0,
+        max_attempts=3,
+    )
+    uploaded: list[ResearchTaskStatus] = []
+    commands: list[str] = []
+    monkeypatch.setattr(runner_module, "_recover_handoff_visibility", lambda *_args: False)
+    monkeypatch.setattr(
+        runner_module,
+        "_read_local_or_remote_status",
+        lambda *_args: status,
+    )
+    monkeypatch.setattr(
+        runner_module,
+        "_upload_status",
+        lambda _config, value, _work: uploaded.append(value),
+    )
+    monkeypatch.setattr(
+        runner_module,
+        "_ssh",
+        lambda _config, command, **_kwargs: commands.append(command),
+    )
+
+    runner_module._handle_failure(config, task_id, RuntimeError("network"))
+
+    retry = uploaded[-1]
+    assert retry.state == ResearchTaskState.PENDING
+    assert retry.attempt == 1
+    assert retry.completed_at is None
+    assert retry.import_status == "retry_pending"
+    assert "/pending/" in commands[-1]
+
+
 def test_worker_ssh_and_scp_time_out_explicitly(tmp_path: Path, monkeypatch) -> None:
     config = _research_worker_config(tmp_path)
     monkeypatch.setattr(

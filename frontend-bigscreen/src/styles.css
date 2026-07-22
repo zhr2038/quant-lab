@@ -554,25 +554,15 @@ html[data-web-v2-layout="fluid"] .page-strategy .market{height:auto;min-height:0
 }
 .factor-factory-stats b{font-size:16px;color:#dffef3}
 .factor-factory-stats em{font-size:10px;color:var(--muted);font-style:normal}
-.factor-chip-grid,.candidate-list-body{display:grid;gap:6px;min-height:0}
-.factor-chip-grid .factor-chip,.candidate-list-body .chip{margin-top:0}
-.factor-chip{
-  min-width:0;
-  height:24px;border-radius:12px;border:1px solid rgba(45,232,166,.36);display:grid;grid-template-columns:16px 1fr 82px 68px;
-  align-items:center;gap:6px;padding:0 9px;margin-top:6px;background:rgba(45,232,166,.07);font-size:11px;
-}
-.factor-chip svg{color:var(--green);filter:drop-shadow(0 0 7px rgba(45,232,166,.55))}
-.factor-chip span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.factor-chip em{font-style:normal;color:var(--green);text-transform:uppercase;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.factor-chip strong{min-width:0;text-align:right;color:#b7d6ff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.factor-empty{border:1px dashed rgba(80,169,255,.24);border-radius:10px;padding:7px 9px;color:var(--muted);font-size:11px}
+.candidate-list-body{display:grid;gap:6px;min-height:0}
+.candidate-list-body .chip{margin-top:0}
 .strategy-research-grid{
   display:grid;grid-template-columns:minmax(250px,.29fr) minmax(340px,.38fr) minmax(300px,.33fr);grid-template-rows:minmax(0,1fr);
   grid-template-areas:"opportunity factor candidates";
   gap:12px;margin-top:2px;align-items:stretch;min-height:0;overflow:hidden;
 }
 .strategy-research-grid .opportunity-cost-mini{grid-area:opportunity;margin:0;display:grid;align-content:start;gap:7px;min-height:0;height:100%;max-height:100%;overflow:auto;scrollbar-gutter:stable}
-.strategy-research-grid .factor-factory-mini{grid-area:factor;margin:0;min-height:0;height:100%;max-height:100%}
+.strategy-research-grid .factor-factory-mini{grid-area:factor;margin:0;min-height:0;height:auto;max-height:none}
 .strategy-research-grid .candidate-list{grid-area:candidates;margin:0;height:100%;max-height:100%}
 .strategy-secondary-grid{
   margin-top:0;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;min-height:210px;height:auto;
@@ -626,23 +616,27 @@ html[data-web-v2-layout="fluid"] .page-strategy .market{height:auto;min-height:0
 .strategy-research-grid .opportunity-cost-note em,
 .strategy-research-grid .opportunity-cost-note strong{margin-top:3px}
 .strategy-research-grid .opportunity-cost-note strong{text-align:left}
+.factor-generation-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;min-height:0}
+.factor-generation-cell{
+  min-width:0;min-height:58px;border:1px solid rgba(45,232,166,.25);border-radius:13px;background:rgba(5,28,52,.56);
+  padding:8px 10px;display:grid;grid-template-rows:auto auto auto;align-content:center;gap:2px;
+}
+.factor-generation-cell span{font-size:10px;color:var(--muted)}
+.factor-generation-cell b{font-size:14px;line-height:1.15;color:#dffef3;white-space:normal;overflow-wrap:anywhere}
+.factor-generation-cell em{font-size:9px;line-height:1.2;color:#7f9db8;font-style:normal;white-space:normal;overflow-wrap:anywhere}
+.factor-generation-cell.verdict{border-color:rgba(255,196,87,.34);background:rgba(255,196,87,.07)}
+.factor-generation-cell.verdict b{color:#ffe2a4}
 .page-strategy .strategy-research-grid{
   grid-template-columns:minmax(440px,1fr) minmax(360px,.62fr);
   grid-template-rows:auto auto;
   grid-template-areas:"factor candidates" "opportunity candidates";
   align-items:start;
 }
-.page-strategy .factor-factory-mini{padding:12px 14px;margin:0;border-radius:18px;display:grid;grid-template-rows:auto auto minmax(0,1fr);align-content:start;min-height:0;overflow:hidden}
+.page-strategy .factor-factory-mini{padding:12px 14px;margin:0;border-radius:18px;display:grid;grid-template-rows:auto auto minmax(58px,1fr);row-gap:8px;align-content:start;min-height:0;overflow:visible}
 .page-strategy .factor-factory-stats{gap:10px;margin:8px 0}
 .page-strategy .factor-factory-stats span{padding:6px 10px;border-radius:14px}
 .page-strategy .factor-factory-stats b{font-size:24px}
 .page-strategy .factor-factory-stats em{font-size:13px}
-.page-strategy .factor-chip{
-  min-height:30px;height:auto;grid-template-columns:18px minmax(0,1fr) minmax(78px,.28fr);gap:7px;padding:0 9px;
-  font-size:12px;border-radius:14px;
-}
-.page-strategy .factor-chip-grid{grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:6px;overflow:auto;align-content:start;scrollbar-gutter:stable}
-.page-strategy .factor-chip strong{display:none}
 .page-strategy .chip{min-width:0;min-height:40px;border-radius:15px;grid-template-columns:minmax(0,1fr) minmax(48px,.16fr) minmax(56px,.18fr);gap:2px 6px;font-size:12px;padding:5px 9px}
 .page-strategy .candidate-list{display:grid;grid-template-rows:auto minmax(0,1fr);align-content:start;min-height:0;overflow:hidden}
 .page-strategy .candidate-list-body{grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:7px;overflow:auto;align-content:start;scrollbar-gutter:stable}
@@ -812,11 +806,11 @@ html[data-web-v2-layout="fluid"] .page-strategy .market{height:auto;min-height:0
   min-height:0;overflow:auto;padding-right:6px;margin-right:-6px;scrollbar-gutter:stable;
   overscroll-behavior:contain;-webkit-overflow-scrolling:touch;
 }
-.drawer-scroll::-webkit-scrollbar,.pack-list::-webkit-scrollbar,.mini-table::-webkit-scrollbar,.market-list::-webkit-scrollbar,.factor-chip-grid::-webkit-scrollbar,.candidate-list-body::-webkit-scrollbar,.opportunity-cost-mini::-webkit-scrollbar,.matrix-issue-list::-webkit-scrollbar,.research-mini-list::-webkit-scrollbar{width:8px;height:8px}
-.drawer-scroll::-webkit-scrollbar-thumb,.pack-list::-webkit-scrollbar-thumb,.mini-table::-webkit-scrollbar-thumb,.market-list::-webkit-scrollbar-thumb,.factor-chip-grid::-webkit-scrollbar-thumb,.candidate-list-body::-webkit-scrollbar-thumb,.opportunity-cost-mini::-webkit-scrollbar-thumb,.matrix-issue-list::-webkit-scrollbar-thumb,.research-mini-list::-webkit-scrollbar-thumb{
+.drawer-scroll::-webkit-scrollbar,.pack-list::-webkit-scrollbar,.mini-table::-webkit-scrollbar,.market-list::-webkit-scrollbar,.candidate-list-body::-webkit-scrollbar,.opportunity-cost-mini::-webkit-scrollbar,.matrix-issue-list::-webkit-scrollbar,.research-mini-list::-webkit-scrollbar{width:8px;height:8px}
+.drawer-scroll::-webkit-scrollbar-thumb,.pack-list::-webkit-scrollbar-thumb,.mini-table::-webkit-scrollbar-thumb,.market-list::-webkit-scrollbar-thumb,.candidate-list-body::-webkit-scrollbar-thumb,.opportunity-cost-mini::-webkit-scrollbar-thumb,.matrix-issue-list::-webkit-scrollbar-thumb,.research-mini-list::-webkit-scrollbar-thumb{
   background:rgba(80,169,255,.42);border-radius:99px;
 }
-.drawer-scroll::-webkit-scrollbar-track,.pack-list::-webkit-scrollbar-track,.mini-table::-webkit-scrollbar-track,.market-list::-webkit-scrollbar-track,.factor-chip-grid::-webkit-scrollbar-track,.candidate-list-body::-webkit-scrollbar-track,.opportunity-cost-mini::-webkit-scrollbar-track,.matrix-issue-list::-webkit-scrollbar-track,.research-mini-list::-webkit-scrollbar-track{background:rgba(5,20,38,.35);border-radius:99px}
+.drawer-scroll::-webkit-scrollbar-track,.pack-list::-webkit-scrollbar-track,.mini-table::-webkit-scrollbar-track,.market-list::-webkit-scrollbar-track,.candidate-list-body::-webkit-scrollbar-track,.opportunity-cost-mini::-webkit-scrollbar-track,.matrix-issue-list::-webkit-scrollbar-track,.research-mini-list::-webkit-scrollbar-track{background:rgba(5,20,38,.35);border-radius:99px}
 .detail-drawer p{color:var(--muted);margin:8px 0 16px}
 .mini-table-block{margin-top:16px}
 .mini-table-block h3{margin:0 0 8px;font-size:16px;color:#dff7ff}
@@ -1039,9 +1033,8 @@ html[data-web-v2-layout="fluid"] .page-strategy .market{height:auto;min-height:0
   .strategy-secondary-grid{grid-template-columns:repeat(2,minmax(0,1fr));height:auto;min-height:168px;overflow:hidden}
   .page-strategy .factor-factory-mini,
   .page-strategy .candidate-list{
-    grid-template-rows:auto auto;
+    grid-template-rows:auto auto auto;
   }
-  .page-strategy .factor-chip-grid,
   .page-strategy .candidate-list-body{
     overflow:visible;
     max-height:none;
@@ -1110,7 +1103,6 @@ html[data-web-v2-layout="fluid"] .page-strategy .market{height:auto;min-height:0
   .page-strategy .candidate-list{
     min-height:0;
   }
-  .page-strategy .factor-chip-grid{grid-template-columns:1fr}
   .page-strategy .candidate-list-body{grid-template-columns:repeat(auto-fit,minmax(190px,1fr))}
   .page-data{
     grid-template-columns:minmax(0,1.12fr) minmax(300px,.88fr);
@@ -1169,7 +1161,6 @@ html[data-web-v2-layout="fluid"] .page-strategy .market{height:auto;min-height:0
   .page-strategy .candidate-list{
     min-height:0;
   }
-  .page-strategy .factor-chip-grid,
   .page-strategy .candidate-list-body{
     overflow:auto;
     max-height:100%;
@@ -1312,6 +1303,7 @@ html[data-web-v2-layout="fluid"] .page-strategy .market{height:auto;min-height:0
     display:grid;grid-template-columns:1fr!important;grid-template-rows:none!important;grid-auto-rows:auto;
     height:auto;gap:14px;
   }
+  .factor-generation-grid{grid-template-columns:1fr}
   .left{
     grid-row:auto;display:grid;grid-template-rows:none;grid-auto-rows:auto;gap:14px;
   }
@@ -1407,9 +1399,6 @@ html[data-web-v2-layout="fluid"] .page-strategy .market{height:auto;min-height:0
   .opportunity-bucket{grid-template-columns:1fr 74px;min-height:30px;height:auto}
   .opportunity-bucket strong{display:none}
   .page-strategy .factor-factory-mini{padding:12px;margin:8px 0 14px}
-  .factor-chip{grid-template-columns:16px 1fr 72px;min-height:30px;height:auto}
-  .page-strategy .factor-chip{grid-template-columns:16px 1fr 86px;min-height:34px;font-size:12px;padding:0 10px}
-  .factor-chip strong{display:none}
   .factor-factory-stats{grid-template-columns:repeat(3,minmax(0,1fr));gap:7px}
   .factor-factory-stats span{display:grid;gap:2px;padding:7px 8px}
   .page-strategy .factor-factory-stats b{font-size:22px}

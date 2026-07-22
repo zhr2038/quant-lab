@@ -506,6 +506,9 @@ def compute_alpha_factory(
     max_candidates: int = MAX_DAILY_CANDIDATES,
     registry: pl.DataFrame | None = None,
     generated_at: datetime | None = None,
+    factor_generation_as_of_date: date | None = None,
+    factor_generation_hypothesis_ids: tuple[str, ...] = (),
+    factor_generation_fresh: bool | None = None,
 ) -> AlphaFactoryComputeArtifacts:
     """Compute Alpha Factory outputs without publishing Gold or shared evidence."""
     root = Path(lake_root)
@@ -541,6 +544,8 @@ def compute_alpha_factory(
         root,
         day,
         generated_at=generated,
+        factor_generation_as_of_date=factor_generation_as_of_date,
+        factor_generation_hypothesis_ids=factor_generation_hypothesis_ids,
     )
     summary_frames = [
         _with_source_dataset(
@@ -580,6 +585,13 @@ def compute_alpha_factory(
         max_candidates=max_candidates,
         registry_lookup=registry_lookup,
     )
+    warnings = list(second_stage.warnings)
+    if factor_generation_fresh is False:
+        candidates, results = _force_stale_factor_generation_to_research(
+            candidates,
+            results,
+        )
+        warnings.append("factor_generation_stale_or_unbound_research_only")
     return AlphaFactoryComputeArtifacts(
         second_stage_alpha_factory_sample=second_stage.sample,
         second_stage_alpha_factory_summary=second_stage.summary,
@@ -593,7 +605,7 @@ def compute_alpha_factory(
         factor_strategy_bridge_candidates=factor_bridge,
         generated_at=generated,
         as_of_date=day,
-        warnings=second_stage.warnings,
+        warnings=tuple(warnings),
     )
 
 
@@ -602,6 +614,8 @@ def compute_factor_bridge_source(
     as_of_date: str | date,
     *,
     generated_at: datetime | None = None,
+    factor_generation_as_of_date: date | None = None,
+    factor_generation_hypothesis_ids: tuple[str, ...] = (),
 ) -> tuple[pl.DataFrame, pl.DataFrame]:
     """Recompute Factor Bridge from immutable Lake inputs without Expert Pack ZIPs."""
     root = Path(lake_root)
@@ -609,11 +623,60 @@ def compute_factor_bridge_source(
     factor_candidates = read_parquet_dataset(root / FACTOR_CANDIDATE_DATASET)
     factor_values = read_parquet_dataset(root / FACTOR_VALUE_DATASET)
     market_bars = read_parquet_dataset(root / MARKET_BAR_DATASET)
-    if factor_candidates.is_empty() or factor_values.is_empty() or market_bars.is_empty():
+    required_candidate_columns = {
+        "as_of_date",
+        "hypothesis_id",
+        "data_snapshot_id",
+        "candidate_state",
+        "factor_id",
+    }
+    required_value_columns = {"hypothesis_id", "data_snapshot_id", "factor_id"}
+    if (
+        factor_candidates.is_empty()
+        or factor_values.is_empty()
+        or market_bars.is_empty()
+    ):
         return pl.DataFrame(), build_factor_strategy_bridge_candidates(
             paper_queue=pl.DataFrame(),
             factor_forward_validation=pl.DataFrame(),
             generated_at=generated_at,
+        )
+    if factor_generation_as_of_date is not None or factor_generation_hypothesis_ids:
+        if (
+            factor_generation_as_of_date is None
+            or not factor_generation_hypothesis_ids
+            or not required_candidate_columns.issubset(factor_candidates.columns)
+            or not required_value_columns.issubset(factor_values.columns)
+        ):
+            return pl.DataFrame(), build_factor_strategy_bridge_candidates(
+                paper_queue=pl.DataFrame(),
+                factor_forward_validation=pl.DataFrame(),
+                generated_at=generated_at,
+            )
+        eligible_states = ("SIGNAL_VALID", "PAPER_CANDIDATE")
+        factor_candidates = factor_candidates.filter(
+            (
+                pl.col("as_of_date").cast(pl.Utf8)
+                == factor_generation_as_of_date.isoformat()
+            )
+            & pl.col("hypothesis_id").is_in(list(factor_generation_hypothesis_ids))
+            & pl.col("candidate_state").is_in(eligible_states)
+        )
+        if factor_candidates.is_empty():
+            return pl.DataFrame(), build_factor_strategy_bridge_candidates(
+                paper_queue=pl.DataFrame(),
+                factor_forward_validation=pl.DataFrame(),
+                generated_at=generated_at,
+            )
+        snapshot_ids = (
+            factor_candidates.get_column("data_snapshot_id").drop_nulls().unique().to_list()
+        )
+        factor_values = factor_values.filter(
+            pl.col("hypothesis_id").is_in(list(factor_generation_hypothesis_ids))
+            & pl.col("data_snapshot_id").is_in(snapshot_ids)
+        )
+        factor_candidates = factor_candidates.with_columns(
+            pl.lit("KEEP_SHADOW").alias("candidate_state")
         )
     factor_forward = build_factor_forward_validation(
         factor_candidates=factor_candidates,
@@ -633,6 +696,33 @@ def compute_factor_bridge_source(
         source_dataset=FACTOR_BRIDGE_REPORT_MEMBER,
     )
     return summary, bridge
+
+
+def _force_stale_factor_generation_to_research(
+    candidates: pl.DataFrame,
+    results: pl.DataFrame,
+) -> tuple[pl.DataFrame, pl.DataFrame]:
+    stale_reason = "factor_generation_stale_or_unbound"
+    if not candidates.is_empty():
+        candidates = candidates.with_columns(
+            pl.lit("RESEARCH").alias("candidate_state")
+        )
+    if not results.is_empty():
+        results = results.with_columns(
+            pl.lit("RESEARCH").alias("decision"),
+            pl.lit("research").alias("recommended_mode"),
+            pl.when(pl.col("decision_reasons").fill_null("") == "")
+            .then(pl.lit(stale_reason))
+            .otherwise(
+                pl.concat_str(
+                    pl.col("decision_reasons"),
+                    pl.lit(stale_reason),
+                    separator=";",
+                )
+            )
+            .alias("decision_reasons"),
+        )
+    return candidates, results
 
 
 def build_and_publish_alpha_factory(

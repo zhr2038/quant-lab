@@ -7,6 +7,7 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import polars as pl
+import pytest
 from fastapi.testclient import TestClient
 
 import quant_lab.api.main as api_main
@@ -176,6 +177,53 @@ def test_bigscreen_ai_status_prefers_pending_run_over_previous_result(monkeypatc
     assert ai["status"] == "PENDING"
     assert ai["latest_run"]["task_id"] == "task-completed"
     assert ai["queue"]["counts"]["pending"] == 1
+
+
+def test_bigscreen_ai_exposes_hypothesis_research_without_paper_semantics(
+    monkeypatch, tmp_path
+):
+    lake = tmp_path / "lake"
+    queue = tmp_path / "ai_queue"
+    queue.mkdir(parents=True)
+    monkeypatch.setenv("QUANT_LAB_AI_QUEUE_ROOT", str(queue))
+    completed_at = datetime(2026, 7, 17, tzinfo=UTC)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "task_id": "task-hypothesis",
+                    "completed_at": completed_at,
+                    "system_state": "READY_FOR_PROPOSALS",
+                    "hypothesis_draft_count": 1,
+                    "data_collection_proposal_count": 0,
+                    "attribution_experiment_count": 0,
+                }
+            ]
+        ),
+        lake / "gold" / "ai_research_run",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "task_id": "task-hypothesis",
+                    "hypothesis_id": "hypothesis-1",
+                    "title": "Attribution-controlled underreaction",
+                    "proposal_state": "AI_RESEARCH_DRAFT",
+                    "completed_at": completed_at,
+                }
+            ]
+        ),
+        lake / "gold" / "ai_research_hypothesis_draft",
+    )
+    clear_bigscreen_cache()
+
+    ai = bigscreen_snapshot(lake)["ai_research"]
+
+    assert ai["latest_run"]["hypothesis_draft_count"] == 1
+    assert ai["research_hypothesis_drafts"][0]["hypothesis_id"] == "hypothesis-1"
+    assert ai["research_hypothesis_drafts"][0]["proposal_state"] == "AI_RESEARCH_DRAFT"
+    assert ai["paper_strategy_drafts"] == []
 
 
 def test_bigscreen_ai_result_discloses_newer_authoritative_pack(monkeypatch, tmp_path):
@@ -1793,6 +1841,281 @@ def test_bigscreen_snapshot_exposes_factor_factory_results(tmp_path):
     assert fast_forward["top_passes"][0]["symbol"] == "SOL-USDT"
 
 
+def test_bigscreen_factor_research_kpis_are_hypothesis_and_trial_driven(tmp_path):
+    clear_bigscreen_cache()
+    lake = tmp_path / "lake"
+    created_at = datetime(2026, 7, 19, tzinfo=UTC)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "hypothesis_id": "hypothesis-1",
+                    "hypothesis_version": 1,
+                    "factor_family": "defensive_quality",
+                    "status": "APPROVED_FOR_RESEARCH",
+                    "variant_budget": 2,
+                    "available_data_confirmed": True,
+                    "updated_at": created_at,
+                }
+            ]
+        ),
+        lake / "gold" / "research_hypothesis_registry",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "trial_id": "trial-confirmatory",
+                    "hypothesis_id": "hypothesis-1",
+                    "trial_kind": "CONFIRMATORY",
+                    "status": "COMPLETED",
+                    "decision": "SIGNAL_VALID",
+                    "submitted_at": created_at,
+                },
+                {
+                    "trial_id": "trial-failed",
+                    "hypothesis_id": "hypothesis-1",
+                    "trial_kind": "EXPLORATORY",
+                    "status": "FAILED",
+                    "decision": "REJECTED_NO_SIGNAL",
+                    "submitted_at": created_at,
+                },
+            ]
+        ),
+        lake / "gold" / "research_trial_ledger",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "as_of_date": "2026-07-19",
+                    "trial_id": "trial-confirmatory",
+                    "factor_id": "factor-1",
+                    "holm_adjusted_pvalue": 0.02,
+                    "bh_fdr_qvalue": 0.03,
+                    "created_at": created_at,
+                }
+            ]
+        ),
+        lake / "gold" / "factor_evidence",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "as_of_date": "2026-07-19",
+                    "factor_id": "factor-1",
+                    "candidate_state": "PORTFOLIO_FAIL",
+                    "created_at": created_at,
+                }
+            ]
+        ),
+        lake / "gold" / "factor_candidate",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "as_of_date": "2026-07-19",
+                    "trial_id": "trial-confirmatory",
+                    "factor_id": "factor-1",
+                    "raw_rank_ic": 0.04,
+                    "symbol_fixed_effect_null_ic": 0.02,
+                    "joint_residual_rank_ic": 0.015,
+                    "attribution_type": "STRUCTURAL_CROSS_SECTIONAL",
+                    "created_at": created_at,
+                }
+            ]
+        ),
+        lake / "gold" / "factor_attribution",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "as_of_date": "2026-07-19",
+                    "trial_id": "trial-confirmatory",
+                    "factor_id": "factor-1",
+                    "portfolio_validity": "FAIL",
+                    "decision": "PORTFOLIO_FAIL",
+                    "cost_coverage": 0.93,
+                    "trusted_cost_coverage": 0.12,
+                    "reconstructed_proxy_cost_coverage": 0.81,
+                    "stale_cost_rate": 0.04,
+                    "pbo": 0.25,
+                    "dsr_probability": 0.62,
+                    "created_at": created_at,
+                }
+            ]
+        ),
+        lake / "gold" / "factor_portfolio_validation",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "evidence_id": "audit-low-vol",
+                    "audit_version": "Audit v2.2",
+                    "factor_id": "low_vol_20d",
+                    "signal_validity": "PASS",
+                    "portfolio_validity": "FAIL",
+                    "status": "REFERENCE_SIGNAL",
+                    "finding": "structural decomposition required",
+                    "historical_only": True,
+                    "eligible_for_promotion": False,
+                    "imported_at": created_at,
+                    "research_only": True,
+                    "live_order_effect": "none",
+                }
+            ]
+        ),
+        lake / "gold" / "factor_external_audit_evidence",
+    )
+    generation_path = lake / "gold" / "factor_research_generation.json"
+    generation_path.parent.mkdir(parents=True, exist_ok=True)
+    generation_path.write_text(
+        json.dumps(
+            {
+                "generation_id": "factor-generation-1",
+                "published_at": created_at.isoformat(),
+                "research_only": True,
+                "live_order_effect": "none",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    factor_research = bigscreen_snapshot(lake)["strategy_flow"]["factor_factory"]
+
+    assert factor_research["title"] == "Hypothesis-Driven Factor Research"
+    assert factor_research["independent_hypothesis_count"] == 1
+    assert factor_research["active_hypothesis_count"] == 1
+    assert factor_research["total_trial_count"] == 2
+    assert factor_research["confirmatory_trial_count"] == 1
+    assert factor_research["failed_trial_count"] == 1
+    assert factor_research["failed_trial_retention_pct"] == 100.0
+    assert factor_research["multiple_testing_pass_count"] == 1
+    assert factor_research["portfolio_fail_count"] == 1
+    assert factor_research["factor_fixed_effect_share"] == pytest.approx(0.5)
+    assert factor_research["residual_incremental_ic"] == pytest.approx(0.015)
+    assert factor_research["mean_pbo"] == pytest.approx(0.25)
+    assert factor_research["mean_dsr_probability"] == pytest.approx(0.62)
+    assert factor_research["minimum_point_in_time_cost_coverage"] == pytest.approx(0.93)
+    assert factor_research["minimum_trusted_cost_coverage"] == pytest.approx(0.12)
+    assert factor_research["minimum_reconstructed_proxy_cost_coverage"] == pytest.approx(
+        0.81
+    )
+    assert factor_research["maximum_stale_cost_rate"] == pytest.approx(0.04)
+    assert factor_research["portfolio_cost_gate"] == (
+        "RESEARCH_PROXY_ONLY_DEPLOYMENT_BLOCKED"
+    )
+    assert factor_research["external_audit_count"] == 1
+    assert factor_research["external_audit_evidence"][0]["eligible_for_promotion"] is False
+
+
+def test_bigscreen_factor_research_scopes_current_generation_and_hides_null_placeholders(
+    tmp_path,
+):
+    clear_bigscreen_cache()
+    lake = tmp_path / "lake"
+    created_at = datetime(2026, 7, 19, tzinfo=UTC)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "trial_id": "trial-current",
+                    "hypothesis_id": "hypothesis-current",
+                    "trial_kind": "CONFIRMATORY",
+                    "status": "COMPLETED",
+                    "decision": "REJECTED_DATA_QUALITY",
+                    "submitted_at": created_at,
+                },
+                {
+                    "trial_id": "trial-history",
+                    "hypothesis_id": "hypothesis-history",
+                    "trial_kind": "CONFIRMATORY",
+                    "status": "COMPLETED",
+                    "decision": "PAPER_CANDIDATE",
+                    "submitted_at": created_at,
+                },
+            ]
+        ),
+        lake / "gold" / "research_trial_ledger",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "trial_id": None,
+                    "factor_id": None,
+                    "joint_residual_rank_ic": None,
+                    "created_at": None,
+                },
+                {
+                    "trial_id": "trial-current",
+                    "factor_id": "factor-current",
+                    "joint_residual_rank_ic": 0.01,
+                    "created_at": created_at,
+                },
+            ]
+        ),
+        lake / "gold" / "factor_attribution",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "trial_id": None,
+                    "factor_id": None,
+                    "portfolio_validity": None,
+                    "decision": None,
+                    "created_at": None,
+                },
+                {
+                    "trial_id": "trial-current",
+                    "factor_id": "factor-current",
+                    "portfolio_validity": "INCONCLUSIVE",
+                    "decision": "INCONCLUSIVE",
+                    "created_at": created_at,
+                },
+            ]
+        ),
+        lake / "gold" / "factor_portfolio_validation",
+    )
+    generation_path = lake / "gold" / "factor_research_generation.json"
+    generation_path.parent.mkdir(parents=True, exist_ok=True)
+    generation_path.write_text(
+        json.dumps(
+            {
+                "generation_id": "factor-generation-current",
+                "trial_ids": ["trial-current"],
+                "published_at": created_at.isoformat(),
+                "research_only": True,
+                "live_order_effect": "none",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    factor_research = bigscreen_snapshot(lake)["strategy_flow"]["factor_factory"]
+
+    assert factor_research["total_trial_count"] == 2
+    assert factor_research["current_trial_count"] == 1
+    assert factor_research["current_completed_trial_count"] == 1
+    assert factor_research["current_data_quality_rejected_count"] == 1
+    assert factor_research["current_trial_decision_counts"] == {
+        "REJECTED_DATA_QUALITY": 1
+    }
+    assert factor_research["current_generation_verdict"] == "DATA_QUALITY_BLOCKED"
+    assert [row["trial_id"] for row in factor_research["trials"]] == ["trial-current"]
+    assert [row["factor_id"] for row in factor_research["attribution"]] == [
+        "factor-current"
+    ]
+    assert [row["factor_id"] for row in factor_research["portfolio_validation"]] == [
+        "factor-current"
+    ]
+
+
 def test_bigscreen_snapshot_surfaces_legacy_web_anomalies(monkeypatch, tmp_path):
     clear_bigscreen_cache()
 
@@ -2212,6 +2535,50 @@ def test_web_v2_uses_fluid_layout_and_truthful_pack_loading_state():
     assert "statusPending || generateMutation.isPending" in app_source
 
 
+def test_web_v2_factor_generation_summary_does_not_compete_with_duplicate_list():
+    strategy_flow = Path(
+        "frontend-bigscreen/src/components/StrategyFlow.tsx"
+    ).read_text(encoding="utf-8")
+    styles = Path("frontend-bigscreen/src/styles.css").read_text(encoding="utf-8")
+
+    assert 'data-testid="factor-generation-summary"' in strategy_flow
+    assert 'className="factor-generation-cell verdict"' in strategy_flow
+    assert 'className="factor-chip-grid"' not in strategy_flow
+    assert (
+        ".factor-generation-grid{display:grid;"
+        "grid-template-columns:repeat(3,minmax(0,1fr))"
+    ) in styles
+    assert ".factor-generation-cell.verdict" in styles
+    assert ".strategy-research-grid .factor-generation-note" not in styles
+
+
+def test_web_v2_ai_panel_keeps_current_legacy_stage2_outputs_visible():
+    panel = Path("frontend-bigscreen/src/components/AIResearchPanel.tsx").read_text(
+        encoding="utf-8"
+    )
+
+    assert "const factorProposals = safeRows(research.factor_proposals);" in panel
+    assert "const experimentProposals = safeRows(research.experiment_proposals);" in panel
+    assert 'usesFactorProposalFallback ? "本轮因子草案"' in panel
+    assert 'usesExperimentProposalFallback ? "验证实验草案"' in panel
+    assert 'title="因子研究草案" rows={factorProposals}' in panel
+    assert 'title="验证实验草案" rows={experimentProposals}' in panel
+    assert "function metricCount(value: unknown, fallback: number): number" in panel
+
+
+def test_web_v2_displays_bounded_ai_and_stale_dataset_counts_truthfully():
+    app_source = Path("frontend-bigscreen/src/App.tsx").read_text(encoding="utf-8")
+    panel = Path("frontend-bigscreen/src/components/AIResearchPanel.tsx").read_text(
+        encoding="utf-8"
+    )
+
+    stale_table = app_source.split('title="Stale datasets"', 1)[1].split("/>", 1)[0]
+    assert 'columns={["dataset", "status", "rows", "path", "latest_timestamp"]}' in stale_table
+    assert "freshness_status" not in stale_table
+    assert "totalCount={findingCount}" in panel
+    assert "已载入 ${rows.length} / 总计 ${resolvedTotal}" in panel
+
+
 def test_web_v2_legacy_hashes_open_ops_drilldowns():
     app_source = Path("frontend-bigscreen/src/App.tsx").read_text(encoding="utf-8")
 
@@ -2241,7 +2608,7 @@ def test_web_v2_uses_truthful_charts_and_readable_mid_width_layout():
     assert "spread-meter" in market
     assert "label: { show: false }" in costs
     assert "labelLine: { show: false }" in costs
-    assert "minmax(280px,1fr)" in styles
+    assert ".factor-generation-grid{grid-template-columns:1fr}" in styles
     assert "@media (min-width: 1101px) and (max-width: 1600px)" in styles
 
 

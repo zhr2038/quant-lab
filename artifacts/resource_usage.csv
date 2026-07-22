@@ -1,0 +1,10 @@
+surface,stage,location,cpu_limit,memory_limit_bytes,observed_peak_rss_bytes,duration_seconds,input_bytes,downloaded_bytes,cache_hit_bytes,output_bytes,status,notes
+legacy_factor_factory,heavy_compute,cloud,60%,4294967296,,,0,0,0,0,retired_scheduled_path,"Historical service limit; isolated Factor peak was not retained"
+factor_research_request,snapshot_and_sign,cloud,30%,943718400,,9,388332,0,0,0,pass,"Exact peak unavailable after oneshot exit; cgroup cap enforced"
+factor_research_worker,compute,NAS,3 CPUs,8589934592,354426880,24.88037915015593,388332,311072,77260,554306,pass,"Shared Worker and heavy-job lock"
+factor_research_import,validate_and_publish,cloud,40%,1258291200,,4.056915,554306,0,0,0,pass,"No OOM; exact peak unavailable after oneshot exit"
+alpha_factory_worker,bound_compute,NAS,3 CPUs,8589934592,1439264768,20.650072281016037,16295243,16220714,74529,2562375,pass,"Bound to exact Factor generation"
+alpha_factory_import,validate_derive_publish,cloud,40%,1258291200,,120.676632,2562375,0,0,0,pass,"No OOM; exact peak unavailable after oneshot exit"
+v5_web_refresh_before_fix,web_derived_refresh,cloud,40%,1258291200,995586048,2700,0,0,0,0,timeout,"Loaded all 190 registered datasets; swap peak 1993785344 bytes; exit 124"
+v5_web_refresh_after_fix,web_derived_refresh,cloud,40%,1258291200,1053769728,45.56,0,0,0,0,pass,"Loads 40 declared source datasets; isolated production run used zero swap"
+v5_research_refresh_after_fix,full_refresh_chain,cloud,40%,1258291200,944246784,704.4,0,0,0,0,pass,"Result success; full-chain swap peak 535240704 bytes, down 73.15%"

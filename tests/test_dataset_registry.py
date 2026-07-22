@@ -30,6 +30,34 @@ def test_dataset_registry_declares_core_ownership_and_sla():
     assert risk_permission.freshness_seconds == 90 * 60
 
 
+def test_weekly_factor_research_and_template_control_freshness_contracts():
+    weekly = 8 * 24 * 60 * 60
+    for dataset_name in (
+        "factor_definition",
+        "factor_value",
+        "factor_evidence",
+        "factor_candidate",
+        "factor_correlation_daily",
+        "factor_attribution",
+        "factor_portfolio_validation",
+        "research_hypothesis_registry",
+        "research_trial_ledger",
+    ):
+        spec = get_dataset_spec(dataset_name)
+        assert spec is not None
+        assert spec.freshness_seconds == weekly
+
+    template_registry = get_dataset_spec("alpha_factory_template_registry")
+    assert template_registry is not None
+    assert template_registry.freshness_seconds is None
+    assert "freshness" not in template_registry.quality_rules
+
+    current_proposals = get_dataset_spec("paper_strategy_proposals_current")
+    assert current_proposals is not None
+    assert current_proposals.freshness_seconds is None
+    assert "freshness" not in current_proposals.quality_rules
+
+
 def test_dataset_registry_exposes_paths_for_api_and_lake_health():
     paths = dataset_path_map()
 

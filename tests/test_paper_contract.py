@@ -329,7 +329,10 @@ def test_strategy_evaluation_dedupes_reimport_but_keeps_distinct_source_events()
 
 
 def test_factor_semantic_duplicates_keep_lineage_and_share_weight():
-    specs = discover_factor_specs(["close_return_24"])
+    specs = discover_factor_specs(
+        ["close_return_24"],
+        include_legacy_enumeration=True,
+    )
     by_id = {spec.factor_id: spec for spec in specs}
 
     assert by_id["core.close_return_24"].canonical_factor_id == (
@@ -337,6 +340,13 @@ def test_factor_semantic_duplicates_keep_lineage_and_share_weight():
     )
     assert by_id["auto.single.close_return_24"].duplicate_of == "core.close_return_24"
     assert by_id["core.close_return_24"].effective_independence_weight == 0.5
+
+
+def test_factor_discovery_does_not_enumerate_single_features_by_default():
+    specs = discover_factor_specs(["close_return_24", "unregistered_feature"])
+
+    assert "core.close_return_24" in {spec.factor_id for spec in specs}
+    assert not any(spec.factor_id.startswith("auto.single.") for spec in specs)
 
 
 def test_strategy_dimensional_cost_trust_blocks_missing_conditions():

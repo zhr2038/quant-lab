@@ -398,83 +398,82 @@ function drilldownContent(view: ViewKey, data: BigscreenSnapshot) {
     const alphaFactory = safeRows(data.strategy_flow.alpha_factory);
     const riskOn = safeRows(data.strategy_flow.risk_on_multi_buy);
     const factorFactory = (data.strategy_flow.factor_factory ?? {}) as Record<string, unknown>;
-    const factorPaper = safeRows(factorFactory.paper_ready_candidates);
-    const factorTop = safeRows(factorFactory.top_candidates);
-    const factorRows = factorPaper.length ? factorPaper : factorTop;
-    const factorPaperQueue = safeRows(factorFactory.paper_review_queue);
-    const factorDedupe = safeRows(factorFactory.dedupe_decisions);
-    const factorLeaderboard = safeRows(factorFactory.family_leaderboard);
-    const compositeCandidates = safeRows(factorFactory.composite_candidates);
-    const regimeEffectiveness = safeRows(factorFactory.regime_effectiveness);
-    const bridgeCandidates = safeRows(factorFactory.strategy_bridge_candidates);
+    const hypotheses = safeRows(factorFactory.hypotheses);
+    const trials = safeRows(factorFactory.trials);
+    const attribution = safeRows(factorFactory.attribution);
+    const portfolioValidation = safeRows(factorFactory.portfolio_validation);
+    const retirement = safeRows(factorFactory.retirement);
+    const externalAudit = safeRows(factorFactory.external_audit_evidence);
+    const generation = (factorFactory.generation ?? {}) as Record<string, unknown>;
+    const nasTask = (factorFactory.nas_task ?? {}) as Record<string, unknown>;
     return {
       title: "策略驾驶舱",
-      subtitle: "聚合 advisory、Alpha Factory、Factor Factory、risk-on multi-buy 和研究组合；全部为 read-only。",
+      subtitle: "聚合假设驱动研究、归因、现货组合验证、Paper 生命周期和 advisory；全部为 read-only。",
       blocks: (
         <>
           <section className="factor-factory-drawer">
             <div>
-              <h3><Sparkles size={17} /> Factor Factory</h3>
-              <p>自动发现与测试因子，只做研究展示；PAPER_READY 仅代表 paper review，不代表 live eligibility。</p>
+              <h3><Sparkles size={17} /> Hypothesis-Driven Factor Research</h3>
+              <p>只展示预登记假设、不可删除试验、重叠感知统计、归因和现货组合结果；候选数量不作为成功指标。</p>
             </div>
             <KeyValueGrid
               data={{
                 live_order_effect: factorFactory.live_order_effect,
-                candidate_count: factorFactory.candidate_count,
-                paper_ready_count: factorFactory.paper_ready_count,
-                high_correlation_pair_count: factorFactory.high_correlation_pair_count,
-                paper_review_queue_count: factorPaperQueue.length,
-                dedupe_decision_count: factorDedupe.length,
-                composite_candidate_count: compositeCandidates.length,
-                bridge_candidate_count: bridgeCandidates.length,
-                latest_candidate_created_at: factorFactory.latest_candidate_created_at
+                generation_id: generation.generation_id,
+                generation_published_at: generation.published_at,
+                nas_task_state: nasTask.state,
+                independent_hypothesis_count: factorFactory.independent_hypothesis_count,
+                active_hypothesis_count: factorFactory.active_hypothesis_count,
+                trial_budget_usage_pct: factorFactory.trial_budget_usage_pct,
+                total_trial_count: factorFactory.total_trial_count,
+                confirmatory_trial_count: factorFactory.confirmatory_trial_count,
+                failed_trial_retention_pct: factorFactory.failed_trial_retention_pct,
+                multiple_testing_pass_count: factorFactory.multiple_testing_pass_count,
+                signal_valid_count: factorFactory.signal_valid_count,
+                portfolio_fail_count: factorFactory.portfolio_fail_count,
+                paper_candidate_count: factorFactory.paper_candidate_count,
+                data_blocked_count: factorFactory.data_blocked_count,
+                portfolio_cost_gate: factorFactory.portfolio_cost_gate,
+                minimum_point_in_time_cost_coverage: factorFactory.minimum_point_in_time_cost_coverage,
+                minimum_trusted_cost_coverage: factorFactory.minimum_trusted_cost_coverage,
+                minimum_reconstructed_proxy_cost_coverage: factorFactory.minimum_reconstructed_proxy_cost_coverage,
+                historical_audit_evidence_count: factorFactory.external_audit_count,
+                factor_fixed_effect_share: factorFactory.factor_fixed_effect_share,
+                residual_incremental_ic: factorFactory.residual_incremental_ic,
+                mean_pbo: factorFactory.mean_pbo,
+                mean_dsr_probability: factorFactory.mean_dsr_probability
               }}
             />
           </section>
           <MiniTable
-            title="Factor paper review queue"
-            rows={factorPaperQueue}
-            columns={["factor_id", "factor_family", "candidate_state", "best_horizon_bars", "best_rank_ic_mean", "best_rank_ic_tstat", "best_long_short_mean_bps", "sample_count", "recommendation"]}
+            title="Research hypotheses"
+            rows={hypotheses}
+            columns={["hypothesis_id", "hypothesis_version", "factor_family", "status", "variant_budget", "available_data_confirmed", "updated_at"]}
           />
           <MiniTable
-            title="Factor dedupe decisions"
-            rows={factorDedupe}
-            columns={["factor_id", "correlation_cluster_id", "leader_factor_id", "dedupe_decision", "dedupe_reason", "cluster_size"]}
+            title="Research trial ledger"
+            rows={trials}
+            columns={["trial_id", "hypothesis_id", "trial_kind", "status", "decision", "counts_toward_multiple_testing", "finished_at"]}
           />
           <MiniTable
-            title="Factor family leaderboard"
-            rows={factorLeaderboard}
-            columns={["factor_family", "leader_factor_id", "leader_candidate_state", "factor_count", "paper_ready_count", "leader_best_rank_ic_tstat", "leader_best_long_short_mean_bps"]}
+            title="Factor attribution"
+            rows={attribution}
+            columns={["factor_id", "horizon_bars", "raw_rank_ic", "symbol_fixed_effect_null_ic", "joint_residual_rank_ic", "attribution_type", "max_symbol_contribution_share"]}
           />
           <MiniTable
-            title="Composite factor candidates"
-            rows={compositeCandidates}
-            columns={["composite_factor_id", "factor_terms", "available_term_count", "max_terms", "interpretable_only", "missing_terms", "recommendation"]}
+            title="Long-only spot portfolio validation"
+            rows={portfolioValidation}
+            columns={["factor_id", "horizon_bars", "net_return", "cost_coverage", "trusted_cost_coverage", "reconstructed_proxy_cost_coverage", "portfolio_validity", "decision", "pbo", "dsr_probability"]}
           />
           <MiniTable
-            title="Factor regime effectiveness"
-            rows={regimeEffectiveness}
-            columns={["factor_id", "regime", "horizon", "rank_ic", "long_short_bps", "win_rate", "sample_count", "recommendation"]}
+            title="Factor retirement registry"
+            rows={retirement}
+            columns={["factor_id", "factor_family", "status", "enabled", "retirement_reason", "recorded_at"]}
           />
           <MiniTable
-            title="Strategy bridge candidates"
-            rows={bridgeCandidates}
-            columns={["factor_id", "symbol", "regime", "horizon", "bridge_candidate_id", "eligible_for_alpha_factory", "recommended_action", "blocking_reasons", "live_order_effect"]}
-          />
-          <MiniTable
-            title="Factor Factory candidates"
-            rows={factorRows}
-            columns={["factor_id", "factor_family", "candidate_state", "best_horizon_bars", "best_score", "best_rank_ic_mean", "best_long_short_mean_bps", "recommended_action"]}
-          />
-          <MiniTable
-            title="Factor evidence by horizon"
-            rows={safeRows(factorFactory.evidence_by_horizon)}
-            columns={["horizon_bars", "factor_count", "paper_ready_count", "avg_score", "avg_rank_ic_mean", "avg_long_short_mean_bps"]}
-          />
-          <MiniTable
-            title="High correlation factor pairs"
-            rows={safeRows(factorFactory.high_correlation_pairs)}
-            columns={["factor_id_left", "factor_id_right", "correlation", "sample_count", "timeframe"]}
+            title="Historical external audit evidence"
+            rows={externalAudit}
+            columns={["audit_version", "factor_id", "signal_validity", "portfolio_validity", "status", "finding"]}
           />
           <MiniTable title="策略候选（只读）" rows={dedupeRowsByKeys(safeRows(data.strategy_flow.top_live_candidates).concat(candidates), ["symbol", "horizon_hours", "recommended_mode", "decision"]).slice(0, 8)} columns={["strategy_candidate", "symbol", "recommended_mode", "decision", "avg_net_bps", "p25_net_bps"]} />
           <MiniTable title="Alpha Factory" rows={alphaFactory} columns={["strategy_candidate", "promotion_state", "recommended_mode", "alpha_factory_score", "horizon_hours"]} />
@@ -489,7 +488,7 @@ function drilldownContent(view: ViewKey, data: BigscreenSnapshot) {
       subtitle: "市场状态、OKX 采集器、stale/missing datasets 与 file-index 状态。",
       blocks: (
         <>
-          <MiniTable title="Stale datasets" rows={safeRows(data.data_health.stale_datasets)} columns={["dataset", "freshness_status", "rows", "path", "latest_timestamp"]} emptyLabel="无过期或缺失数据集" />
+          <MiniTable title="Stale datasets" rows={safeRows(data.data_health.stale_datasets)} columns={["dataset", "status", "rows", "path", "latest_timestamp"]} emptyLabel="无过期或缺失数据集" />
           <MiniTable title="Collectors" rows={safeRows(data.collectors.collectors)} columns={["collector", "status", "success_count", "latest_success_ts", "lag"]} />
           <MiniTable title="Latest per symbol（当前矩阵优先）" rows={safeRows(data.data_health.latest_per_symbol)} columns={["symbol", "timeframe", "latest_ts", "rows"]} />
         </>
@@ -686,7 +685,7 @@ function ExpertPackControls({ exports }: { exports: Record<string, unknown> }) {
         <div className="export-warning">
           {status?.network_notice || "下载需要连接家庭网络或 VPN；文件存储在 NAS。"}
           {status?.nas_center_url ? (
-            <> <a href={status.nas_center_url} target="_blank" rel="noreferrer">打开 NAS 专家包中心</a></>
+            <> <a href={status.nas_center_url} target="_blank" rel="noreferrer">打开 NAS 专家包中心（需登录）</a></>
           ) : null}
         </div>
       ) : null}

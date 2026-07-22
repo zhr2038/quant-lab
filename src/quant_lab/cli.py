@@ -16,6 +16,7 @@ from quant_lab.data.file_index import build_lake_file_index
 from quant_lab.data.lake import (
     compact_parquet_dataset,
     compact_parquet_directory_files,
+    read_parquet_dataset,
     repair_parquet_partition_values,
 )
 from quant_lab.e2e import run_v5_contract_e2e
@@ -35,6 +36,7 @@ from quant_lab.ingest.okx_public import (
     MARKET_BAR_DATASET,
     OKXPublicClient,
     backfill_expanded_usdt_spot_market_bars,
+    backfill_factor_research_market_history,
     normalize_okx_candles_to_market_bars,
     publish_market_bars_to_lake,
 )
@@ -80,6 +82,13 @@ from quant_lab.research.entry_quality import (
 from quant_lab.research.expanded_universe import (
     build_and_publish_expanded_crypto_universe_shadow,
 )
+from quant_lab.research.factor_research.registry import (
+    EXECUTABLE_HYPOTHESIS_STATUSES,
+    RESEARCH_HYPOTHESIS_REGISTRY_DATASET,
+    factor_research_pre_window_bars,
+    hypotheses_from_registry,
+    prepare_factor_research_control_state,
+)
 from quant_lab.research.paper_promotion import build_and_publish_paper_strategy_pipeline
 from quant_lab.research.paper_tracking import build_and_publish_paper_strategy_tracking
 from quant_lab.research.portfolio import build_and_publish_research_portfolio_status
@@ -104,6 +113,7 @@ from quant_lab.research_plane.importer import (
 from quant_lab.research_plane.queue import (
     create_alpha_factory_task,
     create_entry_quality_history_task,
+    create_factor_research_task,
 )
 from quant_lab.research_plane.signatures import load_public_key, load_signing_key
 from quant_lab.research_plane.snapshot_gc import (
@@ -275,6 +285,91 @@ def okx_backfill_expanded_universe(
         ),
     )
     typer.echo(result.model_dump_json(indent=2))
+
+
+@app.command("okx-backfill-factor-research-history")
+def okx_backfill_factor_research_history(
+    lake_root: Annotated[
+        Path,
+        typer.Option(
+            "--lake-root",
+            file_okay=False,
+            dir_okay=True,
+            writable=True,
+            help="quant-lab lake root to deepen with bounded public 1H history.",
+        ),
+    ],
+    as_of_date: Annotated[
+        str,
+        typer.Option("--date", help="UTC task day in YYYY-MM-DD format or auto."),
+    ] = "auto",
+    max_history_days: Annotated[
+        int, typer.Option("--max-history-days", min=30, max=730)
+    ] = 730,
+    symbols: Annotated[
+        str,
+        typer.Option("--symbols", help="Locked comma-separated research symbols."),
+    ] = "BTC-USDT,ETH-USDT,SOL-USDT,BNB-USDT",
+    bar: Annotated[str, typer.Option("--bar")] = "1H",
+    max_pages_per_symbol: Annotated[
+        int, typer.Option("--max-pages-per-symbol", min=1, max=300)
+    ] = 100,
+    limit: Annotated[int, typer.Option("--limit", min=1, max=300)] = 300,
+    minimum_coverage: Annotated[
+        float, typer.Option("--minimum-coverage", min=0.80, max=1.0)
+    ] = 0.98,
+    require_complete: Annotated[bool, typer.Option("--require-complete/--allow-incomplete")] = True,
+) -> None:
+    day = datetime.now(UTC).date() if as_of_date == "auto" else date.fromisoformat(as_of_date)
+    registry = prepare_factor_research_control_state(
+        read_parquet_dataset(lake_root / RESEARCH_HYPOTHESIS_REGISTRY_DATASET)
+    )
+    hypotheses = [
+        item
+        for item in hypotheses_from_registry(registry)
+        if item.status in EXECUTABLE_HYPOTHESIS_STATUSES
+    ]
+    if not hypotheses:
+        raise typer.BadParameter("no executable Factor Research hypotheses")
+    required_market_days = max(
+        requirement.min_history_days
+        for hypothesis in hypotheses
+        for requirement in hypothesis.data_requirements
+        if requirement.dataset_name == "silver/market_bar"
+    )
+    if max_history_days < required_market_days:
+        raise typer.BadParameter(
+            "max-history-days is shorter than the locked market history requirement"
+        )
+    max_horizon_hours = max(
+        horizon for hypothesis in hypotheses for horizon in hypothesis.expected_horizons
+    )
+    pre_window_hours = factor_research_pre_window_bars(hypotheses)
+    latest_complete_end = day - timedelta(days=(max_horizon_hours + 23) // 24 + 1)
+    research_start = latest_complete_end - timedelta(days=max_history_days - 1)
+    start_at = datetime.combine(research_start, datetime.min.time(), tzinfo=UTC) - timedelta(
+        hours=pre_window_hours
+    )
+    # The queue's conservative end-date rule guarantees all required labels
+    # finish before this as-of-day boundary.
+    end_at = datetime.combine(day, datetime.min.time(), tzinfo=UTC)
+    result = run_with_job_metrics(
+        lake_root=lake_root,
+        job_name="okx-backfill-factor-research-history",
+        func=lambda: backfill_factor_research_market_history(
+            lake_root=lake_root,
+            start_at=start_at,
+            end_at=end_at,
+            symbols=[item.strip() for item in symbols.split(",") if item.strip()],
+            bar=bar,
+            max_pages_per_symbol=max_pages_per_symbol,
+            limit=limit,
+            minimum_coverage=minimum_coverage,
+        ),
+    )
+    typer.echo(result.model_dump_json(indent=2))
+    if require_complete and not result.complete:
+        raise typer.Exit(code=2)
 
 
 @app.command("okx-ws-run")
@@ -1616,6 +1711,13 @@ def build_factor_factory_command(
     min_samples: Annotated[int, typer.Option("--min-samples", min=1)] = 100,
     top_quantile: Annotated[float, typer.Option("--top-quantile", min=0.01, max=0.50)] = 0.2,
     cost_quantile: Annotated[str, typer.Option("--cost-quantile")] = "p75",
+    legacy_enumeration: Annotated[
+        bool,
+        typer.Option(
+            "--legacy-enumeration/--no-legacy-enumeration",
+            help="Explicitly restore retired auto.single.* feature enumeration for audit runs.",
+        ),
+    ] = False,
     dry_run: Annotated[bool, typer.Option("--dry-run/--apply")] = False,
 ) -> None:
     parsed_horizons = tuple(int(item.strip()) for item in horizon_bars.split(",") if item.strip())
@@ -1635,6 +1737,7 @@ def build_factor_factory_command(
             min_samples=min_samples,
             top_quantile=top_quantile,
             cost_quantile=cost_quantile,
+            legacy_enumeration=legacy_enumeration,
             dry_run=dry_run,
         ),
     )
@@ -1804,6 +1907,59 @@ def request_alpha_factory_command(
         as_of_date=day,
         lookback_days=lookback_days,
         max_candidates=max_candidates,
+        signing_key=load_signing_key(signing_key_path),
+        signature_key_id=key_id,
+        quant_lab_commit=quant_lab_commit,
+    )
+    typer.echo(
+        json.dumps(
+            {
+                "task": task.model_dump(mode="json"),
+                "status": status.model_dump(mode="json"),
+            },
+            ensure_ascii=True,
+            sort_keys=True,
+            indent=2,
+        )
+    )
+
+
+@app.command("request-factor-research")
+def request_factor_research_command(
+    lake_root: Annotated[Path, typer.Option("--lake-root", file_okay=False, dir_okay=True)],
+    queue_root: Annotated[Path, typer.Option("--queue-root", file_okay=False, dir_okay=True)],
+    signing_key_path: Annotated[
+        Path,
+        typer.Option(
+            "--signing-key-path",
+            envvar="QUANT_LAB_RESEARCH_TASK_PRIVATE_KEY_PATH",
+            exists=True,
+            dir_okay=False,
+        ),
+    ],
+    key_id: Annotated[str, typer.Option("--key-id")],
+    quant_lab_commit: Annotated[str, typer.Option("--quant-lab-commit")],
+    as_of_date: Annotated[str, typer.Option("--date")] = "auto",
+    start_date: Annotated[str, typer.Option("--start-date")] = "auto",
+    end_date: Annotated[str, typer.Option("--end-date")] = "auto",
+    max_history_days: Annotated[
+        int, typer.Option("--max-history-days", min=30, max=730)
+    ] = 730,
+) -> None:
+    if not _enabled_environment("QUANT_LAB_NAS_RESEARCH_ENABLED"):
+        raise typer.BadParameter("QUANT_LAB_NAS_RESEARCH_ENABLED must be 1")
+    if not _enabled_environment("QUANT_LAB_NAS_FACTOR_RESEARCH_ENABLED"):
+        raise typer.BadParameter("QUANT_LAB_NAS_FACTOR_RESEARCH_ENABLED must be 1")
+    day = datetime.now(UTC).date() if as_of_date == "auto" else date.fromisoformat(as_of_date)
+    start_day = None if start_date == "auto" else date.fromisoformat(start_date)
+    end_day = None if end_date == "auto" else date.fromisoformat(end_date)
+    task, status = create_factor_research_task(
+        lake_root,
+        queue_root,
+        as_of_date=day,
+        start_date=start_day,
+        end_date=end_day,
+        max_history_days=max_history_days,
         signing_key=load_signing_key(signing_key_path),
         signature_key_id=key_id,
         quant_lab_commit=quant_lab_commit,

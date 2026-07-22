@@ -19,6 +19,7 @@ import httpx
 from pydantic import BaseModel, ValidationError
 
 from quant_lab.ai_research.contracts import (
+    AI_PROMPT_VERSION,
     AIResearchResult,
     AIResearchTask,
     Stage1Diagnosis,
@@ -195,11 +196,11 @@ def process_claimed_task(config: Config, task_id: str) -> None:
             shutil.rmtree(archive_dir)
         os.replace(local_dir, archive_dir)
         LOG.info(
-            "task_completed task_id=%s stage2=%s factors=%s experiments=%s",
+            "task_completed task_id=%s stage2=%s hypotheses=%s attribution_experiments=%s",
             task_id,
             result.proposals is not None,
-            len(result.proposals.factor_proposals) if result.proposals else 0,
-            len(result.proposals.experiment_proposals) if result.proposals else 0,
+            len(result.proposals.research_hypothesis_drafts) if result.proposals else 0,
+            len(result.proposals.attribution_experiments) if result.proposals else 0,
         )
     except Exception as exc:
         LOG.exception("task_failed task_id=%s", task_id)
@@ -224,6 +225,11 @@ def process_claimed_task(config: Config, task_id: str) -> None:
 
 
 def run_research(config: Config, task: AIResearchTask) -> AIResearchResult:
+    if task.prompt_version != AI_PROMPT_VERSION:
+        raise ValueError(
+            "AI research task prompt version is not executable by this worker: "
+            f"{task.prompt_version}"
+        )
     started = datetime.now(UTC)
     usage: dict[str, Any] = {}
     warnings: list[str] = []
@@ -280,7 +286,7 @@ def run_research(config: Config, task: AIResearchTask) -> AIResearchResult:
             "task_id": task.task_id,
             "source_pack_sha256": task.source_pack_sha256,
             "packet_sha256": task.packet_sha256,
-            "allowed_factor_templates": task.allowed_factor_templates,
+            "allowed_hypothesis_families": task.allowed_hypothesis_families,
             "prohibited_actions": task.prohibited_actions,
             "diagnosis": diagnosis.model_dump(mode="json"),
             "routed_sections": routed_sections,
@@ -294,7 +300,7 @@ def run_research(config: Config, task: AIResearchTask) -> AIResearchResult:
             system_prompt=stage2_system_prompt(),
             user_payload=stage2_payload,
             output_model=Stage2ProposalSet,
-            schema_name="quant_lab_ai_stage2_proposals",
+            schema_name="quant_lab_ai_stage2_hypothesis_drafts",
             max_output_tokens=config.max_output_tokens_stage2,
             stage="stage2",
         )

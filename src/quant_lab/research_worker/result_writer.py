@@ -18,15 +18,22 @@ from quant_lab.research.entry_quality import (
     EntryQualityHistoryArtifacts,
     EntryQualityHistoryOutputSpec,
 )
+from quant_lab.research.factor_research.outputs import FACTOR_RESEARCH_OUTPUT_SPECS
 from quant_lab.research_plane.contracts import (
     ALPHA_FACTORY_RECEIPT_SCHEMA,
     ALPHA_FACTORY_RESULT_SCHEMA,
+    FACTOR_RESEARCH_RECEIPT_SCHEMA,
+    FACTOR_RESEARCH_RESULT_SCHEMA,
     RESEARCH_RECEIPT_SCHEMA,
     RESEARCH_RESULT_SCHEMA,
     AlphaFactoryResultManifest,
     AlphaFactorySnapshotManifest,
     AlphaFactoryTask,
     AlphaFactoryWorkerReceipt,
+    FactorResearchResultManifest,
+    FactorResearchSnapshotManifest,
+    FactorResearchTask,
+    FactorResearchWorkerReceipt,
     ResearchOutputDataset,
     ResearchOutputFile,
     ResearchResultManifest,
@@ -38,12 +45,194 @@ from quant_lab.research_plane.result import (
     schema_fingerprint,
     validate_alpha_factory_result_bundle,
     validate_entry_quality_history_result_bundle,
+    validate_factor_research_result_bundle,
 )
 from quant_lab.research_plane.signatures import (
     sha256_file,
     sign_model,
 )
 from quant_lab.research_worker.alpha_factory import AlphaFactoryWorkerComputeResult
+from quant_lab.research_worker.factor_research import FactorResearchComputeArtifacts
+
+
+def write_factor_research_result_bundle(
+    destination_root: str | Path,
+    *,
+    task: FactorResearchTask,
+    snapshot: FactorResearchSnapshotManifest,
+    compute: FactorResearchComputeArtifacts,
+    worker_id: str,
+    worker_commit: str,
+    worker_key_id: str,
+    worker_signing_key: Ed25519PrivateKey,
+    claimed_at: datetime,
+    input_bytes: int,
+    cache_hit_bytes: int,
+    downloaded_bytes: int,
+    peak_rss_bytes: int,
+    compute_duration_seconds: float,
+    max_result_bytes: int,
+) -> tuple[Path, FactorResearchResultManifest, FactorResearchWorkerReceipt]:
+    root = Path(destination_root)
+    root.mkdir(parents=True, exist_ok=True)
+    final = root / task.task_id
+    if final.exists():
+        manifest = FactorResearchResultManifest.model_validate_json(
+            (final / "manifest.json").read_text("utf-8")
+        )
+        receipt = FactorResearchWorkerReceipt.model_validate_json(
+            (final / "receipt.json").read_text("utf-8")
+        )
+        validate_factor_research_result_bundle(
+            final,
+            manifest=manifest,
+            receipt=receipt,
+            task=task,
+            snapshot=snapshot,
+            worker_public_key=worker_signing_key.public_key(),
+            expected_worker_key_id=worker_key_id,
+            max_result_bytes=max_result_bytes,
+        )
+        return final, manifest, receipt
+
+    temporary = root / f".{task.task_id}.{uuid.uuid4().hex}.partial"
+    outputs_root = temporary / "outputs"
+    reports_root = temporary / "reports"
+    outputs_root.mkdir(parents=True, exist_ok=False)
+    reports_root.mkdir(parents=True, exist_ok=False)
+    output_rows: list[ResearchOutputDataset] = []
+    report_rows: list[ResearchOutputFile] = []
+    try:
+        frames = compute.frames_by_dataset()
+        for spec in FACTOR_RESEARCH_OUTPUT_SPECS:
+            frame = frames[spec.dataset_name]
+            if set(frame.columns) != set(spec.schema):
+                raise ValueError(
+                    f"factor_research_output_schema_columns_mismatch:{spec.dataset_name}"
+                )
+            normalized = frame.select(list(spec.schema)).cast(spec.schema, strict=True)
+            path = outputs_root / f"{spec.dataset_name}.parquet"
+            normalized.write_parquet(path, compression="zstd")
+            output_rows.append(
+                ResearchOutputDataset(
+                    dataset_name=spec.dataset_name,
+                    relative_path=f"outputs/{path.name}",
+                    schema_fingerprint=schema_fingerprint(normalized.schema),
+                    sha256=sha256_file(path),
+                    row_count=normalized.height,
+                    size_bytes=path.stat().st_size,
+                    publish_mode=spec.publish_mode,
+                    primary_keys=list(spec.primary_keys),
+                    window_keys=list(spec.window_keys),
+                    empty_result_semantics=spec.empty_result_semantics,
+                )
+            )
+        report_payloads = {
+            "factor_research_worker_report.json": compute.worker_report,
+            "factor_research_anti_leakage.json": compute.anti_leakage,
+        }
+        for name, payload in report_payloads.items():
+            path = reports_root / name
+            path.write_text(
+                json.dumps(payload, ensure_ascii=True, sort_keys=True, indent=2),
+                encoding="utf-8",
+            )
+            report_rows.append(
+                ResearchOutputFile(
+                    relative_path=f"reports/{name}",
+                    sha256=sha256_file(path),
+                    size_bytes=path.stat().st_size,
+                )
+            )
+        completed_at = datetime.now(UTC)
+        output_bytes = sum(item.size_bytes for item in output_rows) + sum(
+            item.size_bytes for item in report_rows
+        )
+        if output_bytes > max_result_bytes:
+            raise RuntimeError("factor_research_result_size_limit_exceeded")
+        provisional = FactorResearchResultManifest(
+            schema_version=FACTOR_RESEARCH_RESULT_SCHEMA,
+            task_id=task.task_id,
+            snapshot_id=snapshot.snapshot_id,
+            snapshot_manifest_sha256=snapshot.manifest_sha256,
+            selected_v5_bundle_id=task.selected_v5_bundle_id,
+            quant_lab_commit=task.quant_lab_commit,
+            worker_commit=worker_commit,
+            factor_research_schema_version=task.factor_research_schema_version,
+            hypothesis_registry_digest=task.hypothesis_registry_digest,
+            trial_ledger_digest=task.trial_ledger_digest,
+            source_input_digest=task.source_input_digest,
+            as_of_date=task.as_of_date,
+            start_date=task.start_date,
+            end_date=task.end_date,
+            max_history_days=task.max_history_days,
+            hypothesis_ids=task.hypothesis_ids,
+            trial_ids=task.trial_ids,
+            test_count=task.test_count,
+            multiple_testing_family="factor_research_v2.global_confirmatory",
+            generation_id=f"factor-research-{task.task_id.rsplit('-', 1)[-1]}",
+            generated_at=compute.generated_at,
+            completed_at=completed_at,
+            outputs=output_rows,
+            reports=report_rows,
+            anti_leakage_status="PASS",
+            anti_leakage_violation_count=0,
+            warnings=list(compute.warnings),
+            input_bytes=input_bytes,
+            cache_hit_bytes=cache_hit_bytes,
+            downloaded_bytes=downloaded_bytes,
+            output_bytes=output_bytes,
+            peak_rss_bytes=peak_rss_bytes,
+            compute_duration_seconds=compute_duration_seconds,
+            worker_key_id=worker_key_id,
+            signature="pending",
+        )
+        manifest = provisional.model_copy(
+            update={"signature": sign_model(provisional, worker_signing_key)}
+        )
+        (temporary / "manifest.json").write_text(
+            manifest.model_dump_json(indent=2), encoding="utf-8"
+        )
+        receipt_provisional = FactorResearchWorkerReceipt(
+            schema_version=FACTOR_RESEARCH_RECEIPT_SCHEMA,
+            task_id=task.task_id,
+            snapshot_id=snapshot.snapshot_id,
+            worker_id=worker_id,
+            worker_commit=worker_commit,
+            state="completed",
+            claimed_at=claimed_at,
+            completed_at=completed_at,
+            result_manifest_sha256=sha256_file(temporary / "manifest.json"),
+            output_rows=sum(item.row_count for item in output_rows),
+            input_bytes=input_bytes,
+            downloaded_bytes=downloaded_bytes,
+            cache_hit_bytes=cache_hit_bytes,
+            anti_leakage_status="PASS",
+            anti_leakage_violation_count=0,
+            worker_key_id=worker_key_id,
+            signature="pending",
+        )
+        receipt = receipt_provisional.model_copy(
+            update={"signature": sign_model(receipt_provisional, worker_signing_key)}
+        )
+        (temporary / "receipt.json").write_text(
+            receipt.model_dump_json(indent=2), encoding="utf-8"
+        )
+        validate_factor_research_result_bundle(
+            temporary,
+            manifest=manifest,
+            receipt=receipt,
+            task=task,
+            snapshot=snapshot,
+            worker_public_key=worker_signing_key.public_key(),
+            expected_worker_key_id=worker_key_id,
+            max_result_bytes=max_result_bytes,
+        )
+        os.replace(temporary, final)
+        return final, manifest, receipt
+    except Exception:
+        shutil.rmtree(temporary, ignore_errors=True)
+        raise
 
 
 def write_alpha_factory_result_bundle(
@@ -155,6 +344,14 @@ def write_alpha_factory_result_bundle(
             alpha_factory_schema_version=task.alpha_factory_schema_version,
             second_stage_schema_version=task.second_stage_schema_version,
             template_registry_digest=task.template_registry_digest,
+            factor_generation_id=task.factor_generation_id,
+            factor_generation_digest=task.factor_generation_digest,
+            factor_generation_as_of_date=task.factor_generation_as_of_date,
+            factor_generation_published_at=task.factor_generation_published_at,
+            hypothesis_registry_digest=task.hypothesis_registry_digest,
+            trial_ledger_digest=task.trial_ledger_digest,
+            factor_generation_fresh=task.factor_generation_fresh,
+            factor_generation_hypothesis_ids=task.factor_generation_hypothesis_ids,
             as_of_date=task.as_of_date,
             lookback_days=task.lookback_days,
             max_candidates=task.max_candidates,

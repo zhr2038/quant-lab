@@ -20,7 +20,11 @@ from quant_lab.factors.registry import (
     discover_factor_specs,
 )
 from quant_lab.research.evidence import DEFAULT_RESEARCH_COST_BPS
-from quant_lab.research.ic import compute_ic, compute_rank_ic
+from quant_lab.research.factor_research.statistics import (
+    adjust_multiple_testing,
+    compute_overlap_aware_significance,
+)
+from quant_lab.research.ic import compute_ic, compute_period_ic_values, compute_rank_ic
 from quant_lab.research.labels import build_forward_return_labels, validate_no_label_lookahead
 from quant_lab.strategy_telemetry.sanitize import safe_json_dumps
 
@@ -135,6 +139,26 @@ FACTOR_EVIDENCE_SCHEMA: dict[str, Any] = {
     "ic_tstat": pl.Float64,
     "rank_ic_mean": pl.Float64,
     "rank_ic_tstat": pl.Float64,
+    "naive_rank_ic_tstat": pl.Float64,
+    "hac_rank_ic_tstat_horizon_half": pl.Float64,
+    "hac_rank_ic_tstat_horizon": pl.Float64,
+    "hac_rank_ic_tstat_horizon_double": pl.Float64,
+    "hac_rank_ic_tstat_auto": pl.Float64,
+    "hac_bandwidth_horizon_half": pl.Int64,
+    "hac_bandwidth_horizon": pl.Int64,
+    "hac_bandwidth_horizon_double": pl.Int64,
+    "hac_bandwidth_auto": pl.Int64,
+    "non_overlapping_rank_ic_mean": pl.Float64,
+    "non_overlapping_rank_ic_tstat": pl.Float64,
+    "non_overlapping_period_count": pl.Int64,
+    "block_bootstrap_rank_ic_ci_low": pl.Float64,
+    "block_bootstrap_rank_ic_ci_high": pl.Float64,
+    "permutation_empirical_pvalue": pl.Float64,
+    "raw_pvalue": pl.Float64,
+    "holm_adjusted_pvalue": pl.Float64,
+    "bh_fdr_qvalue": pl.Float64,
+    "multiple_testing_count": pl.Int64,
+    "statistical_method": pl.Utf8,
     "ic_period_count": pl.Int64,
     "top_quantile": pl.Float64,
     "long_only_mean_bps": pl.Float64,
@@ -215,6 +239,7 @@ class FactorPublishResult(BaseModel):
     published_value_rows: int = Field(ge=0)
     factor_ids: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
+    legacy_enumeration_enabled: bool = False
 
 
 class FactorEvidenceBuildResult(BaseModel):
@@ -242,6 +267,7 @@ class FactorFactoryBuildResult(BaseModel):
     correlation_rows: int = Field(ge=0)
     decision_counts: dict[str, int] = Field(default_factory=dict)
     warnings: list[str] = Field(default_factory=list)
+    legacy_enumeration_enabled: bool = False
     diagnostic_only: bool = True
     live_order_effect: str = "none_read_only_research"
 
@@ -279,6 +305,7 @@ def build_and_publish_factor_factory(
     min_samples: int = 100,
     top_quantile: float = 0.2,
     cost_quantile: str = "p75",
+    legacy_enumeration: bool = False,
     dry_run: bool = False,
 ) -> FactorFactoryBuildResult:
     if dry_run:
@@ -295,6 +322,7 @@ def build_and_publish_factor_factory(
             min_samples=min_samples,
             top_quantile=top_quantile,
             cost_quantile=cost_quantile,
+            legacy_enumeration=legacy_enumeration,
         )
     published = publish_factor_values(
         lake_root,
@@ -303,6 +331,7 @@ def build_and_publish_factor_factory(
         factor_version=factor_version,
         timeframe=timeframe,
         max_factors=max_factors,
+        legacy_enumeration=legacy_enumeration,
         dry_run=dry_run,
     )
     evidence = evaluate_and_publish_factor_evidence(
@@ -315,6 +344,7 @@ def build_and_publish_factor_factory(
         min_samples=min_samples,
         top_quantile=top_quantile,
         cost_quantile=cost_quantile,
+        legacy_enumeration=legacy_enumeration,
         dry_run=dry_run,
     )
     return FactorFactoryBuildResult(
@@ -328,6 +358,7 @@ def build_and_publish_factor_factory(
         correlation_rows=evidence.correlation_rows,
         decision_counts=evidence.decision_counts,
         warnings=_dedupe([*published.warnings, *evidence.warnings]),
+        legacy_enumeration_enabled=legacy_enumeration,
     )
 
 
@@ -345,6 +376,7 @@ def _build_factor_factory_dry_run(
     min_samples: int,
     top_quantile: float,
     cost_quantile: str,
+    legacy_enumeration: bool,
 ) -> FactorFactoryBuildResult:
     source_root = Path(lake_root)
     with tempfile.TemporaryDirectory(prefix="quant_lab_factor_factory_") as tmp:
@@ -366,6 +398,7 @@ def _build_factor_factory_dry_run(
             min_samples=min_samples,
             top_quantile=top_quantile,
             cost_quantile=cost_quantile,
+            legacy_enumeration=legacy_enumeration,
             dry_run=False,
         )
     return result.model_copy(
@@ -407,6 +440,7 @@ def publish_factor_values(
     factor_version: str = "v0.1",
     timeframe: str = "1H",
     max_factors: int = 200,
+    legacy_enumeration: bool = False,
     dry_run: bool = False,
 ) -> FactorPublishResult:
     root = Path(lake_root)
@@ -434,6 +468,7 @@ def publish_factor_values(
             feature_rows=0,
             published_value_rows=0,
             warnings=_dedupe(warnings),
+            legacy_enumeration_enabled=legacy_enumeration,
         )
 
     available_features = sorted(features["feature_name"].drop_nulls().unique().to_list())
@@ -444,7 +479,10 @@ def publish_factor_values(
         factor_version=factor_version,
         timeframe=timeframe,
         max_factors=max_factors,
+        include_legacy_enumeration=legacy_enumeration,
     )
+    if not legacy_enumeration:
+        warnings.append("legacy_auto_single_enumeration_disabled")
     now = datetime.now(UTC)
     definitions_rows = publish_factor_definitions(root, specs, created_at=now, dry_run=dry_run)
     values = _build_factor_value_frame(features, specs, created_at=now)
@@ -464,6 +502,7 @@ def publish_factor_values(
             published_value_rows=0,
             factor_ids=[spec.factor_id for spec in specs],
             warnings=_dedupe(warnings),
+            legacy_enumeration_enabled=legacy_enumeration,
         )
 
     if dry_run:
@@ -488,6 +527,7 @@ def publish_factor_values(
         published_value_rows=0 if dry_run else values.height,
         factor_ids=[spec.factor_id for spec in specs],
         warnings=_dedupe(warnings),
+        legacy_enumeration_enabled=legacy_enumeration,
     )
 
 
@@ -502,6 +542,7 @@ def evaluate_and_publish_factor_evidence(
     min_samples: int = 100,
     top_quantile: float = 0.2,
     cost_quantile: str = "p75",
+    legacy_enumeration: bool = False,
     dry_run: bool = False,
 ) -> FactorEvidenceBuildResult:
     if decision_delay_bars < 1:
@@ -516,6 +557,7 @@ def evaluate_and_publish_factor_evidence(
         factor_version=factor_version,
         timeframe=timeframe,
         warnings=warnings,
+        include_legacy_enumeration=legacy_enumeration,
     )
     market_bars = _load_market_bars(root, timeframe=timeframe, warnings=warnings)
     if values.is_empty() or market_bars.is_empty():
@@ -580,6 +622,7 @@ def evaluate_and_publish_factor_evidence(
                 )
             )
 
+    rows = _apply_multiple_testing(rows)
     evidence = _schema_frame(rows, FACTOR_EVIDENCE_SCHEMA)
     candidates = _candidate_frame_from_evidence(evidence, as_of_date=day, created_at=now)
     correlations = _factor_correlation_frame(
@@ -594,33 +637,20 @@ def evaluate_and_publish_factor_evidence(
         candidate_rows = read_parquet_dataset(root / FACTOR_CANDIDATE_DATASET).height
         correlation_rows = read_parquet_dataset(root / FACTOR_CORRELATION_DAILY_DATASET).height
     else:
-        evidence_rows = upsert_parquet_dataset(
+        evidence_rows = _replace_as_of_date_dataset(
             evidence,
             root / FACTOR_EVIDENCE_DATASET,
-            key_columns=[
-                "as_of_date",
-                "factor_id",
-                "factor_version",
-                "timeframe",
-                "horizon_bars",
-                "decision_delay_bars",
-            ],
+            day=day,
         )
-        candidate_rows = upsert_parquet_dataset(
+        candidate_rows = _replace_as_of_date_dataset(
             candidates,
             root / FACTOR_CANDIDATE_DATASET,
-            key_columns=["as_of_date", "factor_id", "factor_version", "timeframe"],
+            day=day,
         )
-        correlation_rows = upsert_parquet_dataset(
+        correlation_rows = _replace_as_of_date_dataset(
             correlations,
             root / FACTOR_CORRELATION_DAILY_DATASET,
-            key_columns=[
-                "as_of_date",
-                "factor_id_left",
-                "factor_id_right",
-                "factor_version",
-                "timeframe",
-            ],
+            day=day,
         )
 
     return FactorEvidenceBuildResult(
@@ -638,6 +668,7 @@ def build_and_publish_factor_candidates(
     lake_root: str | Path,
     *,
     as_of_date: str | date | None = "auto",
+    legacy_enumeration: bool = False,
     dry_run: bool = False,
 ) -> FactorEvidenceBuildResult:
     root = Path(lake_root)
@@ -645,15 +676,17 @@ def build_and_publish_factor_candidates(
     evidence = read_parquet_dataset(root / FACTOR_EVIDENCE_DATASET)
     if not evidence.is_empty() and "as_of_date" in evidence.columns:
         evidence = evidence.filter(pl.col("as_of_date") == day.isoformat())
+    if not legacy_enumeration and not evidence.is_empty() and "factor_id" in evidence.columns:
+        evidence = evidence.filter(~pl.col("factor_id").str.starts_with("auto.single."))
     now = datetime.now(UTC)
     candidates = _candidate_frame_from_evidence(evidence, as_of_date=day, created_at=now)
     if dry_run:
         candidate_rows = read_parquet_dataset(root / FACTOR_CANDIDATE_DATASET).height
     else:
-        candidate_rows = upsert_parquet_dataset(
+        candidate_rows = _replace_as_of_date_dataset(
             candidates,
             root / FACTOR_CANDIDATE_DATASET,
-            key_columns=["as_of_date", "factor_id", "factor_version", "timeframe"],
+            day=day,
         )
     return FactorEvidenceBuildResult(
         lake_root=str(root),
@@ -730,6 +763,7 @@ def _load_factor_values(
     factor_version: str,
     timeframe: str,
     warnings: list[str],
+    include_legacy_enumeration: bool = False,
 ) -> pl.DataFrame:
     df = read_parquet_dataset(root / FACTOR_VALUE_DATASET)
     if df.is_empty():
@@ -739,9 +773,36 @@ def _load_factor_values(
     if missing:
         warnings.append(f"factor_value missing columns: {','.join(missing)}")
         return pl.DataFrame()
-    return _normalize_datetime(df, "ts").filter(
+    filtered = _normalize_datetime(df, "ts").filter(
         (pl.col("factor_version") == factor_version) & (pl.col("timeframe") == timeframe)
     )
+    if not include_legacy_enumeration:
+        filtered = filtered.filter(~pl.col("factor_id").str.starts_with("auto.single."))
+    return filtered
+
+
+def _replace_as_of_date_dataset(
+    incoming: pl.DataFrame,
+    dataset_path: Path,
+    *,
+    day: date,
+) -> int:
+    existing = read_parquet_dataset(dataset_path)
+    if not existing.is_empty() and "as_of_date" not in existing.columns:
+        raise ValueError(f"{dataset_path} lacks as_of_date for bounded replacement")
+    retained = (
+        existing.filter(pl.col("as_of_date") != day.isoformat())
+        if not existing.is_empty()
+        else existing
+    )
+    if retained.is_empty():
+        combined = incoming
+    elif incoming.is_empty():
+        combined = retained
+    else:
+        combined = pl.concat([retained, incoming], how="diagonal_relaxed")
+    write_parquet_dataset(combined, dataset_path)
+    return combined.height
 
 
 def _load_market_bars(root: Path, *, timeframe: str, warnings: list[str]) -> pl.DataFrame:
@@ -1020,13 +1081,24 @@ def _factor_evidence_row(
     stats_input = valid.with_columns(pl.col("value").alias("alpha_score"))
     ic_stats = compute_ic(stats_input)
     rank_ic_stats = compute_rank_ic(stats_input)
+    rank_ic_values = compute_period_ic_values(stats_input, rank=True)
+    overlap_stats = compute_overlap_aware_significance(
+        rank_ic_values,
+        horizon=horizon_bars,
+        bootstrap_samples=500,
+        permutation_samples=500,
+        random_seed=_stable_seed(
+            str(factor_meta.get("factor_id") or "unknown"),
+            str(horizon_bars),
+        ),
+    )
     portfolio = _portfolio_stats(valid, top_quantile=top_quantile)
     decision, score, reasons, decision_warnings = _factor_decision(
         valid_sample_count=valid_rows,
         min_samples=min_samples,
         coverage=coverage,
         rank_ic_mean=rank_ic_stats.mean,
-        rank_ic_tstat=rank_ic_stats.tstat,
+        rank_ic_tstat=overlap_stats.confirmatory_hac_tstat,
         long_short_mean_bps=portfolio["long_short_mean_bps"],
         edge_cost_ratio=portfolio["edge_cost_ratio"],
     )
@@ -1049,7 +1121,27 @@ def _factor_evidence_row(
         "ic_mean": ic_stats.mean,
         "ic_tstat": ic_stats.tstat,
         "rank_ic_mean": rank_ic_stats.mean,
-        "rank_ic_tstat": rank_ic_stats.tstat,
+        "rank_ic_tstat": overlap_stats.confirmatory_hac_tstat,
+        "naive_rank_ic_tstat": rank_ic_stats.tstat,
+        "hac_rank_ic_tstat_horizon_half": overlap_stats.hac_tstat_horizon_half,
+        "hac_rank_ic_tstat_horizon": overlap_stats.hac_tstat_horizon,
+        "hac_rank_ic_tstat_horizon_double": overlap_stats.hac_tstat_horizon_double,
+        "hac_rank_ic_tstat_auto": overlap_stats.hac_tstat_auto,
+        "hac_bandwidth_horizon_half": overlap_stats.hac_bandwidth_horizon_half,
+        "hac_bandwidth_horizon": overlap_stats.hac_bandwidth_horizon,
+        "hac_bandwidth_horizon_double": overlap_stats.hac_bandwidth_horizon_double,
+        "hac_bandwidth_auto": overlap_stats.hac_bandwidth_auto,
+        "non_overlapping_rank_ic_mean": overlap_stats.non_overlapping_mean,
+        "non_overlapping_rank_ic_tstat": overlap_stats.non_overlapping_tstat,
+        "non_overlapping_period_count": overlap_stats.non_overlapping_count,
+        "block_bootstrap_rank_ic_ci_low": overlap_stats.block_bootstrap_ci_low,
+        "block_bootstrap_rank_ic_ci_high": overlap_stats.block_bootstrap_ci_high,
+        "permutation_empirical_pvalue": overlap_stats.permutation_empirical_pvalue,
+        "raw_pvalue": overlap_stats.raw_pvalue,
+        "holm_adjusted_pvalue": 1.0,
+        "bh_fdr_qvalue": 1.0,
+        "multiple_testing_count": 0,
+        "statistical_method": "newey_west_horizon_primary",
         "ic_period_count": max(ic_stats.period_count, rank_ic_stats.period_count),
         "top_quantile": top_quantile,
         **portfolio,
@@ -1160,13 +1252,11 @@ def _factor_decision(
         return "KILL", score, reasons, warnings
     if (
         coverage >= 0.80
-        and rank_ic_mean > 0.0
-        and rank_ic_tstat >= 1.0
-        and long_short_mean_bps > 0
-        and edge_cost_ratio > 1.0
+        and rank_ic_mean > 0.03
+        and rank_ic_tstat >= 2.0
     ):
-        reasons.append("positive_rank_ic_after_cost_spread")
-        return "PAPER_READY", score, reasons, warnings
+        reasons.append("development_signal_requires_confirmatory_trial")
+        return "SIGNAL_CANDIDATE", score, reasons, warnings
     if rank_ic_mean > 0.0 or long_short_mean_bps > 0:
         reasons.append("positive_but_not_paper_ready")
         return "KEEP_SHADOW", score, reasons, warnings
@@ -1283,11 +1373,31 @@ def _factor_correlation_frame(
     return _schema_frame(rows, FACTOR_CORRELATION_SCHEMA)
 
 
+def build_factor_correlation_frame(
+    values: pl.DataFrame,
+    *,
+    as_of_date: date,
+    factor_version: str,
+    timeframe: str,
+    created_at: datetime,
+) -> pl.DataFrame:
+    """Build a bounded correlation snapshot without publishing it to the lake."""
+
+    return _factor_correlation_frame(
+        values,
+        as_of_date=as_of_date,
+        factor_version=factor_version,
+        timeframe=timeframe,
+        created_at=created_at,
+    )
+
+
 def _recommended_action(decision: str) -> str:
     return {
         "KILL": "drop_or_quarantine",
         "RESEARCH": "research_only",
         "KEEP_SHADOW": "keep_shadow",
+        "SIGNAL_CANDIDATE": "confirmatory_research_only",
         "PAPER_READY": "paper_review_only",
     }.get(decision, "research_only")
 
@@ -1446,6 +1556,42 @@ def _dedupe(values: list[str]) -> list[str]:
         seen.add(value)
         deduped.append(value)
     return deduped
+
+
+def _apply_multiple_testing(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    pvalues = {
+        _evidence_test_id(row): float(row.get("raw_pvalue") or 1.0) for row in rows
+    }
+    adjustments = adjust_multiple_testing(pvalues)
+    for row in rows:
+        adjustment = adjustments.get(_evidence_test_id(row))
+        if adjustment is None:
+            continue
+        row["holm_adjusted_pvalue"] = adjustment.holm_adjusted_pvalue
+        row["bh_fdr_qvalue"] = adjustment.bh_fdr_qvalue
+        row["multiple_testing_count"] = adjustment.test_count
+    return rows
+
+
+def _evidence_test_id(row: dict[str, Any]) -> str:
+    return "|".join(
+        str(row.get(column) or "")
+        for column in (
+            "as_of_date",
+            "factor_id",
+            "factor_version",
+            "timeframe",
+            "horizon_bars",
+            "decision_delay_bars",
+        )
+    )
+
+
+def _stable_seed(*values: str) -> int:
+    import hashlib
+
+    payload = "\x1f".join(values).encode("utf-8")
+    return int(hashlib.sha256(payload).hexdigest()[:8], 16)
 
 
 def _code_version() -> str:

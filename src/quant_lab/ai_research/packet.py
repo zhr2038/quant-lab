@@ -119,16 +119,17 @@ _SECTION_RULES: dict[str, tuple[str, ...]] = {
     ),
 }
 
-_ALLOWED_FACTOR_TEMPLATES = [
-    "feature",
-    "neg_feature",
-    "product",
-    "difference",
-    "safe_divide",
-    "vol_adjusted",
-    "range_vol_ratio",
-    "range_location",
-    "liquidity_adjusted",
+_ALLOWED_HYPOTHESIS_FAMILIES = [
+    "behavioral_underreaction",
+    "behavioral_overreaction",
+    "cross_sectional_rotation",
+    "inventory_pressure",
+    "liquidity_provision",
+    "market_structure",
+    "risk_transfer",
+    "execution_quality",
+    "exit_efficiency",
+    "data_quality",
 ]
 
 _TASK_ID_RE = re.compile(r"[^A-Za-z0-9_.-]+")
@@ -140,10 +141,29 @@ _ALPHA_FACTORY_AUDIT_MEMBERS = {
     "reports/alpha_factory_promotion_queue.csv",
 }
 _FACTOR_VALIDATION_AUDIT_MEMBERS = {
+    "reports/factor_candidates.csv",
     "reports/factor_definitions.csv",
     "reports/factor_dedupe_decision.csv",
     "reports/factor_forward_validation.csv",
 }
+_COST_TIMELINE_AUDIT_MEMBERS = {
+    "reports/cost_bootstrap_readiness.csv",
+    "reports/cost_probe_cost_disagreement.csv",
+    "reports/cost_probe_fill_bill_match.csv",
+}
+_COST_EVENT_TIMESTAMP_FIELDS = (
+    "latest_probe_ts",
+    "latest_probe_fill_ts",
+    "latest_bill_ts",
+    "probe_event_ts",
+    "roundtrip_completed_at",
+    "entry_fill_ts",
+    "exit_fill_ts",
+    "entry_bill_ts",
+    "exit_bill_ts",
+    "fill_ts",
+    "bill_ts",
+)
 _RESEARCH_DATASET_KEYWORDS = (
     "alpha",
     "factor",
@@ -247,6 +267,21 @@ def build_ai_research_task(
             sections["factor_research"].append(document)
             consumed_chars += encoded_length
 
+        cost_documents, cost_audit_sources, cost_audit_warnings = (
+            _build_cost_evidence_audit_documents(archive)
+        )
+        audit_sources.update(cost_audit_sources)
+        warnings.extend(cost_audit_warnings)
+        for document in cost_documents:
+            encoded_length = len(canonical_json(document.model_dump(mode="json")))
+            if consumed_chars + encoded_length > max_total_chars:
+                warnings.append(
+                    f"skipped_due_to_total_limit:{document.source_member}"
+                )
+                continue
+            sections["cost_and_execution"].append(document)
+            consumed_chars += encoded_length
+
         selected = _select_members(
             archive,
             max_docs_per_section=max_docs_per_section,
@@ -315,7 +350,7 @@ def build_ai_research_task(
             if previous_research_context is not None
             else None
         ),
-        "allowed_factor_templates": _ALLOWED_FACTOR_TEMPLATES,
+        "allowed_hypothesis_families": _ALLOWED_HYPOTHESIS_FAMILIES,
         "prohibited_actions": list(PROHIBITED_ACTIONS),
         "warnings": sorted(set(warnings)),
     }
@@ -509,7 +544,7 @@ def build_task_from_nas_pack_reference(
         "previous_research_context": _load_previous_research_context(
             state_root / "latest_research_context.json"
         ),
-        "allowed_factor_templates": _ALLOWED_FACTOR_TEMPLATES,
+        "allowed_hypothesis_families": _ALLOWED_HYPOTHESIS_FAMILIES,
         "prohibited_actions": list(PROHIBITED_ACTIONS),
         "warnings": ["evidence_materialized_on_nas_worker"],
         "packet_sha256": "0" * 64,
@@ -974,6 +1009,187 @@ def _build_factor_research_audit_documents(
     return documents, consumed_sources, warnings
 
 
+def _build_cost_evidence_audit_documents(
+    archive: zipfile.ZipFile,
+) -> tuple[list[EvidenceDocument], set[str], list[str]]:
+    available = {
+        info.filename.lower().lstrip("./"): info
+        for info in archive.infolist()
+        if _safe_supported_member(info)
+    }
+    sources = {
+        name: available[name]
+        for name in _COST_TIMELINE_AUDIT_MEMBERS
+        if name in available
+    }
+    if not sources:
+        return [], set(), []
+    if len(sources) != len(_COST_TIMELINE_AUDIT_MEMBERS):
+        missing = sorted(_COST_TIMELINE_AUDIT_MEMBERS - set(sources))
+        return [], set(), [f"cost_timeline_audit_missing_source:{name}" for name in missing]
+
+    rows_by_source = {
+        name: _read_csv_rows(archive, member) for name, member in sources.items()
+    }
+    readiness_rows = rows_by_source["reports/cost_bootstrap_readiness.csv"]
+    invalid_timestamps: list[dict[str, str]] = []
+    materialization_observations: list[dict[str, str]] = []
+    event_observations: list[dict[str, str]] = []
+
+    for source_member, rows in sorted(rows_by_source.items()):
+        for row_index, row in enumerate(rows):
+            symbol = str(row.get("symbol") or "")
+            generated_at = str(row.get("generated_at") or "").strip()
+            if generated_at:
+                parsed = _parse_utc_timestamp(generated_at)
+                if parsed is None:
+                    invalid_timestamps.append(
+                        {
+                            "source_member": source_member,
+                            "row_index": str(row_index),
+                            "field": "generated_at",
+                            "value": generated_at,
+                        }
+                    )
+                else:
+                    materialization_observations.append(
+                        {
+                            "source_member": source_member,
+                            "row_index": str(row_index),
+                            "symbol": symbol,
+                            "field": "generated_at",
+                            "value": parsed.isoformat(),
+                        }
+                    )
+            for field in _COST_EVENT_TIMESTAMP_FIELDS:
+                value = str(row.get(field) or "").strip()
+                if not value:
+                    continue
+                parsed = _parse_utc_timestamp(value)
+                if parsed is None:
+                    invalid_timestamps.append(
+                        {
+                            "source_member": source_member,
+                            "row_index": str(row_index),
+                            "field": field,
+                            "value": value,
+                        }
+                    )
+                    continue
+                event_observations.append(
+                    {
+                        "source_member": source_member,
+                        "row_index": str(row_index),
+                        "symbol": symbol,
+                        "field": field,
+                        "value": parsed.isoformat(),
+                    }
+                )
+
+    readiness_generated_times = [
+        parsed
+        for row in readiness_rows
+        if (parsed := _parse_utc_timestamp(row.get("generated_at"))) is not None
+    ]
+    readiness_generated_at = max(readiness_generated_times, default=None)
+    explicit_event_times = [
+        parsed
+        for observation in event_observations
+        if (parsed := _parse_utc_timestamp(observation["value"])) is not None
+    ]
+    latest_explicit_event_at = max(explicit_event_times, default=None)
+    post_readiness_events = [
+        observation
+        for observation in event_observations
+        if readiness_generated_at is not None
+        and (parsed := _parse_utc_timestamp(observation["value"])) is not None
+        and parsed > readiness_generated_at
+    ]
+    reconciliation_materialized_after_readiness = [
+        observation
+        for observation in materialization_observations
+        if observation["source_member"]
+        != "reports/cost_bootstrap_readiness.csv"
+        and readiness_generated_at is not None
+        and (parsed := _parse_utc_timestamp(observation["value"])) is not None
+        and parsed > readiness_generated_at
+    ]
+    later_report_materialization_only = bool(
+        reconciliation_materialized_after_readiness and not post_readiness_events
+    )
+    if readiness_generated_at is None:
+        timeline_status = "READINESS_TIMESTAMP_MISSING"
+    elif post_readiness_events:
+        timeline_status = "POST_READINESS_COST_EVENT_OBSERVED"
+    elif later_report_materialization_only:
+        timeline_status = "LATER_RECONCILIATION_MATERIALIZATION_ONLY"
+    else:
+        timeline_status = "READINESS_CURRENT_TO_EXPLICIT_EVENTS"
+
+    trusted_sample_gap_symbols: list[str] = []
+    for row in readiness_rows:
+        trusted_sample_count = _compact_number(row.get("trusted_sample_count"))
+        if isinstance(trusted_sample_count, int | float) and trusted_sample_count <= 0:
+            symbol = str(row.get("symbol") or "")
+            if symbol:
+                trusted_sample_gap_symbols.append(symbol)
+
+    complete = not invalid_timestamps
+    content = {
+        "schema_version": "quant_lab.ai_cost_evidence_timeline_audit.v1",
+        "source_members": sorted(sources),
+        "timestamp_semantics": {
+            "generated_at": "report_materialization_time_only",
+            "explicit_event_fields": list(_COST_EVENT_TIMESTAMP_FIELDS),
+            "causality_rule": (
+                "A later report generated_at does not prove a later probe, fill, or "
+                "bill event. Only explicit event timestamp fields establish event time."
+            ),
+        },
+        "timeline_status": timeline_status,
+        "readiness_generated_at": (
+            readiness_generated_at.isoformat() if readiness_generated_at else None
+        ),
+        "latest_explicit_event_at": (
+            latest_explicit_event_at.isoformat() if latest_explicit_event_at else None
+        ),
+        "post_readiness_cost_event_observed": bool(post_readiness_events),
+        "later_reconciliation_report_materialized": bool(
+            reconciliation_materialized_after_readiness
+        ),
+        "later_report_materialization_only": later_report_materialization_only,
+        "post_readiness_event_observations": post_readiness_events,
+        "reconciliation_materialized_after_readiness": (
+            reconciliation_materialized_after_readiness
+        ),
+        "trusted_sample_gap_symbols": sorted(set(trusted_sample_gap_symbols)),
+        "readiness_rows": readiness_rows,
+        "fill_bill_match_rows": rows_by_source[
+            "reports/cost_probe_fill_bill_match.csv"
+        ],
+        "cost_disagreement_rows": rows_by_source[
+            "reports/cost_probe_cost_disagreement.csv"
+        ],
+        "invalid_timestamp_observations": invalid_timestamps,
+        "_representation": {
+            "kind": "full_cost_timeline_audit",
+            "selection_rule": "all_rows_from_three_canonical_cost_evidence_reports",
+            "row_count": sum(len(rows) for rows in rows_by_source.values()),
+            "truncated": False,
+        },
+    }
+    warnings = []
+    if invalid_timestamps:
+        warnings.append("cost_timeline_audit_invalid_timestamp")
+    document = _derived_evidence_document(
+        "derived/cost_evidence_timeline_audit.json",
+        content,
+        sources.values(),
+        complete=complete,
+    )
+    return [document], set(sources), warnings
+
+
 def _build_alpha_factory_candidate_audit(
     archive: zipfile.ZipFile,
     sources: dict[str, zipfile.ZipInfo],
@@ -1111,6 +1327,7 @@ def _build_factor_validation_audit(
     archive: zipfile.ZipFile,
     sources: dict[str, zipfile.ZipInfo],
 ) -> tuple[dict[str, Any], bool, list[str]]:
+    candidates = _read_csv_rows(archive, sources["reports/factor_candidates.csv"])
     definitions = _read_csv_rows(archive, sources["reports/factor_definitions.csv"])
     dedupe = _read_csv_rows(archive, sources["reports/factor_dedupe_decision.csv"])
     forward = _read_csv_rows(archive, sources["reports/factor_forward_validation.csv"])
@@ -1167,12 +1384,66 @@ def _build_factor_validation_audit(
         for row in forward
     ]
     definition_ids = {str(row.get("factor_id") or "") for row in definitions}
+    candidate_ids = {str(row.get("factor_id") or "") for row in candidates}
     forward_ids = {str(row.get("factor_id") or "") for row in forward}
-    unmapped_forward_ids = sorted(item for item in forward_ids - definition_ids if item)
-    complete = not unmapped_forward_ids
-    warnings = [] if complete else ["factor_validation_audit_definition_gap"]
+    definition_candidate_history = [
+        row for row in candidates if str(row.get("factor_id") or "") in definition_ids
+    ]
+    candidate_as_of_dates = sorted(
+        {
+            str(row.get("as_of_date") or "")
+            for row in definition_candidate_history
+            if str(row.get("as_of_date") or "")
+        }
+    )
+    current_candidate_as_of_date = candidate_as_of_dates[-1] if candidate_as_of_dates else ""
+    current_candidates = (
+        [
+            row
+            for row in definition_candidate_history
+            if str(row.get("as_of_date") or "") == current_candidate_as_of_date
+        ]
+        if current_candidate_as_of_date
+        else definition_candidate_history
+    )
+    forward_eligible_states = {"KEEP_SHADOW", "PAPER_READY"}
+    eligible_current_candidates = [
+        row
+        for row in current_candidates
+        if str(row.get("candidate_state") or "").upper() in forward_eligible_states
+    ]
+    current_forward_rows = [
+        row
+        for row in forward
+        if str(row.get("factor_id") or "") in definition_ids
+        and (
+            not current_candidate_as_of_date
+            or not str(row.get("as_of_date") or "")
+            or str(row.get("as_of_date") or "") == current_candidate_as_of_date
+        )
+    ]
+    current_forward_ids = sorted(
+        {str(row.get("factor_id") or "") for row in current_forward_rows if row.get("factor_id")}
+    )
+    historical_candidate_ids = sorted(item for item in candidate_ids - definition_ids if item)
+    historical_forward_ids = sorted(item for item in forward_ids - definition_ids if item)
+    orphan_forward_ids = sorted(
+        item for item in forward_ids - definition_ids - candidate_ids if item
+    )
+    population_status = _factor_validation_population_status(
+        definition_count=len(definitions),
+        current_candidate_count=len(current_candidates),
+        eligible_current_candidate_count=len(eligible_current_candidates),
+        current_forward_factor_count=len(current_forward_ids),
+    )
+    complete = not orphan_forward_ids
+    warnings = []
+    if orphan_forward_ids:
+        warnings.append("factor_validation_audit_orphan_forward_rows")
+    if population_status == "CURRENT_FORWARD_EVIDENCE_MISSING":
+        warnings.append("current_factor_forward_validation_missing")
     content = {
-        "schema_version": "quant_lab.ai_factor_validation_audit.v2",
+        "schema_version": "quant_lab.ai_factor_validation_audit.v3",
         "source_members": sorted(sources),
         "freshness": {
             "definition_created_at_values": _bounded_distinct_row_values(
@@ -1186,10 +1457,61 @@ def _build_factor_validation_audit(
             ),
         },
         "definition_count": len(definitions),
+        "candidate_count": len(candidates),
+        "candidate_state_counts": _value_counts_rows(candidates, "candidate_state"),
+        "definition_mapped_candidate_history_count": len(definition_candidate_history),
+        "current_candidate_as_of_date": current_candidate_as_of_date or None,
+        "current_definition_candidate_count": len(current_candidates),
+        "current_definition_candidate_state_counts": _value_counts_rows(
+            current_candidates,
+            "candidate_state",
+        ),
+        "current_definition_eligible_candidate_count": len(eligible_current_candidates),
+        "historical_or_unmapped_candidate_count": len(candidates) - len(current_candidates),
+        "historical_or_unmapped_candidate_factor_ids": historical_candidate_ids,
+        "current_definition_candidate_legend": [
+            "factor_id",
+            "candidate_state",
+            "signal_validity",
+            "portfolio_validity",
+            "deployment_readiness",
+            "promotion_block_reasons_json",
+            "hypothesis_id",
+            "data_snapshot_id",
+            "as_of_date",
+            "source",
+        ],
+        "current_definition_candidate_rows": [
+            [
+                str(row.get("factor_id") or ""),
+                str(row.get("candidate_state") or ""),
+                str(row.get("signal_validity") or ""),
+                str(row.get("portfolio_validity") or ""),
+                str(row.get("deployment_readiness") or ""),
+                str(row.get("promotion_block_reasons_json") or ""),
+                str(row.get("hypothesis_id") or ""),
+                str(row.get("data_snapshot_id") or ""),
+                str(row.get("as_of_date") or ""),
+                str(row.get("source") or ""),
+            ]
+            for row in current_candidates
+        ],
         "dedupe_decision_count": len(dedupe),
         "forward_validation_count": len(forward),
+        "current_definition_forward_factor_count": len(current_forward_ids),
+        "current_definition_forward_factor_ids": current_forward_ids,
+        "historical_or_unmapped_forward_factor_ids": historical_forward_ids,
+        "orphan_forward_factor_ids": orphan_forward_ids,
+        "join_complete": complete,
+        "evidence_population_status": population_status,
+        "evidence_population_interpretation": (
+            "Current Factor Research definitions, historical Factor Factory candidates, "
+            "and forward-validation rows are distinct populations. An empty forward table "
+            "is not a runtime failure when no current-definition candidate is in "
+            "KEEP_SHADOW or PAPER_READY."
+        ),
         "forward_recommendation_counts": _value_counts_rows(forward, "recommendation"),
-        "unmapped_forward_factor_ids": unmapped_forward_ids,
+        "unmapped_forward_factor_ids": historical_forward_ids,
         "definition_legend": [
             "factor_id",
             "factor_family",
@@ -1238,7 +1560,10 @@ def _build_factor_validation_audit(
         "forward_validation_rows": forward_rows,
         "_representation": {
             "kind": "full_factor_validation_audit",
-            "selection_rule": "all_factor_definitions_dedupe_decisions_and_forward_validation_rows",
+            "selection_rule": (
+                "all_factor_definitions_candidates_dedupe_decisions_and_"
+                "forward_validation_rows"
+            ),
             "truncated": False,
         },
     }
@@ -1249,6 +1574,24 @@ def _build_factor_validation_audit(
             f"{encoded_chars}>{FACTOR_AUDIT_TARGET_DOCUMENT_CHARS}"
         )
     return content, complete, warnings
+
+
+def _factor_validation_population_status(
+    *,
+    definition_count: int,
+    current_candidate_count: int,
+    eligible_current_candidate_count: int,
+    current_forward_factor_count: int,
+) -> str:
+    if definition_count == 0:
+        return "NO_CURRENT_DEFINITIONS"
+    if current_candidate_count == 0:
+        return "NO_CURRENT_DEFINITION_CANDIDATES"
+    if eligible_current_candidate_count == 0:
+        return "CURRENT_CANDIDATES_NOT_FORWARD_ELIGIBLE"
+    if current_forward_factor_count == 0:
+        return "CURRENT_FORWARD_EVIDENCE_MISSING"
+    return "CURRENT_FORWARD_EVIDENCE_AVAILABLE"
 
 
 def _derived_evidence_document(
@@ -1280,6 +1623,19 @@ def _read_csv_rows(
         {str(key): str(value or "") for key, value in row.items() if key is not None}
         for row in csv.DictReader(io.StringIO(text))
     ]
+
+
+def _parse_utc_timestamp(value: Any) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed.astimezone(UTC)
 
 
 def _rows_by_key(

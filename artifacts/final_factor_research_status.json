@@ -1,0 +1,89 @@
+{
+  "schema_version": "quant_lab.factor_discovery_v2_final_status.v1",
+  "captured_at": "2026-07-19T12:48:01Z",
+  "verdict": "PASS_FACTOR_DISCOVERY_V2_RESEARCH_SHADOW",
+  "scope": "research_only_shadow_platform_acceptance",
+  "commits": {
+    "github_main": "49ad71fb9d3043e4882546fd8b8d4ff0ba93106b",
+    "accepted_shadow_task_code": "8d8c884ad9fc35ff600921fc8c0a05bf732cff72",
+    "operational_runtime": "1bd35db43c71298e37d6ae8ef16a694a94ebaab3",
+    "cloud": "1bd35db43c71298e37d6ae8ef16a694a94ebaab3",
+    "nas_worker": "1bd35db43c71298e37d6ae8ef16a694a94ebaab3",
+    "v5_read_only": "3df1c67cc44cc8be364ec5d3798ea0d3595c0abc"
+  },
+  "factor_generation": {
+    "generation_id": "factor-research-097a452bfeb6edfd8baf5d1e",
+    "snapshot_id": "factor-research-b7ba4acfe2d475c65fa0d474",
+    "digest": "82655622935aa4fcfc6e153162ff4c4edb7450b41f098b8cfdf8043eb5511f52",
+    "independent_hypotheses": 4,
+    "active_hypotheses": 2,
+    "data_blocked_hypotheses": 2,
+    "current_trials": 8,
+    "total_trial_ledger_rows": 56,
+    "current_decisions": {"REJECTED_DATA_QUALITY": 8},
+    "multiple_testing_pass_count": 0,
+    "signal_valid_count": 0,
+    "portfolio_fail_count": 0,
+    "paper_candidate_count": 0,
+    "point_in_time_cost_coverage": 0.747906976744186,
+    "anti_leakage_status": "PASS"
+  },
+  "alpha_generation": {
+    "generation_id": "alpha-factory-c3b0425791b3ce7800ed1470",
+    "snapshot_id": "alpha-factory-d6cdd2d63e20ce52a39c8183",
+    "bound_factor_generation_id": "factor-research-097a452bfeb6edfd8baf5d1e",
+    "bound_factor_generation_digest": "82655622935aa4fcfc6e153162ff4c4edb7450b41f098b8cfdf8043eb5511f52",
+    "result_count": 165,
+    "decision_counts": {"KEEP_SHADOW": 65, "KILL": 78, "RESEARCH": 22},
+    "paper_ready_count": 0,
+    "max_live_notional_usdt": 0,
+    "manual_live_approval_required": true,
+    "anti_leakage_status": "PASS"
+  },
+  "safety": {
+    "research_only": true,
+    "live_order_effect": "none",
+    "automatic_promotion": false,
+    "v5_modified": false,
+    "paper_ack_tracker_modified": false,
+    "risk_permission_modified": false,
+    "canary_enabled": false,
+    "enforce_enabled": false,
+    "real_order_side_effects": 0
+  },
+  "dashboard": {
+    "url": "http://qyun2.hrhome.top:8027/web-v2#strategy",
+    "generation_verdict": "DATA_QUALITY_BLOCKED",
+    "current_trial_count": 8,
+    "data_quality_rejected_count": 8,
+    "layout_overlap_count": 0,
+    "layout_clipped": false
+  },
+  "tests": {
+    "pytest_passed": 1495,
+    "pytest_skipped": 4,
+    "ruff": "PASS",
+    "compileall": "PASS",
+    "frontend_build": "PASS",
+    "nas_compose_config": "PASS",
+    "git_diff_check": "PASS"
+  },
+  "operational_risks": {
+    "v5_web_refresh_pre_fix_duration_seconds": 2700,
+    "v5_web_refresh_pre_fix_swap_peak_bytes": 1993785344,
+    "v5_web_refresh_post_fix_duration_seconds": 45.56,
+    "v5_web_refresh_post_fix_swap_peak_bytes": 0,
+    "v5_refresh_peak_rss_bytes": 944246784,
+    "v5_refresh_swap_peak_bytes": 535240704,
+    "v5_refresh_duration_seconds": 704.4,
+    "v5_refresh_result": "success",
+    "v5_refresh_swap_reduction_percent": 73.15,
+    "web_refresh_source_dataset_count": 40,
+    "registered_dataset_count": 190,
+    "v5_refresh_heavy_factor_compute_removed": true,
+    "cloud_import_peak_rss_retained_after_exit": false
+  },
+  "profitability_claim": false,
+  "paper_ready_claim": false,
+  "live_ready_claim": false
+}

@@ -578,8 +578,11 @@ def test_refresh_web_derived_snapshots_updates_export_backed_gold_tables(
     def row_counts(frames):
         return {name: frame.height for name, frame in frames.items()}
 
-    def fake_load(root):
+    def fake_load(root, *, dataset_names=None):
         assert root == lake_root
+        assert tuple(dataset_names or ()) == (
+            daily_export_module.WEB_DERIVED_SNAPSHOT_SOURCE_DATASETS
+        )
         calls.append("load")
         return seed_snapshot
 
@@ -633,6 +636,33 @@ def test_refresh_web_derived_snapshots_updates_export_backed_gold_tables(
             transient_frames=snapshot.transient_frames,
         )
 
+    def fake_ops(
+        root,
+        snapshot,
+        *,
+        generated_at,
+        pre_export_v5=None,
+        persist=True,
+        include_auth=True,
+    ):
+        assert root == lake_root
+        assert generated_at == datetime(2026, 7, 3, 12, 0, tzinfo=UTC)
+        assert pre_export_v5 is None
+        assert persist is True
+        assert include_auth is False
+        calls.append("ops")
+        frames = {
+            **snapshot.frames,
+            "paper_runtime_freshness": pl.DataFrame({"id": [1, 2, 3, 4, 5]}),
+            "paper_proposal_propagation_status": pl.DataFrame({"id": [1]}),
+        }
+        return daily_export_module._DatasetSnapshot(
+            frames=frames,
+            row_counts={**snapshot.row_counts, **row_counts(frames)},
+            warnings=snapshot.warnings,
+            transient_frames=snapshot.transient_frames,
+        )
+
     monkeypatch.setattr(daily_export_module, "_load_snapshot", fake_load)
     monkeypatch.setattr(
         daily_export_module,
@@ -645,18 +675,21 @@ def test_refresh_web_derived_snapshots_updates_export_backed_gold_tables(
         "_publish_cost_bootstrap_readiness_snapshot",
         fake_cost,
     )
+    monkeypatch.setattr(daily_export_module, "_publish_ops_truthfulness_snapshot", fake_ops)
 
     result = daily_export_module.refresh_web_derived_snapshots(
         lake_root,
         generated_at=generated_at,
     )
 
-    assert calls == ["load", "strategy", "missed", "cost"]
+    assert calls == ["load", "strategy", "missed", "cost", "ops"]
     assert result.generated_at == generated_at
     assert result.live_order_effect == "none_read_only_lake_refresh"
     assert result.refreshed_datasets == list(daily_export_module.WEB_DERIVED_SNAPSHOT_DATASETS)
     assert result.row_counts["factor_strategy_bridge_candidates"] == 2
     assert result.row_counts["cost_bootstrap_readiness"] == 4
+    assert result.row_counts["paper_runtime_freshness"] == 5
+    assert result.row_counts["paper_proposal_propagation_status"] == 1
     assert result.row_counts["v5_enforce_readiness"] == 1
     assert "fallback_rate_breakdown" in result.row_counts
     assert result.warnings == ["example warning"]
@@ -671,6 +704,29 @@ def test_refresh_web_derived_snapshots_updates_export_backed_gold_tables(
     )
     assert bnb_meta["dataset"] == "v5_bnb_profit_lock_shadow"
     assert bnb_meta["row_count"] == 1
+
+
+def test_load_snapshot_reads_only_requested_web_sources(monkeypatch, tmp_path):
+    seen: list[str] = []
+
+    def fake_load_export_frame(root, dataset_name):
+        assert root == tmp_path
+        seen.append(dataset_name)
+        return pl.DataFrame({"dataset": [dataset_name]}), 1, None
+
+    monkeypatch.setattr(daily_export_module, "_load_export_frame", fake_load_export_frame)
+
+    snapshot = daily_export_module._load_snapshot(
+        tmp_path,
+        dataset_names=("risk_permission", "market_bar"),
+    )
+
+    assert seen == ["market_bar", "risk_permission"]
+    assert set(snapshot.frames) == {"market_bar", "risk_permission"}
+    assert snapshot.row_counts == {"market_bar": 1, "risk_permission": 1}
+
+    with pytest.raises(ValueError, match="unknown snapshot datasets"):
+        daily_export_module._load_snapshot(tmp_path, dataset_names=("not_a_dataset",))
 
 
 def test_research_validation_v3_reports_export_forward_and_cost_coverage(tmp_path):
@@ -1363,6 +1419,43 @@ def test_snapshot_meta_written_for_api_dependency_datasets(tmp_path):
     assert row["strategy"] == "v5"
     assert row["version"] == "5.0.0"
     assert row["source_sha"]
+
+
+def test_export_time_snapshot_meta_prefers_current_evaluation_time(tmp_path):
+    old_snapshot_at = datetime(2026, 7, 15, 10, tzinfo=UTC)
+    current_evaluation_at = datetime(2026, 7, 21, 3, tzinfo=UTC)
+    cases = {
+        "paper_proposal_propagation_status": pl.DataFrame(
+            [
+                {
+                    "snapshot_generated_at": old_snapshot_at,
+                    "generated_at": current_evaluation_at,
+                }
+            ]
+        ),
+        "paper_strategy_proposal_snapshot": pl.DataFrame(
+            [
+                {
+                    "snapshot_generated_at": old_snapshot_at,
+                    "last_evaluated_at": current_evaluation_at,
+                }
+            ]
+        ),
+    }
+
+    for dataset_name, frame in cases.items():
+        dataset_path = tmp_path / dataset_name
+        daily_export_module._write_snapshot_meta(
+            dataset_path,
+            dataset_name=dataset_name,
+            frame=frame,
+        )
+        meta = json.loads(
+            (dataset_path / "_snapshot_meta.json").read_text(encoding="utf-8")
+        )
+        assert meta["generated_at"] == current_evaluation_at.isoformat().replace(
+            "+00:00", "Z"
+        )
 
 
 def test_bnb_paper_summary_uses_latest_strategy_day_view():
@@ -5814,6 +5907,38 @@ def test_stale_dataset_check_ignores_event_driven_v5_cost_usage_when_current():
     datasets = set(stale["dataset"].to_list()) if "dataset" in stale.columns else set()
     assert "v5_quant_lab_cost_usage" not in datasets
     assert "v5_quant_lab_fallback" not in datasets
+
+
+def test_stale_dataset_check_matches_web_v5_paper_and_auth_report_semantics():
+    now = datetime.now(UTC)
+    old = now - timedelta(days=3)
+    stale = daily_export_module._stale_rows(
+        {
+            "strategy_health_daily": pl.DataFrame(
+                [
+                    {
+                        "strategy": "v5",
+                        "date": now.date().isoformat(),
+                        "status": "OK",
+                        "latest_bundle_ts": now,
+                    }
+                ]
+            ),
+            "v5_paper_strategy_exit_quality": pl.DataFrame(
+                [
+                    {
+                        "proposal_id": "proposal-1",
+                        "strategy_id": "paper-1",
+                        "ingest_ts": old,
+                    }
+                ]
+            ),
+            "api_auth_error_timeline": pl.DataFrame([{"generated_at": now}]),
+            "api_auth_client_summary": pl.DataFrame([{"generated_at": now}]),
+        }
+    )
+
+    assert stale.is_empty()
 
 
 def test_stale_dataset_check_ignores_stale_bnb_latest_when_source_daily_is_current():

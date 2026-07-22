@@ -1,0 +1,66 @@
+{
+  "schema_version": "quant_lab.current_factor_discovery_root_cause.v1",
+  "captured_at": "2026-07-19T04:02:00Z",
+  "quant_lab_commit": "49ad71fb9d3043e4882546fd8b8d4ff0ba93106b",
+  "production_counts": {
+    "feature_value_rows": 88080,
+    "feature_name_count": 10,
+    "factor_definition_rows": 22,
+    "factor_definition_auto_single_count": 10,
+    "factor_value_rows": 193688,
+    "factor_value_auto_single_rows": 88040,
+    "factor_evidence_rows": 3784,
+    "factor_evidence_auto_single_rows": 1720,
+    "factor_candidate_rows": 946,
+    "factor_candidate_auto_single_rows": 430,
+    "latest_as_of_date": "2026-07-19",
+    "latest_factor_count": 22,
+    "latest_horizon_test_count": 88,
+    "latest_evidence_decisions": {
+      "PAPER_READY": 21,
+      "KEEP_SHADOW": 26,
+      "RESEARCH": 26,
+      "KILL": 15
+    },
+    "latest_candidate_decisions": {
+      "PAPER_READY": 7,
+      "KEEP_SHADOW": 9,
+      "RESEARCH": 6
+    },
+    "historical_paper_ready_evidence_rows": 385,
+    "historical_paper_ready_candidate_rows": 170
+  },
+  "missing_authoritative_datasets": [
+    "gold/research_hypothesis_registry",
+    "gold/research_trial_ledger",
+    "gold/factor_research_generation"
+  ],
+  "root_causes": [
+    "automatic_single_feature_enumeration",
+    "weak_paper_ready_threshold",
+    "overlap_naive_tstat",
+    "post_hoc_best_horizon_selection",
+    "missing_immutable_trial_ledger",
+    "missing_multiple_testing_control",
+    "missing_blind_confirmatory_split",
+    "cross_sectional_signal_conflated_with_spot_portfolio",
+    "incomplete_long_only_portfolio_validation",
+    "non_point_in_time_cost_attachment",
+    "missing_factor_attribution_and_residualization",
+    "missing_pbo_dsr_and_permutation_diagnostics",
+    "cloud_heavy_factor_compute",
+    "alpha_factory_unversioned_factor_inputs",
+    "ai_outputs_implementation_shaped_factor_templates",
+    "dashboard_rewards_candidate_volume"
+  ],
+  "current_paper_ready_reliable": false,
+  "current_trial_history_fully_reconstructable": false,
+  "required_target": "hypothesis_driven_bounded_signed_nas_factor_research_generation",
+  "safety": {
+    "research_only": true,
+    "live_order_effect": "none",
+    "automatic_promotion": false,
+    "max_live_notional_usdt": 0,
+    "v5_modified": false
+  }
+}

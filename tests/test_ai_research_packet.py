@@ -324,6 +324,12 @@ def test_factor_audit_documents_preserve_complete_candidate_and_validation_rows(
             + 'candidate-b,"[""edge_not_confirmed""]",RESEARCH\n',
         )
         archive.writestr(
+            "reports/factor_candidates.csv",
+            "factor_id,candidate_state,hypothesis_id,data_snapshot_id,source,as_of_date\n"
+            "f1,KEEP_SHADOW,hypothesis-a,snapshot-a,factor_research.nas.v2,2026-07-19\n"
+            "legacy-a,PAPER_READY,,,factors.factory.v0.1,2026-07-19\n",
+        )
+        archive.writestr(
             "reports/factor_definitions.csv",
             "factor_id,factor_family,input_features_json,template,expression_hash,"
             "canonical_factor_id,formula_hash,duplicate_of,correlation_cluster_id,"
@@ -365,10 +371,178 @@ def test_factor_audit_documents_preserve_complete_candidate_and_validation_rows(
     assert alpha.content["rows"][1][13] == "NO_VALIDATION_OR_RECENT_SAMPLES"
     assert factor.truncated is False
     assert factor.content["definition_count"] == 1
+    assert factor.content["candidate_count"] == 2
+    assert factor.content["join_complete"] is True
+    assert factor.content["current_definition_candidate_count"] == 1
+    assert factor.content["join_complete"] is True
+    assert factor.content["current_definition_eligible_candidate_count"] == 1
+    assert factor.content["current_candidate_as_of_date"] == "2026-07-19"
+    assert factor.content["current_definition_candidate_rows"][0][0:2] == [
+        "f1",
+        "KEEP_SHADOW",
+    ]
+    assert factor.content["historical_or_unmapped_candidate_factor_ids"] == ["legacy-a"]
+    assert factor.content["evidence_population_status"] == (
+        "CURRENT_FORWARD_EVIDENCE_AVAILABLE"
+    )
     assert factor.content["forward_validation_count"] == 1
     assert factor.content["forward_validation_rows"][0][0] == "f1"
     assert factor.content["forward_validation_rows"][0][6] == 0.03
     assert task.preflight.status == "PASS"
+
+
+def test_factor_audit_distinguishes_rejected_current_candidates_from_missing_forward_runtime(
+    tmp_path,
+) -> None:
+    pack = tmp_path / "quant_lab_expert_pack_factor_population.zip"
+    with zipfile.ZipFile(pack, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("manifest.json", "{}")
+        archive.writestr("provenance.json", "{}")
+        archive.writestr("data_quality.json", "{}")
+        archive.writestr(
+            "reports/factor_candidates.csv",
+            "factor_id,candidate_state,hypothesis_id,data_snapshot_id,source,as_of_date,"
+            "promotion_block_reasons_json\n"
+            'current-a,REJECTED,hypothesis-a,snapshot-a,factor_research.nas.v2,'
+            '2026-07-19,"[""rejected_data_quality""]"\n'
+            "legacy-a,KEEP_SHADOW,,,factors.factory.v0.1,2026-07-19,\n",
+        )
+        archive.writestr(
+            "reports/factor_definitions.csv",
+            "factor_id,factor_family,input_features_json,template,expression_hash,"
+            "canonical_factor_id,formula_hash,duplicate_of,correlation_cluster_id,"
+            "independence_weight,availability_lag_bars,causal,operator_graph_hash\n"
+            'current-a,momentum,"[""close""]",feature,expr-a,current-a,'
+            "formula-a,,cluster-a,1.0,1,True,graph-a\n",
+        )
+        archive.writestr(
+            "reports/factor_dedupe_decision.csv",
+            "factor_id,correlation_cluster_id,cluster_size,leader_factor_id,"
+            "is_cluster_leader,max_abs_correlation,independence_weight,"
+            "dedupe_decision,dedupe_reason\n"
+            "current-a,cluster-a,1,current-a,True,1.0,1.0,keep_leader,unique\n",
+        )
+        archive.writestr(
+            "reports/factor_forward_validation.csv",
+            "factor_id,symbol,regime,horizon_hours,sample_count,rank_ic,pearson_ic,"
+            "long_short_bps,p25_net_bps,hit_rate,recent_7d_score,regime_stability,"
+            "cost_adjusted_score,recommendation,data_leakage_check\n",
+        )
+
+    task, _ = build_ai_research_task(pack, queue_root=tmp_path / "queue")
+
+    assert task is not None and task.preflight is not None
+    factor = {
+        item.source_member: item for item in task.sections["factor_research"]
+    }["derived/factor_validation_audit.json"]
+    assert factor.content["current_definition_candidate_count"] == 1
+    assert factor.content["current_definition_eligible_candidate_count"] == 0
+    assert "rejected_data_quality" in factor.content["current_definition_candidate_rows"][0][5]
+    assert factor.content["forward_validation_count"] == 0
+    assert factor.content["evidence_population_status"] == (
+        "CURRENT_CANDIDATES_NOT_FORWARD_ELIGIBLE"
+    )
+    assert "current_factor_forward_validation_missing" not in task.preflight.warnings
+
+
+def test_cost_timeline_does_not_treat_later_report_materialization_as_probe_event(
+    tmp_path,
+) -> None:
+    pack = tmp_path / "quant_lab_expert_pack_cost_timeline.zip"
+    with zipfile.ZipFile(pack, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("manifest.json", "{}")
+        archive.writestr("provenance.json", "{}")
+        archive.writestr("data_quality.json", "{}")
+        archive.writestr(
+            "reports/cost_bootstrap_readiness.csv",
+            "generated_at,symbol,latest_probe_ts,latest_probe_fill_ts,latest_bill_ts,"
+            "trusted_sample_count,bootstrap_state\n"
+            "2026-07-19T14:48:26.419573Z,BTC-USDT,2026-06-21T03:00:00Z,"
+            "2026-06-21T03:01:00Z,2026-07-19T14:48:26.419573Z,0,"
+            "BOOTSTRAP_PROBE_AVAILABLE\n"
+            "2026-07-19T14:48:26.419573Z,SOL-USDT,2026-06-23T03:00:00Z,"
+            "2026-06-23T03:01:00Z,2026-07-19T14:48:26.419573Z,0,"
+            "BOOTSTRAP_PROBE_AVAILABLE\n",
+        )
+        archive.writestr(
+            "reports/cost_probe_fill_bill_match.csv",
+            "generated_at,symbol,roundtrip_id,bill_match_status,fee_diff_usdt\n"
+            "2026-07-19T15:27:53Z,BTC-USDT,btc-roundtrip,PASS,0\n"
+            "2026-07-19T15:27:53Z,SOL-USDT,sol-roundtrip,PASS,0\n",
+        )
+        archive.writestr(
+            "reports/cost_probe_cost_disagreement.csv",
+            "generated_at,symbol,roundtrip_id,diff_bps,status,bill_match_status\n"
+            "2026-07-19T15:27:53Z,BTC-USDT,btc-roundtrip,0,PASS,PASS\n"
+            "2026-07-19T15:27:53Z,SOL-USDT,sol-roundtrip,0,PASS,PASS\n",
+        )
+
+    task, _ = build_ai_research_task(pack, queue_root=tmp_path / "queue")
+
+    assert task is not None
+    document = next(
+        item
+        for item in task.sections["cost_and_execution"]
+        if item.source_member == "derived/cost_evidence_timeline_audit.json"
+    )
+    assert document.content["timeline_status"] == (
+        "LATER_RECONCILIATION_MATERIALIZATION_ONLY"
+    )
+    assert document.content["post_readiness_cost_event_observed"] is False
+    assert document.content["later_reconciliation_report_materialized"] is True
+    assert document.content["later_report_materialization_only"] is True
+    assert document.content["trusted_sample_gap_symbols"] == ["BTC-USDT", "SOL-USDT"]
+    assert document.content["latest_explicit_event_at"] == (
+        "2026-07-19T14:48:26.419573+00:00"
+    )
+    assert document.truncated is False
+
+
+def test_cost_timeline_detects_explicit_post_readiness_probe_event(tmp_path) -> None:
+    pack = tmp_path / "quant_lab_expert_pack_post_readiness_probe.zip"
+    with zipfile.ZipFile(pack, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("manifest.json", "{}")
+        archive.writestr("provenance.json", "{}")
+        archive.writestr("data_quality.json", "{}")
+        archive.writestr(
+            "reports/cost_bootstrap_readiness.csv",
+            "generated_at,symbol,latest_probe_ts,trusted_sample_count\n"
+            "2026-07-19T14:48:26Z,BTC-USDT,2026-06-21T03:00:00Z,0\n",
+        )
+        archive.writestr(
+            "reports/cost_probe_fill_bill_match.csv",
+            "generated_at,symbol,roundtrip_id,bill_match_status\n"
+            "2026-07-19T15:27:53Z,BTC-USDT,btc-roundtrip,PASS\n",
+        )
+        archive.writestr(
+            "reports/cost_probe_cost_disagreement.csv",
+            "generated_at,symbol,roundtrip_id,roundtrip_completed_at,diff_bps,status\n"
+            "2026-07-19T15:27:53Z,BTC-USDT,btc-roundtrip,"
+            "2026-07-19T15:00:00Z,0,PASS\n",
+        )
+
+    task, _ = build_ai_research_task(pack, queue_root=tmp_path / "queue")
+
+    assert task is not None
+    document = next(
+        item
+        for item in task.sections["cost_and_execution"]
+        if item.source_member == "derived/cost_evidence_timeline_audit.json"
+    )
+    assert document.content["timeline_status"] == (
+        "POST_READINESS_COST_EVENT_OBSERVED"
+    )
+    assert document.content["post_readiness_cost_event_observed"] is True
+    assert document.content["later_report_materialization_only"] is False
+    assert document.content["post_readiness_event_observations"] == [
+        {
+            "source_member": "reports/cost_probe_cost_disagreement.csv",
+            "row_index": "0",
+            "symbol": "BTC-USDT",
+            "field": "roundtrip_completed_at",
+            "value": "2026-07-19T15:00:00+00:00",
+        }
+    ]
 
 
 def test_large_complete_alpha_audit_is_not_mislabeled_as_truncated(tmp_path) -> None:

@@ -20,6 +20,11 @@ ALPHA_FACTORY_SNAPSHOT_SCHEMA = "quant_lab_alpha_factory_snapshot.v1"
 ALPHA_FACTORY_TASK_SCHEMA = "quant_lab_alpha_factory_task.v1"
 ALPHA_FACTORY_RESULT_SCHEMA = "quant_lab_alpha_factory_result.v1"
 ALPHA_FACTORY_RECEIPT_SCHEMA = "quant_lab_alpha_factory_receipt.v1"
+FACTOR_RESEARCH_TASK_TYPE = "factor_research"
+FACTOR_RESEARCH_SNAPSHOT_SCHEMA = "quant_lab_factor_research_snapshot.v1"
+FACTOR_RESEARCH_TASK_SCHEMA = "quant_lab_factor_research_task.v1"
+FACTOR_RESEARCH_RESULT_SCHEMA = "quant_lab_factor_research_result.v1"
+FACTOR_RESEARCH_RECEIPT_SCHEMA = "quant_lab_factor_research_receipt.v1"
 DEFAULT_RESEARCH_MAX_RESULT_BYTES = 256 * 1024**2
 
 
@@ -133,6 +138,25 @@ class AlphaFactoryTaskParameters(StrictModel):
     max_candidates: int = Field(default=200, ge=1, le=200)
 
 
+class FactorResearchTaskParameters(StrictModel):
+    as_of_date: date
+    start_date: date
+    end_date: date
+    max_history_days: int = Field(ge=1, le=1095)
+    hypothesis_ids: tuple[str, ...] = Field(min_length=1, max_length=6)
+    trial_ids: tuple[str, ...] = Field(min_length=1, max_length=54)
+
+    @model_validator(mode="after")
+    def validate_parameters(self) -> FactorResearchTaskParameters:
+        if self.end_date < self.start_date:
+            raise ValueError("factor research end_date precedes start_date")
+        if (self.end_date - self.start_date).days > self.max_history_days:
+            raise ValueError("factor research window exceeds max_history_days")
+        _require_unique_identifiers(self.hypothesis_ids, "hypothesis_ids")
+        _require_unique_identifiers(self.trial_ids, "trial_ids")
+        return self
+
+
 class ResearchTask(StrictModel):
     schema_version: Literal["quant_lab_research_task.v1"] = RESEARCH_TASK_SCHEMA
     task_type: Literal["entry_quality_history"] = ENTRY_QUALITY_HISTORY_TASK_TYPE
@@ -179,9 +203,7 @@ class ResearchTask(StrictModel):
 
 
 class AlphaFactorySnapshotManifest(StrictModel):
-    schema_version: Literal["quant_lab_alpha_factory_snapshot.v1"] = (
-        ALPHA_FACTORY_SNAPSHOT_SCHEMA
-    )
+    schema_version: Literal["quant_lab_alpha_factory_snapshot.v1"] = ALPHA_FACTORY_SNAPSHOT_SCHEMA
     task_type: Literal["alpha_factory"] = ALPHA_FACTORY_TASK_TYPE
     snapshot_id: str = Field(min_length=1, max_length=180)
     generated_at: datetime
@@ -190,6 +212,14 @@ class AlphaFactorySnapshotManifest(StrictModel):
     alpha_factory_schema_version: str = Field(min_length=1, max_length=80)
     second_stage_schema_version: str = Field(min_length=1, max_length=80)
     template_registry_digest: str = Field(min_length=64, max_length=64)
+    factor_generation_id: str | None = Field(default=None, min_length=1, max_length=180)
+    factor_generation_digest: str | None = Field(default=None, min_length=64, max_length=64)
+    factor_generation_as_of_date: date | None = None
+    factor_generation_published_at: datetime | None = None
+    hypothesis_registry_digest: str | None = Field(default=None, min_length=64, max_length=64)
+    trial_ledger_digest: str | None = Field(default=None, min_length=64, max_length=64)
+    factor_generation_fresh: bool | None = None
+    factor_generation_hypothesis_ids: tuple[str, ...] | None = None
     source_input_digest: str = Field(min_length=64, max_length=64)
     as_of_date: date
     lookback_days: int = Field(ge=1, le=180)
@@ -210,6 +240,7 @@ class AlphaFactorySnapshotManifest(StrictModel):
         _require_utc(self.generated_at, "generated_at")
         _require_commit(self.quant_lab_commit, "quant_lab_commit")
         _require_sha(self.template_registry_digest, "template_registry_digest")
+        _validate_optional_alpha_factor_generation(self)
         _require_sha(self.source_input_digest, "source_input_digest")
         _require_sha(self.manifest_sha256, "manifest_sha256")
         _require_identifier(self.signature_key_id, "signature_key_id")
@@ -239,6 +270,14 @@ class AlphaFactoryTask(StrictModel):
     alpha_factory_schema_version: str = Field(min_length=1, max_length=80)
     second_stage_schema_version: str = Field(min_length=1, max_length=80)
     template_registry_digest: str = Field(min_length=64, max_length=64)
+    factor_generation_id: str | None = Field(default=None, min_length=1, max_length=180)
+    factor_generation_digest: str | None = Field(default=None, min_length=64, max_length=64)
+    factor_generation_as_of_date: date | None = None
+    factor_generation_published_at: datetime | None = None
+    hypothesis_registry_digest: str | None = Field(default=None, min_length=64, max_length=64)
+    trial_ledger_digest: str | None = Field(default=None, min_length=64, max_length=64)
+    factor_generation_fresh: bool | None = None
+    factor_generation_hypothesis_ids: tuple[str, ...] | None = None
     selected_v5_bundle_id: str = Field(min_length=1, max_length=512)
     snapshot_manifest_sha256: str = Field(min_length=64, max_length=64)
     requested_at: datetime
@@ -256,6 +295,7 @@ class AlphaFactoryTask(StrictModel):
         _require_identifier(self.snapshot_id, "snapshot_id")
         _require_commit(self.quant_lab_commit, "quant_lab_commit")
         _require_sha(self.template_registry_digest, "template_registry_digest")
+        _validate_optional_alpha_factor_generation(self)
         _require_sha(self.snapshot_manifest_sha256, "snapshot_manifest_sha256")
         _require_utc(self.requested_at, "requested_at")
         _require_identifier(self.signature_key_id, "signature_key_id")
@@ -270,15 +310,145 @@ class AlphaFactoryTask(StrictModel):
         )
 
 
+class FactorResearchSnapshotManifest(StrictModel):
+    schema_version: Literal["quant_lab_factor_research_snapshot.v1"] = (
+        FACTOR_RESEARCH_SNAPSHOT_SCHEMA
+    )
+    task_type: Literal["factor_research"] = FACTOR_RESEARCH_TASK_TYPE
+    snapshot_id: str = Field(min_length=1, max_length=180)
+    generated_at: datetime
+    quant_lab_commit: str = Field(min_length=40, max_length=40)
+    selected_v5_bundle_id: str = Field(min_length=1, max_length=512)
+    factor_research_schema_version: str = Field(min_length=1, max_length=80)
+    hypothesis_registry_digest: str = Field(min_length=64, max_length=64)
+    trial_ledger_digest: str = Field(min_length=64, max_length=64)
+    source_input_digest: str = Field(min_length=64, max_length=64)
+    as_of_date: date
+    start_date: date
+    end_date: date
+    max_history_days: int = Field(ge=1, le=1095)
+    hypothesis_ids: tuple[str, ...] = Field(min_length=1, max_length=6)
+    trial_ids: tuple[str, ...] = Field(min_length=1, max_length=54)
+    test_count: int = Field(ge=1, le=54)
+    datasets: list[str]
+    files: list[ResearchDatasetReference]
+    total_input_bytes: int = Field(ge=0)
+    total_input_rows: int = Field(ge=0)
+    manifest_sha256: str = Field(min_length=64, max_length=64)
+    signature_key_id: str = Field(min_length=1, max_length=120)
+    research_only: Literal[True] = True
+    live_order_effect: Literal["none"] = "none"
+    automatic_promotion: Literal[False] = False
+    max_live_notional_usdt: Literal[0] = 0
+    signature: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_manifest(self) -> FactorResearchSnapshotManifest:
+        _require_identifier(self.snapshot_id, "snapshot_id")
+        _require_utc(self.generated_at, "generated_at")
+        _require_commit(self.quant_lab_commit, "quant_lab_commit")
+        _require_sha(self.hypothesis_registry_digest, "hypothesis_registry_digest")
+        _require_sha(self.trial_ledger_digest, "trial_ledger_digest")
+        _require_sha(self.source_input_digest, "source_input_digest")
+        _require_sha(self.manifest_sha256, "manifest_sha256")
+        _require_identifier(self.signature_key_id, "signature_key_id")
+        FactorResearchTaskParameters(
+            as_of_date=self.as_of_date,
+            start_date=self.start_date,
+            end_date=self.end_date,
+            max_history_days=self.max_history_days,
+            hypothesis_ids=self.hypothesis_ids,
+            trial_ids=self.trial_ids,
+        )
+        if self.test_count != len(self.trial_ids):
+            raise ValueError("factor research test_count must equal trial count")
+        if self.total_input_bytes != sum(item.size_bytes for item in self.files):
+            raise ValueError("snapshot total_input_bytes mismatch")
+        if self.total_input_rows != sum(item.row_count for item in self.files):
+            raise ValueError("snapshot total_input_rows mismatch")
+        paths = [item.relative_path for item in self.files]
+        if len(paths) != len(set(paths)):
+            raise ValueError("snapshot relative paths must be unique")
+        if not self.datasets or len(self.datasets) != len(set(self.datasets)):
+            raise ValueError("snapshot datasets must be non-empty and unique")
+        if any(item.dataset_name not in self.datasets for item in self.files):
+            raise ValueError("snapshot file references undeclared dataset")
+        return self
+
+
+class FactorResearchTask(StrictModel):
+    schema_version: Literal["quant_lab_factor_research_task.v1"] = FACTOR_RESEARCH_TASK_SCHEMA
+    task_type: Literal["factor_research"] = FACTOR_RESEARCH_TASK_TYPE
+    task_id: str = Field(min_length=1, max_length=180)
+    snapshot_id: str = Field(min_length=1, max_length=180)
+    as_of_date: date
+    start_date: date
+    end_date: date
+    max_history_days: int = Field(ge=1, le=1095)
+    hypothesis_ids: tuple[str, ...] = Field(min_length=1, max_length=6)
+    trial_ids: tuple[str, ...] = Field(min_length=1, max_length=54)
+    test_count: int = Field(ge=1, le=54)
+    quant_lab_commit: str = Field(min_length=40, max_length=40)
+    factor_research_schema_version: str = Field(min_length=1, max_length=80)
+    hypothesis_registry_digest: str = Field(min_length=64, max_length=64)
+    trial_ledger_digest: str = Field(min_length=64, max_length=64)
+    source_input_digest: str = Field(min_length=64, max_length=64)
+    selected_v5_bundle_id: str = Field(min_length=1, max_length=512)
+    snapshot_manifest_sha256: str = Field(min_length=64, max_length=64)
+    requested_at: datetime
+    lease_seconds: int = Field(default=7200, ge=60, le=24 * 60 * 60)
+    max_attempts: int = Field(default=3, ge=1, le=10)
+    signature_key_id: str = Field(min_length=1, max_length=120)
+    research_only: Literal[True] = True
+    live_order_effect: Literal["none"] = "none"
+    automatic_promotion: Literal[False] = False
+    max_live_notional_usdt: Literal[0] = 0
+    signature: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_task(self) -> FactorResearchTask:
+        _require_identifier(self.task_id, "task_id")
+        _require_identifier(self.snapshot_id, "snapshot_id")
+        _require_commit(self.quant_lab_commit, "quant_lab_commit")
+        _require_sha(self.hypothesis_registry_digest, "hypothesis_registry_digest")
+        _require_sha(self.trial_ledger_digest, "trial_ledger_digest")
+        _require_sha(self.source_input_digest, "source_input_digest")
+        _require_sha(self.snapshot_manifest_sha256, "snapshot_manifest_sha256")
+        _require_utc(self.requested_at, "requested_at")
+        _require_identifier(self.signature_key_id, "signature_key_id")
+        FactorResearchTaskParameters(
+            as_of_date=self.as_of_date,
+            start_date=self.start_date,
+            end_date=self.end_date,
+            max_history_days=self.max_history_days,
+            hypothesis_ids=self.hypothesis_ids,
+            trial_ids=self.trial_ids,
+        )
+        if self.test_count != len(self.trial_ids):
+            raise ValueError("factor research test_count must equal trial count")
+        return self
+
+    @property
+    def parameters(self) -> FactorResearchTaskParameters:
+        return FactorResearchTaskParameters(
+            as_of_date=self.as_of_date,
+            start_date=self.start_date,
+            end_date=self.end_date,
+            max_history_days=self.max_history_days,
+            hypothesis_ids=self.hypothesis_ids,
+            trial_ids=self.trial_ids,
+        )
+
+
 ResearchTaskEnvelope: TypeAlias = Annotated[
-    ResearchTask | AlphaFactoryTask,
+    ResearchTask | AlphaFactoryTask | FactorResearchTask,
     Field(discriminator="task_type"),
 ]
 RESEARCH_TASK_ADAPTER = TypeAdapter(ResearchTaskEnvelope)
 
 
 ResearchSnapshotEnvelope: TypeAlias = Annotated[
-    ResearchSnapshotManifest | AlphaFactorySnapshotManifest,
+    ResearchSnapshotManifest | AlphaFactorySnapshotManifest | FactorResearchSnapshotManifest,
     Field(discriminator="schema_version"),
 ]
 RESEARCH_SNAPSHOT_ADAPTER = TypeAdapter(ResearchSnapshotEnvelope)
@@ -391,6 +561,14 @@ class AlphaFactoryResultManifest(StrictModel):
     alpha_factory_schema_version: str = Field(min_length=1, max_length=80)
     second_stage_schema_version: str = Field(min_length=1, max_length=80)
     template_registry_digest: str = Field(min_length=64, max_length=64)
+    factor_generation_id: str | None = Field(default=None, min_length=1, max_length=180)
+    factor_generation_digest: str | None = Field(default=None, min_length=64, max_length=64)
+    factor_generation_as_of_date: date | None = None
+    factor_generation_published_at: datetime | None = None
+    hypothesis_registry_digest: str | None = Field(default=None, min_length=64, max_length=64)
+    trial_ledger_digest: str | None = Field(default=None, min_length=64, max_length=64)
+    factor_generation_fresh: bool | None = None
+    factor_generation_hypothesis_ids: tuple[str, ...] | None = None
     as_of_date: date
     lookback_days: int = Field(ge=1, le=180)
     max_candidates: int = Field(ge=1, le=200)
@@ -422,6 +600,7 @@ class AlphaFactoryResultManifest(StrictModel):
         _require_identifier(self.generation_id, "generation_id")
         _require_sha(self.snapshot_manifest_sha256, "snapshot_manifest_sha256")
         _require_sha(self.template_registry_digest, "template_registry_digest")
+        _validate_optional_alpha_factor_generation(self)
         _require_commit(self.quant_lab_commit, "quant_lab_commit")
         _require_commit(self.worker_commit, "worker_commit")
         _require_utc(self.generated_at, "generated_at")
@@ -441,8 +620,90 @@ class AlphaFactoryResultManifest(StrictModel):
         return self
 
 
+class FactorResearchResultManifest(StrictModel):
+    schema_version: Literal["quant_lab_factor_research_result.v1"] = FACTOR_RESEARCH_RESULT_SCHEMA
+    task_type: Literal["factor_research"] = FACTOR_RESEARCH_TASK_TYPE
+    task_id: str = Field(min_length=1, max_length=180)
+    snapshot_id: str = Field(min_length=1, max_length=180)
+    snapshot_manifest_sha256: str = Field(min_length=64, max_length=64)
+    selected_v5_bundle_id: str = Field(min_length=1, max_length=512)
+    quant_lab_commit: str = Field(min_length=40, max_length=40)
+    worker_commit: str = Field(min_length=40, max_length=40)
+    factor_research_schema_version: str = Field(min_length=1, max_length=80)
+    hypothesis_registry_digest: str = Field(min_length=64, max_length=64)
+    trial_ledger_digest: str = Field(min_length=64, max_length=64)
+    source_input_digest: str = Field(min_length=64, max_length=64)
+    as_of_date: date
+    start_date: date
+    end_date: date
+    max_history_days: int = Field(ge=1, le=1095)
+    hypothesis_ids: tuple[str, ...] = Field(min_length=1, max_length=6)
+    trial_ids: tuple[str, ...] = Field(min_length=1, max_length=54)
+    test_count: int = Field(ge=1, le=54)
+    multiple_testing_family: str = Field(min_length=1, max_length=180)
+    generation_id: str = Field(min_length=1, max_length=180)
+    generated_at: datetime
+    completed_at: datetime
+    outputs: list[ResearchOutputDataset]
+    reports: list[ResearchOutputFile]
+    anti_leakage_status: Literal["PASS"]
+    anti_leakage_violation_count: Literal[0] = 0
+    warnings: list[str] = Field(default_factory=list)
+    input_bytes: int = Field(ge=0)
+    cache_hit_bytes: int = Field(ge=0)
+    downloaded_bytes: int = Field(ge=0)
+    output_bytes: int = Field(ge=0)
+    peak_rss_bytes: int = Field(ge=0)
+    compute_duration_seconds: float = Field(ge=0)
+    worker_key_id: str = Field(min_length=1, max_length=120)
+    research_only: Literal[True] = True
+    requires_cloud_validation: Literal[True] = True
+    live_order_effect: Literal["none"] = "none"
+    automatic_promotion: Literal[False] = False
+    max_live_notional_usdt: Literal[0] = 0
+    signature: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_result(self) -> FactorResearchResultManifest:
+        _require_identifier(self.task_id, "task_id")
+        _require_identifier(self.snapshot_id, "snapshot_id")
+        _require_identifier(self.generation_id, "generation_id")
+        _require_identifier(self.multiple_testing_family, "multiple_testing_family")
+        _require_sha(self.snapshot_manifest_sha256, "snapshot_manifest_sha256")
+        _require_sha(self.hypothesis_registry_digest, "hypothesis_registry_digest")
+        _require_sha(self.trial_ledger_digest, "trial_ledger_digest")
+        _require_sha(self.source_input_digest, "source_input_digest")
+        _require_commit(self.quant_lab_commit, "quant_lab_commit")
+        _require_commit(self.worker_commit, "worker_commit")
+        _require_utc(self.generated_at, "generated_at")
+        _require_utc(self.completed_at, "completed_at")
+        _require_identifier(self.worker_key_id, "worker_key_id")
+        FactorResearchTaskParameters(
+            as_of_date=self.as_of_date,
+            start_date=self.start_date,
+            end_date=self.end_date,
+            max_history_days=self.max_history_days,
+            hypothesis_ids=self.hypothesis_ids,
+            trial_ids=self.trial_ids,
+        )
+        if self.test_count != len(self.trial_ids):
+            raise ValueError("factor research test_count must equal trial count")
+        names = [item.dataset_name for item in self.outputs]
+        if len(names) != len(set(names)):
+            raise ValueError("result output datasets must be unique")
+        report_paths = [item.relative_path for item in self.reports]
+        if len(report_paths) != len(set(report_paths)):
+            raise ValueError("result report paths must be unique")
+        expected_output_bytes = sum(item.size_bytes for item in self.outputs) + sum(
+            item.size_bytes for item in self.reports
+        )
+        if self.output_bytes != expected_output_bytes:
+            raise ValueError("result output_bytes mismatch")
+        return self
+
+
 ResearchResultEnvelope: TypeAlias = Annotated[
-    ResearchResultManifest | AlphaFactoryResultManifest,
+    ResearchResultManifest | AlphaFactoryResultManifest | FactorResearchResultManifest,
     Field(discriminator="task_type"),
 ]
 RESEARCH_RESULT_ADAPTER = TypeAdapter(ResearchResultEnvelope)
@@ -480,9 +741,7 @@ class ResearchWorkerReceipt(StrictModel):
 
 
 class AlphaFactoryWorkerReceipt(StrictModel):
-    schema_version: Literal["quant_lab_alpha_factory_receipt.v1"] = (
-        ALPHA_FACTORY_RECEIPT_SCHEMA
-    )
+    schema_version: Literal["quant_lab_alpha_factory_receipt.v1"] = ALPHA_FACTORY_RECEIPT_SCHEMA
     task_type: Literal["alpha_factory"] = ALPHA_FACTORY_TASK_TYPE
     task_id: str = Field(min_length=1, max_length=180)
     snapshot_id: str = Field(min_length=1, max_length=180)
@@ -515,8 +774,44 @@ class AlphaFactoryWorkerReceipt(StrictModel):
         return self
 
 
+class FactorResearchWorkerReceipt(StrictModel):
+    schema_version: Literal["quant_lab_factor_research_receipt.v1"] = FACTOR_RESEARCH_RECEIPT_SCHEMA
+    task_type: Literal["factor_research"] = FACTOR_RESEARCH_TASK_TYPE
+    task_id: str = Field(min_length=1, max_length=180)
+    snapshot_id: str = Field(min_length=1, max_length=180)
+    worker_id: str = Field(min_length=1, max_length=180)
+    worker_commit: str = Field(min_length=40, max_length=40)
+    state: Literal["completed", "failed"]
+    claimed_at: datetime
+    completed_at: datetime
+    result_manifest_sha256: str = Field(min_length=64, max_length=64)
+    output_rows: int = Field(ge=0)
+    input_bytes: int = Field(ge=0)
+    downloaded_bytes: int = Field(ge=0)
+    cache_hit_bytes: int = Field(ge=0)
+    anti_leakage_status: Literal["PASS"]
+    anti_leakage_violation_count: Literal[0] = 0
+    error_code: str | None = None
+    worker_key_id: str = Field(min_length=1, max_length=120)
+    research_only: Literal[True] = True
+    live_order_effect: Literal["none"] = "none"
+    signature: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_receipt(self) -> FactorResearchWorkerReceipt:
+        _require_identifier(self.task_id, "task_id")
+        _require_identifier(self.snapshot_id, "snapshot_id")
+        _require_identifier(self.worker_id, "worker_id")
+        _require_commit(self.worker_commit, "worker_commit")
+        _require_sha(self.result_manifest_sha256, "result_manifest_sha256")
+        _require_utc(self.claimed_at, "claimed_at")
+        _require_utc(self.completed_at, "completed_at")
+        _require_identifier(self.worker_key_id, "worker_key_id")
+        return self
+
+
 ResearchReceiptEnvelope: TypeAlias = Annotated[
-    ResearchWorkerReceipt | AlphaFactoryWorkerReceipt,
+    ResearchWorkerReceipt | AlphaFactoryWorkerReceipt | FactorResearchWorkerReceipt,
     Field(discriminator="schema_version"),
 ]
 RESEARCH_RECEIPT_ADAPTER = TypeAdapter(ResearchReceiptEnvelope)
@@ -542,7 +837,7 @@ class ResearchTaskStatus(StrictModel):
     schema_version: Literal["quant_lab_research_status.v1"] = RESEARCH_STATUS_SCHEMA
     task_id: str
     snapshot_id: str
-    task_type: Literal["entry_quality_history", "alpha_factory"] = (
+    task_type: Literal["entry_quality_history", "alpha_factory", "factor_research"] = (
         ENTRY_QUALITY_HISTORY_TASK_TYPE
     )
     start_date: date
@@ -593,7 +888,7 @@ class ResearchTaskLease(StrictModel):
     schema_version: Literal["quant_lab_research_lease.v1"] = RESEARCH_LEASE_SCHEMA
     task_id: str = Field(min_length=1, max_length=180)
     snapshot_id: str = Field(min_length=1, max_length=180)
-    task_type: Literal["entry_quality_history", "alpha_factory"] = (
+    task_type: Literal["entry_quality_history", "alpha_factory", "factor_research"] = (
         ENTRY_QUALITY_HISTORY_TASK_TYPE
     )
     worker_id: str = Field(min_length=1, max_length=180)
@@ -619,6 +914,46 @@ def _require_identifier(value: str, field_name: str) -> None:
     allowed = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.:-"
     if not value or len(value) > 180 or any(character not in allowed for character in value):
         raise ValueError(f"unsafe {field_name}")
+
+
+def _require_unique_identifiers(values: tuple[str, ...], field_name: str) -> None:
+    if len(values) != len(set(values)):
+        raise ValueError(f"{field_name} must be unique")
+    for value in values:
+        _require_identifier(value, field_name)
+
+
+def _validate_optional_alpha_factor_generation(value: BaseModel) -> None:
+    field_names = (
+        "factor_generation_id",
+        "factor_generation_digest",
+        "factor_generation_as_of_date",
+        "factor_generation_published_at",
+        "hypothesis_registry_digest",
+        "trial_ledger_digest",
+        "factor_generation_fresh",
+        "factor_generation_hypothesis_ids",
+    )
+    observed = {field_name: getattr(value, field_name) for field_name in field_names}
+    if all(item is None for item in observed.values()):
+        return
+    missing = [field_name for field_name, item in observed.items() if item is None]
+    if missing:
+        raise ValueError(
+            "alpha factor generation binding must be complete: " + ",".join(missing)
+        )
+    _require_identifier(str(observed["factor_generation_id"]), "factor_generation_id")
+    _require_sha(str(observed["factor_generation_digest"]), "factor_generation_digest")
+    _require_sha(str(observed["hypothesis_registry_digest"]), "hypothesis_registry_digest")
+    _require_sha(str(observed["trial_ledger_digest"]), "trial_ledger_digest")
+    _require_utc(
+        observed["factor_generation_published_at"],
+        "factor_generation_published_at",
+    )
+    hypothesis_ids = observed["factor_generation_hypothesis_ids"]
+    if not hypothesis_ids:
+        raise ValueError("factor_generation_hypothesis_ids must not be empty")
+    _require_unique_identifiers(hypothesis_ids, "factor_generation_hypothesis_ids")
 
 
 def _require_sha(value: str, field_name: str) -> None:

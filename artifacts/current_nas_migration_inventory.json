@@ -1,0 +1,118 @@
+{
+  "schema_version": "quant_lab.current_nas_migration_inventory.v2",
+  "captured_at": "2026-07-19T12:48:01Z",
+  "source_truth": "live_ssh_systemd_docker_queue_and_lake_inspection",
+  "commits": {
+    "github_quant_lab_main": "49ad71fb9d3043e4882546fd8b8d4ff0ba93106b",
+    "accepted_shadow_task_code": "8d8c884ad9fc35ff600921fc8c0a05bf732cff72",
+    "github_operational_runtime": "1bd35db43c71298e37d6ae8ef16a694a94ebaab3",
+    "cloud_quant_lab": "1bd35db43c71298e37d6ae8ef16a694a94ebaab3",
+    "nas_research_worker": "1bd35db43c71298e37d6ae8ef16a694a94ebaab3",
+    "v5_prod_read_only": "3df1c67cc44cc8be364ec5d3798ea0d3595c0abc"
+  },
+  "capabilities": [
+    {"name": "expert_export", "state": "PRODUCTION_RESEARCH_RUNNING"},
+    {"name": "ai_research", "state": "PRODUCTION_RESEARCH_RUNNING"},
+    {"name": "entry_quality_history", "state": "PRODUCTION_RESEARCH_RUNNING"},
+    {
+      "name": "alpha_factory",
+      "state": "PRODUCTION_RESEARCH_RUNNING",
+      "task_id": "alpha-factory-c3b0425791b3ce7800ed1470"
+    },
+    {
+      "name": "factor_research",
+      "state": "PRODUCTION_RESEARCH_RUNNING",
+      "task_id": "factor-research-097a452bfeb6edfd8baf5d1e"
+    }
+  ],
+  "cloud": {
+    "host": "qyun2",
+    "root_disk_total_bytes": 84423806976,
+    "root_disk_used_bytes": 43658485760,
+    "root_disk_available_bytes": 37205602304,
+    "root_disk_used_percent": 54,
+    "memory_total_bytes": 7994249216,
+    "memory_available_bytes": 6889463808,
+    "lake_size_bytes": 13592119349,
+    "research_queue_size_bytes": 101766175,
+    "cloud_heavy_factor_factory_still_scheduled": false,
+    "factor_request_memory_max_bytes": 943718400,
+    "research_import_memory_max_bytes": 1258291200,
+    "web_refresh_source_dataset_count": 40,
+    "registered_dataset_count": 190,
+    "web_refresh_isolated_duration_seconds": 45.56,
+    "web_refresh_isolated_swap_peak_bytes": 0,
+    "v5_refresh_duration_seconds": 704.4,
+    "v5_refresh_memory_peak_bytes": 944246784,
+    "v5_refresh_swap_peak_bytes": 535240704,
+    "v5_refresh_result": "success"
+  },
+  "nas": {
+    "host": "HR-Cloud",
+    "volume_total_bytes": 983547510784,
+    "volume_available_bytes": 854091108352,
+    "volume_used_percent": 14,
+    "memory_total_bytes": 16539697152,
+    "memory_available_bytes": 10771222528,
+    "research_worker": {
+      "container": "quant-research-worker",
+      "state": "created_idle",
+      "image_id": "sha256:28c7e80192cdbdfb8f3debb7d5496e88f60fb9250d6579f7f762a35276a149e7",
+      "cpu_limit": 3.0,
+      "memory_limit_bytes": 8589934592,
+      "pid_limit": 256,
+      "read_only_root": true
+    }
+  },
+  "accepted_tasks": [
+    {
+      "task_id": "factor-research-097a452bfeb6edfd8baf5d1e",
+      "task_type": "factor_research",
+      "snapshot_id": "factor-research-b7ba4acfe2d475c65fa0d474",
+      "input_bytes": 388332,
+      "downloaded_bytes": 311072,
+      "cache_hit_bytes": 77260,
+      "output_rows": 22122,
+      "output_bytes": 554306,
+      "peak_rss_bytes": 354426880,
+      "compute_duration_seconds": 24.88037915015593,
+      "anti_leakage_status": "PASS",
+      "import_status": "imported"
+    },
+    {
+      "task_id": "alpha-factory-c3b0425791b3ce7800ed1470",
+      "task_type": "alpha_factory",
+      "snapshot_id": "alpha-factory-d6cdd2d63e20ce52a39c8183",
+      "input_bytes": 16295243,
+      "downloaded_bytes": 16220714,
+      "cache_hit_bytes": 74529,
+      "output_rows": 307138,
+      "output_bytes": 2562375,
+      "peak_rss_bytes": 1439264768,
+      "compute_duration_seconds": 20.650072281016037,
+      "anti_leakage_status": "PASS",
+      "import_status": "imported",
+      "factor_generation_id": "factor-research-097a452bfeb6edfd8baf5d1e",
+      "factor_generation_digest": "82655622935aa4fcfc6e153162ff4c4edb7450b41f098b8cfdf8043eb5511f52"
+    }
+  ],
+  "factor_research": {
+    "independent_hypothesis_count": 4,
+    "active_hypothesis_count": 2,
+    "current_trial_count": 8,
+    "total_trial_ledger_count": 56,
+    "data_quality_rejected_count": 8,
+    "multiple_testing_pass_count": 0,
+    "signal_valid_count": 0,
+    "portfolio_fail_count": 0,
+    "paper_candidate_count": 0,
+    "point_in_time_cost_coverage": 0.747906976744186
+  },
+  "safety": {
+    "v5_modified": false,
+    "research_only": true,
+    "live_order_effect": "none",
+    "automatic_promotion": false,
+    "max_live_notional_usdt": 0
+  }
+}

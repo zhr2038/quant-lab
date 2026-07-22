@@ -15,11 +15,18 @@ def render(_lake_root: str | Path, st_module: Any | None = None) -> None:
 
 
 def show_iframe(st: Any, url: str, *, height: int, scrolling: bool) -> None:
+    components = getattr(getattr(st, "components", None), "v1", None)
+    component_iframe = getattr(components, "iframe", None)
+    if callable(component_iframe):
+        component_iframe(url, height=height, scrolling=scrolling)
+        return
+
     iframe = getattr(st, "iframe", None)
     if callable(iframe):
-        iframe(url, height=height, scrolling=scrolling)
+        iframe(url, height=height)
         return
-    st.components.v1.iframe(url, height=height, scrolling=scrolling)
+
+    raise AttributeError("Streamlit iframe API is unavailable")
 
 
 def _streamlit(st_module: Any | None = None) -> Any:

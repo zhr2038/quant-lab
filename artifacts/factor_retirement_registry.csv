@@ -1,0 +1,9 @@
+factor_id,factor_family,status,enabled,retirement_reason,signal_validity,portfolio_validity,source_audit,recorded_at,research_only,live_order_effect
+rev_xs_20d,reversal,RETIRED,false,audit_signal_invalid,FAIL,UNKNOWN,factor_discovery_v2_migration,2026-07-19T08:00:00.000000+0000,true,none
+production_20d_momentum,momentum,RETIRED,false,audit_signal_invalid,FAIL,UNKNOWN,factor_discovery_v2_migration,2026-07-19T08:00:00.000000+0000,true,none
+vol_adjusted_momentum,momentum,RETIRED,false,audit_signal_invalid,FAIL,UNKNOWN,factor_discovery_v2_migration,2026-07-19T08:00:00.000000+0000,true,none
+volume_dry_reversal,reversal,RETIRED,false,audit_signal_invalid,FAIL,UNKNOWN,factor_discovery_v2_migration,2026-07-19T08:00:00.000000+0000,true,none
+pullback_uptrend,timing,RETIRED,false,audit_signal_invalid,FAIL,UNKNOWN,factor_discovery_v2_migration,2026-07-19T08:00:00.000000+0000,true,none
+failed_alpha158_overlays,legacy_overlay,RETIRED,false,audit_multiple_testing_failure,FAIL,UNKNOWN,factor_discovery_v2_migration,2026-07-19T08:00:00.000000+0000,true,none
+funding_fade,derivatives_crowding,DATA_PENDING,false,real_funding_history_missing,UNKNOWN,UNKNOWN,factor_discovery_v2_migration,2026-07-19T08:00:00.000000+0000,true,none
+low_vol_20d,defensive_quality,REFERENCE_SIGNAL,false,requires_structural_dynamic_decomposition,PASS,FAIL,factor_discovery_v2_migration,2026-07-19T08:00:00.000000+0000,true,none

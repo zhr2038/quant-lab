@@ -1,5 +1,5 @@
-import { FlaskConical, GitBranch, Rocket, Scale, Sparkles } from "lucide-react";
-import { bps, safeRows, shortNumber, stringValue } from "../lib/api";
+import { FlaskConical, GitBranch, Rocket, Scale } from "lucide-react";
+import { bps, pct, safeRows, shortNumber, stringValue } from "../lib/api";
 
 export function StrategyFlow({ flow }: { flow: Record<string, unknown> }) {
   const counts = (flow.counts ?? {}) as Record<string, number>;
@@ -11,17 +11,19 @@ export function StrategyFlow({ flow }: { flow: Record<string, unknown> }) {
   const opportunityCost = (flow.opportunity_cost ?? {}) as Record<string, unknown>;
   const paperLifecycle = (flow.paper_lifecycle ?? {}) as Record<string, unknown>;
   const lifecycleCounts = (paperLifecycle.counts ?? {}) as Record<string, number>;
-  const factorReviewQueue = safeRows(factorFactory.paper_review_queue);
-  const bridgeRows = safeRows(factorFactory.strategy_bridge_candidates);
-  const dedupeRows = safeRows(factorFactory.dedupe_decisions);
-  const familyRows = safeRows(factorFactory.family_leaderboard);
-  const regimeRows = safeRows(factorFactory.regime_effectiveness);
-  const factorRows = dedupeFactorRows([
-    ...safeRows(factorFactory.paper_ready_candidates),
-    ...factorReviewQueue,
-    ...safeRows(factorFactory.top_candidates),
-    ...bridgeRows
-  ]);
+  const hypothesisRows = safeRows(factorFactory.hypotheses);
+  const trialRows = safeRows(factorFactory.trials);
+  const attributionRows = safeRows(factorFactory.attribution).filter(
+    (row) => stringValue(row.trial_id, "") && stringValue(row.factor_id, "")
+  );
+  const portfolioRows = safeRows(factorFactory.portfolio_validation).filter(
+    (row) => stringValue(row.trial_id, "") && stringValue(row.factor_id, "")
+  );
+  const nasTask = (factorFactory.nas_task ?? {}) as Record<string, unknown>;
+  const nasTaskDetail = (nasTask.task ?? {}) as Record<string, unknown>;
+  const generation = (factorFactory.generation ?? {}) as Record<string, unknown>;
+  const nasTaskId = stringValue(nasTaskDetail.task_id, "");
+  const generationId = stringValue(generation.generation_id, "");
   return (
     <section className="card pad strategy-card">
       <h2 className="section-title icon-title"><GitBranch size={23} />策略机会流</h2>
@@ -67,23 +69,38 @@ export function StrategyFlow({ flow }: { flow: Record<string, unknown> }) {
           </div>
         </div>
         <div className="factor-factory-mini">
-          <div className="candidate-title"><FlaskConical size={15} /> Factor Factory</div>
+          <div className="candidate-title"><FlaskConical size={15} /> Factor Research v2</div>
           <div className="factor-factory-stats">
-            <span><b>{shortNumber(factorFactory.candidate_count)}</b><em>候选</em></span>
-            <span><b>{shortNumber(factorFactory.paper_review_queue_count ?? factorFactory.paper_ready_count)}</b><em>Paper候选</em></span>
-            <span><b>{shortNumber(factorFactory.strategy_bridge_candidate_count ?? safeRows(factorFactory.strategy_bridge_candidates).length)}</b><em>Bridge</em></span>
+            <span><b>{shortNumber(factorFactory.independent_hypothesis_count)}</b><em>独立假设</em></span>
+            <span><b>{shortNumber(factorFactory.active_hypothesis_count)}</b><em>活跃假设</em></span>
+            <span><b>{shortNumber(factorFactory.trial_budget_usage_pct)}%</b><em>试验预算</em></span>
           </div>
-          <div className="factor-chip-grid">
-            {factorRows.slice(0, 8).map((factor, i) => (
-              <div className="factor-chip" key={`${factor.factor_id}-${i}`} title={stringValue(factor.factor_id ?? factor.factor_name, "factor")}>
-                <Sparkles size={13} />
-                <span>{stringValue(factor.factor_id ?? factor.factor_name, "factor")}</span>
-                <em>{stringValue(factor.state ?? factor.candidate_state, "RESEARCH")}</em>
-                <strong>{bps(factor.long_short_bps ?? factor.best_long_short_mean_bps)}</strong>
-              </div>
-            ))}
+          <div
+            className="factor-generation-grid"
+            data-testid="factor-generation-summary"
+            title={[nasTaskId, generationId].filter(Boolean).join(" | ")}
+          >
+            <div className="factor-generation-cell">
+              <span>NAS 任务</span>
+              <b>{researchTaskState(stringValue(nasTask.state, "idle"))}</b>
+              <em>{shortId(nasTaskId || generationId)}</em>
+            </div>
+            <div className="factor-generation-cell verdict">
+              <span>本轮结论</span>
+              <b>{researchVerdict(stringValue(factorFactory.current_generation_verdict, "NO_CURRENT_TRIALS"))}</b>
+              <em>{stringValue(factorFactory.current_generation_verdict, "NO_CURRENT_TRIALS")}</em>
+            </div>
+            <div className="factor-generation-cell">
+              <span>试验审查</span>
+              <b>{shortNumber(factorFactory.current_trial_count)} 个试验</b>
+              <em>
+                质量拒绝 {shortNumber(factorFactory.current_data_quality_rejected_count)}
+                {" · FDR 通过 "}{shortNumber(factorFactory.multiple_testing_pass_count)}
+                {" · PIT成本 "}{pct(factorFactory.minimum_point_in_time_cost_coverage, 1)}
+                {" · 可信 "}{pct(factorFactory.minimum_trusted_cost_coverage, 1)}
+              </em>
+            </div>
           </div>
-          {!factorRows.length && <div className="factor-empty">Factor Factory 暂无候选</div>}
         </div>
         <div className="candidate-list">
           <div className="candidate-title"><Rocket size={15} /> 策略候选（只读）</div>
@@ -104,35 +121,35 @@ export function StrategyFlow({ flow }: { flow: Record<string, unknown> }) {
       </div>
       <div className="strategy-secondary-grid">
         <ResearchMiniPanel
-          title="Bridge"
-          rows={bridgeRows.slice(0, 4).map((row) => [
-            stringValue(row.factor_id, "factor"),
-            [row.symbol, row.regime, row.horizon].map((value) => stringValue(value, "")).filter(Boolean).join(" · "),
-            stringValue(row.eligible_for_alpha_factory ?? row.recommended_action, "review")
-          ])}
-        />
-        <ResearchMiniPanel
-          title="去重"
-          rows={dedupeRows.slice(0, 4).map((row) => [
-            stringValue(row.factor_id, "factor"),
-            stringValue(row.leader_factor_id, "leader ?"),
-            stringValue(row.dedupe_decision, "review")
-          ])}
-        />
-        <ResearchMiniPanel
-          title="家族榜"
-          rows={familyRows.slice(0, 4).map((row) => [
+          title="假设"
+          rows={hypothesisRows.slice(0, 4).map((row) => [
+            stringValue(row.hypothesis_id, "hypothesis"),
             stringValue(row.factor_family, "family"),
-            stringValue(row.leader_factor_id, "leader"),
-            `${shortNumber(row.paper_ready_count)} paper`
+            stringValue(row.status, "DRAFT")
           ])}
         />
         <ResearchMiniPanel
-          title="Regime"
-          rows={regimeRows.slice(0, 4).map((row) => [
+          title="试验"
+          rows={trialRows.slice(0, 4).map((row) => [
+            stringValue(row.trial_id, "trial"),
+            stringValue(row.trial_kind, "EXPLORATORY"),
+            stringValue(row.decision ?? row.status, "SUBMITTED")
+          ])}
+        />
+        <ResearchMiniPanel
+          title="归因"
+          rows={attributionRows.slice(0, 4).map((row) => [
             stringValue(row.factor_id, "factor"),
-            [row.regime, row.horizon].map((value) => stringValue(value, "")).filter(Boolean).join(" · "),
-            bps(row.long_short_bps ?? row.best_long_short_mean_bps)
+            stringValue(row.attribution_type, "unknown"),
+            `residual ${shortNumber(row.joint_residual_rank_ic)}`
+          ])}
+        />
+        <ResearchMiniPanel
+          title="组合"
+          rows={portfolioRows.slice(0, 4).map((row) => [
+            stringValue(row.factor_id, "factor"),
+            stringValue(row.portfolio_validity, "UNKNOWN"),
+            `${stringValue(row.decision, "RESEARCH")} · PIT ${pct(row.cost_coverage, 0)} · trusted ${pct(row.trusted_cost_coverage, 0)}`
           ])}
         />
       </div>
@@ -167,6 +184,32 @@ function ResearchMiniPanel({ title, rows }: { title: string; rows: string[][] })
   );
 }
 
+function shortId(value: string): string {
+  if (!value) return "no-task";
+  const compact = value.replace(/^factor-research-/, "");
+  return compact.length > 10 ? `${compact.slice(0, 10)}…` : compact;
+}
+
+function researchTaskState(value: string): string {
+  const state = value.trim().toLowerCase();
+  if (state === "completed") return "计算完成";
+  if (state === "running" || state === "computing") return "计算中";
+  if (state === "pending" || state === "queued") return "等待计算";
+  if (state === "failed") return "计算失败";
+  return state === "idle" ? "暂无任务" : value;
+}
+
+function researchVerdict(value: string): string {
+  const verdicts: Record<string, string> = {
+    DATA_QUALITY_BLOCKED: "数据质量阻塞",
+    MULTIPLE_TESTING_BLOCKED: "统计检验阻塞",
+    NO_CURRENT_TRIALS: "暂无本轮试验",
+    RESEARCH_ONLY: "仅限研究",
+    READY_FOR_REVIEW: "等待人工复核"
+  };
+  return verdicts[value] ?? value.replace(/_/g, " ");
+}
+
 function dedupeCandidates(rows: Record<string, unknown>[]): Record<string, unknown>[] {
   const seen = new Set<string>();
   return rows.filter((candidate) => {
@@ -174,20 +217,6 @@ function dedupeCandidates(rows: Record<string, unknown>[]): Record<string, unkno
       stringValue(candidate.symbol, ""),
       stringValue(candidate.horizon_hours, ""),
       stringValue(candidate.recommended_mode ?? candidate.decision, "")
-    ].join("|");
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-}
-
-function dedupeFactorRows(rows: Record<string, unknown>[]): Record<string, unknown>[] {
-  const seen = new Set<string>();
-  return rows.filter((factor) => {
-    const key = [
-      stringValue(factor.factor_id ?? factor.factor_name, ""),
-      stringValue(factor.best_horizon_bars ?? factor.horizon ?? factor.horizon_bars, ""),
-      stringValue(factor.candidate_state ?? factor.state ?? factor.recommended_action, "")
     ].join("|");
     if (seen.has(key)) return false;
     seen.add(key);

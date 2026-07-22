@@ -39,6 +39,12 @@ DATASET_PATHS = {
     "factor_evidence": Path("gold") / "factor_evidence",
     "factor_candidate": Path("gold") / "factor_candidate",
     "factor_correlation_daily": Path("gold") / "factor_correlation_daily",
+    "research_hypothesis_registry": Path("gold") / "research_hypothesis_registry",
+    "research_trial_ledger": Path("gold") / "research_trial_ledger",
+    "factor_attribution": Path("gold") / "factor_attribution",
+    "factor_portfolio_validation": Path("gold") / "factor_portfolio_validation",
+    "factor_retirement": Path("gold") / "factor_retirement",
+    "factor_external_audit_evidence": Path("gold") / "factor_external_audit_evidence",
     "factor_strategy_bridge_candidates": Path("gold") / "factor_strategy_bridge_candidates",
     "cost_bucket_daily": Path("gold") / "cost_bucket_daily",
     "cost_health_daily": Path("gold") / "cost_health_daily",
@@ -113,6 +119,9 @@ DATASET_PATHS = {
     "ai_factor_proposal": Path("gold") / "ai_factor_proposal",
     "ai_paper_strategy_draft": Path("gold") / "ai_paper_strategy_draft",
     "ai_experiment_proposal": Path("gold") / "ai_experiment_proposal",
+    "ai_research_hypothesis_draft": Path("gold") / "ai_research_hypothesis_draft",
+    "ai_data_collection_proposal": Path("gold") / "ai_data_collection_proposal",
+    "ai_attribution_experiment": Path("gold") / "ai_attribution_experiment",
     "ai_code_review_target": Path("gold") / "ai_code_review_target",
     "paper_strategy_migration_audit": Path("gold") / "paper_strategy_migration_audit",
     "paper_strategy_promotion_gate": Path("gold") / "paper_strategy_promotion_gate",
@@ -275,6 +284,7 @@ OPTIONAL_EMPTY_DATASET_STATUSES = {
     "cost_probe_optional_audit",
     "registry_optional_empty",
     "registry_freshness_not_required",
+    "registry_freshness_within_sla",
     DERIVED_LATEST_SOURCE_CURRENT_STATUS,
     "event_driven_no_recent_cost_probe_p3_preflight",
     "event_driven_no_recent_cost_probe_order_event",
@@ -419,6 +429,8 @@ DATASET_TIMESTAMP_COLUMNS: dict[str, tuple[str, ...]] = {
     "risk_permission_api_dependency_meta": ("generated_at", "telemetry_latest_ts"),
     "api_request_metrics": ("request_ts",),
     "api_auth_incident": ("generated_at", "last_error_at"),
+    "api_auth_error_timeline": ("generated_at", "last_error_at"),
+    "api_auth_client_summary": ("generated_at", "last_error_at"),
     "api_auth_production_slo": (
         "generated_at",
         "last_unexpected_auth_failure_at",
@@ -442,6 +454,9 @@ DATASET_TIMESTAMP_COLUMNS: dict[str, tuple[str, ...]] = {
     "ai_factor_proposal": ("completed_at",),
     "ai_paper_strategy_draft": ("completed_at",),
     "ai_experiment_proposal": ("completed_at",),
+    "ai_research_hypothesis_draft": ("completed_at",),
+    "ai_data_collection_proposal": ("completed_at",),
+    "ai_attribution_experiment": ("completed_at",),
     "ai_code_review_target": ("completed_at",),
     "job_run_history": ("finished_at", "started_at"),
     "lake_file_health_daily": ("created_at", "day"),
@@ -464,6 +479,12 @@ DATASET_TIMESTAMP_COLUMNS: dict[str, tuple[str, ...]] = {
     "factor_evidence": ("created_at", "end_ts", "as_of_date"),
     "factor_candidate": ("created_at", "as_of_date"),
     "factor_correlation_daily": ("created_at", "as_of_date"),
+    "research_hypothesis_registry": ("updated_at", "created_at"),
+    "research_trial_ledger": ("finished_at", "started_at", "submitted_at"),
+    "factor_attribution": ("created_at", "as_of_date"),
+    "factor_portfolio_validation": ("created_at", "as_of_date"),
+    "factor_retirement": ("recorded_at",),
+    "factor_external_audit_evidence": ("imported_at",),
     "factor_strategy_bridge_candidates": ("generated_at", "created_at", "as_of_date"),
     "alpha_evidence": ("created_at", "end_ts"),
     "alpha_discovery_board": ("created_at", "end_ts", "start_ts", "as_of_date"),
@@ -6415,7 +6436,11 @@ def _stale_dataset_rows(lake_root: str | Path) -> pl.DataFrame:
             status = EVENT_DRIVEN_OKX_READONLY_DATASET_STATUSES[name]
         if name in HISTORICAL_RESEARCH_DATASETS and status == "stale":
             status = "historical_research_snapshot"
-        status = _optional_stale_status_from_registry(name, status)
+        status = _optional_stale_status_from_registry(
+            name,
+            status,
+            freshness_seconds=freshness["freshness_seconds"],
+        )
         status = _derived_rollup_status(lake_root, name, snapshot, status)
         status = _derived_latest_status(lake_root, name, snapshot, status)
         if _should_show_stale_dataset_row(snapshot, status):
@@ -6637,7 +6662,12 @@ def _empty_dataset_status(dataset_name: str) -> str:
     return "missing"
 
 
-def _optional_stale_status_from_registry(dataset_name: str, status: str) -> str:
+def _optional_stale_status_from_registry(
+    dataset_name: str,
+    status: str,
+    *,
+    freshness_seconds: int | None = None,
+) -> str:
     if status != "stale":
         return status
     spec = get_dataset_spec(dataset_name)
@@ -6647,6 +6677,12 @@ def _optional_stale_status_from_registry(dataset_name: str, status: str) -> str:
         if dataset_name in ENTRY_QUALITY_DATASETS:
             return "entry_quality_optional"
         return "registry_freshness_not_required"
+    if (
+        spec.freshness_seconds is not None
+        and freshness_seconds is not None
+        and freshness_seconds <= spec.freshness_seconds
+    ):
+        return "registry_freshness_within_sla"
     return status
 
 

@@ -222,6 +222,66 @@ WEB_DERIVED_SNAPSHOT_DATASETS = (
     "cost_bootstrap_readiness",
     "cost_probe_fill_bill_match",
     "cost_probe_cost_disagreement",
+    "paper_runtime_freshness",
+    "paper_proposal_propagation_status",
+)
+# The frequent Web refresh must not materialize unrelated, unbounded research tables.
+WEB_DERIVED_SNAPSHOT_SOURCE_DATASETS = (
+    "alpha_discovery_board",
+    "alpha_factory_promotion_queue",
+    "alpha_factory_result",
+    "cost_bucket_daily",
+    "cost_health_daily",
+    "expanded_universe_candidate_maturity",
+    "factor_candidate",
+    "factor_correlation_daily",
+    "factor_evidence",
+    "factor_value",
+    "market_bar",
+    "market_regime_daily",
+    "okx_private_readonly_bills",
+    "okx_private_readonly_fills",
+    "orderbook_snapshot",
+    "orderbook_spread_1m",
+    "paper_slippage_coverage",
+    "paper_strategy_daily",
+    "paper_strategy_ack_current",
+    "paper_strategy_ack_history",
+    "paper_strategy_proposal",
+    "paper_strategy_proposal_snapshot",
+    "paper_strategy_proposals_current",
+    "paper_strategy_registry_history",
+    "paper_strategy_runs",
+    "paper_strategy_trackers_current",
+    "regime_strategy_advisory",
+    "research_portfolio_status",
+    "risk_permission",
+    "strategy_evidence",
+    "strategy_health_daily",
+    "trade_activity_1m",
+    "trade_print",
+    "v5_bundle_manifest",
+    "v5_candidate_event",
+    "v5_cost_probe_order_event",
+    "v5_cost_probe_roundtrip_event",
+    "v5_entry_quality_advisory",
+    "v5_gate_compliance_daily",
+    "v5_paper_slippage_coverage",
+    "v5_paper_strategy_proposal_ack_current",
+    "v5_paper_strategy_proposal_ack_history",
+    "v5_paper_strategy_daily",
+    "v5_paper_strategy_registry",
+    "v5_paper_strategy_registry_current",
+    "v5_paper_strategy_registry_history",
+    "v5_paper_strategy_run",
+    "v5_paper_strategy_signal",
+    "v5_paper_strategy_state",
+    "v5_paper_strategy_trackers_current",
+    "v5_quant_lab_contract_status",
+    "v5_quant_lab_enforcement_daily",
+    "v5_quant_lab_mode_daily",
+    "v5_risk_on_multi_buy_shadow",
+    "v5_trade_event",
 )
 SNAPSHOT_META_DATASETS = {
     "cost_bucket_daily",
@@ -4565,13 +4625,18 @@ def _publish_ops_truthfulness_snapshot(
     generated_at: datetime,
     pre_export_v5: dict[str, Any] | None = None,
     persist: bool = True,
+    include_auth: bool = True,
 ) -> _DatasetSnapshot:
     frames = dict(snapshot.frames)
     row_counts = dict(snapshot.row_counts)
     warnings = list(snapshot.warnings)
-    auth = build_api_auth_reports(
-        frames.get("api_request_metrics", pl.DataFrame()),
-        generated_at=generated_at,
+    auth = (
+        build_api_auth_reports(
+            frames.get("api_request_metrics", pl.DataFrame()),
+            generated_at=generated_at,
+        )
+        if include_auth
+        else {}
     )
     paper_runtime_freshness = build_paper_runtime_freshness(
         frames,
@@ -4683,10 +4748,14 @@ def _publish_ops_truthfulness_snapshot(
         generated_at=generated_at,
     )
     report_context = _derived_report_context(v5_context, snapshot_row)
-    production_slo = _with_derived_report_metadata(
-        auth["api_auth_production_slo"],
-        evaluated_at=generated_at,
-        context=report_context,
+    production_slo = (
+        _with_derived_report_metadata(
+            auth["api_auth_production_slo"],
+            evaluated_at=generated_at,
+            context=report_context,
+        )
+        if include_auth
+        else pl.DataFrame()
     )
     paper_runtime_freshness = _with_derived_report_metadata(
         paper_runtime_freshness,
@@ -4698,17 +4767,22 @@ def _publish_ops_truthfulness_snapshot(
         evaluated_at=generated_at,
         context=report_context,
     )
-    for dataset_name, frame in (
-        ("api_auth_incident", auth["api_auth_incident"]),
-        ("api_auth_production_slo", production_slo),
-        (
-            "api_auth_security_rejections",
-            auth["api_auth_security_rejections"],
-        ),
-        ("api_auth_manual_probe", auth["api_auth_manual_probe"]),
+    reports_to_publish = [
         ("paper_runtime_freshness", paper_runtime_freshness),
         ("paper_proposal_propagation_status", propagation),
-    ):
+    ]
+    if include_auth:
+        reports_to_publish = [
+            ("api_auth_incident", auth["api_auth_incident"]),
+            ("api_auth_production_slo", production_slo),
+            (
+                "api_auth_security_rejections",
+                auth["api_auth_security_rejections"],
+            ),
+            ("api_auth_manual_probe", auth["api_auth_manual_probe"]),
+            *reports_to_publish,
+        ]
+    for dataset_name, frame in reports_to_publish:
         if persist:
             _publish_export_frame(
                 root,
@@ -4721,20 +4795,26 @@ def _publish_ops_truthfulness_snapshot(
         else:
             frames[dataset_name] = frame
             row_counts[dataset_name] = frame.height
+    transient_frames = {
+        **snapshot.transient_frames,
+        "paper_runtime_freshness": paper_runtime_freshness,
+        "paper_proposal_propagation_status": propagation,
+    }
+    if include_auth:
+        transient_frames.update(
+            {
+                "api_auth_error_timeline": auth["api_auth_error_timeline"],
+                "api_auth_client_summary": auth["api_auth_client_summary"],
+                "api_auth_production_slo": production_slo,
+                "api_auth_security_rejections": auth["api_auth_security_rejections"],
+                "api_auth_manual_probe": auth["api_auth_manual_probe"],
+            }
+        )
     return _DatasetSnapshot(
         frames=frames,
         row_counts=row_counts,
         warnings=warnings,
-        transient_frames={
-            **snapshot.transient_frames,
-            "api_auth_error_timeline": auth["api_auth_error_timeline"],
-            "api_auth_client_summary": auth["api_auth_client_summary"],
-            "api_auth_production_slo": production_slo,
-            "api_auth_security_rejections": auth["api_auth_security_rejections"],
-            "api_auth_manual_probe": auth["api_auth_manual_probe"],
-            "paper_runtime_freshness": paper_runtime_freshness,
-            "paper_proposal_propagation_status": propagation,
-        },
+        transient_frames=transient_frames,
     )
 
 
@@ -5165,27 +5245,40 @@ def _publish_export_frame(
 
 def _write_snapshot_meta(dataset_path: Path, *, dataset_name: str, frame: pl.DataFrame) -> None:
     dataset_path.mkdir(parents=True, exist_ok=True)
-    generated_at = _frame_latest_iso(
-        frame,
+    timestamp_columns = (
         (
+            "last_evaluated_at",
+            "generated_at",
+            "generated_at_utc",
+            "updated_at",
+            "snapshot_generated_at",
+        )
+        if dataset_name in EXPORT_TIME_REGISTRY_FRAME_OVERRIDES
+        else (
             "snapshot_generated_at",
             "generated_at",
             "generated_at_utc",
-            "created_at",
-            "as_of_ts",
-            "as_of_date",
-            "latest_bundle_ts",
-            "bundle_ts",
-            "ingest_ts",
-            "event_ts",
-            "ts_utc",
-            "ts",
-            "entry_ts",
-            "exit_ts",
-            "paper_date",
-            "date",
-            "day",
-        ),
+            "updated_at",
+        )
+    ) + (
+        "created_at",
+        "as_of_ts",
+        "as_of_date",
+        "latest_bundle_ts",
+        "bundle_ts",
+        "ingest_ts",
+        "event_ts",
+        "ts_utc",
+        "ts",
+        "entry_ts",
+        "exit_ts",
+        "paper_date",
+        "date",
+        "day",
+    )
+    generated_at = _frame_latest_iso(
+        frame,
+        timestamp_columns,
     )
     expires_at = _frame_latest_iso(frame, ("expires_at",))
     schema_version = _frame_text_value(frame, "schema_version")
@@ -5294,9 +5387,19 @@ def _dependency_source_sha(frames: dict[str, pl.DataFrame], *, telemetry_latest_
     return digest.hexdigest()
 
 
-def _write_source_snapshot_metas(root: Path, frames: dict[str, pl.DataFrame]) -> list[str]:
+def _write_source_snapshot_metas(
+    root: Path,
+    frames: dict[str, pl.DataFrame],
+    *,
+    dataset_names: Iterable[str] | None = None,
+) -> list[str]:
     warnings: list[str] = []
-    for dataset_name in sorted(SNAPSHOT_META_DATASETS):
+    names = (
+        SNAPSHOT_META_DATASETS
+        if dataset_names is None
+        else SNAPSHOT_META_DATASETS.intersection(dataset_names)
+    )
+    for dataset_name in sorted(names):
         frame = frames.get(dataset_name, pl.DataFrame())
         dataset_path = root / readers.DATASET_PATHS.get(
             dataset_name,
@@ -5419,7 +5522,10 @@ def refresh_web_derived_snapshots(
 
     root = Path(lake_root)
     generated_at = generated_at or datetime.now(UTC)
-    snapshot = _load_snapshot(root)
+    snapshot = _load_snapshot(
+        root,
+        dataset_names=WEB_DERIVED_SNAPSHOT_SOURCE_DATASETS,
+    )
     snapshot = _publish_strategy_opportunity_advisory_snapshot(
         root,
         snapshot,
@@ -5430,6 +5536,12 @@ def refresh_web_derived_snapshots(
         root,
         snapshot,
         generated_at=generated_at,
+    )
+    snapshot = _publish_ops_truthfulness_snapshot(
+        root,
+        snapshot,
+        generated_at=generated_at,
+        include_auth=False,
     )
     report_row_counts: dict[str, int] = {}
     try:
@@ -5466,7 +5578,11 @@ def refresh_web_derived_snapshots(
             ],
             transient_frames=snapshot.transient_frames,
         )
-    source_meta_warnings = _write_source_snapshot_metas(root, snapshot.frames)
+    source_meta_warnings = _write_source_snapshot_metas(
+        root,
+        snapshot.frames,
+        dataset_names=snapshot.frames,
+    )
     if source_meta_warnings:
         snapshot = _DatasetSnapshot(
             frames=snapshot.frames,
@@ -6218,11 +6334,19 @@ def _validation_result(
     )
 
 
-def _load_snapshot(lake_root: Path) -> _DatasetSnapshot:
+def _load_snapshot(
+    lake_root: Path,
+    *,
+    dataset_names: Iterable[str] | None = None,
+) -> _DatasetSnapshot:
     frames: dict[str, pl.DataFrame] = {}
     row_counts: dict[str, int] = {}
     warnings: list[str] = []
-    for name in sorted(readers.DATASET_PATHS):
+    names = sorted(set(dataset_names) if dataset_names is not None else readers.DATASET_PATHS)
+    unknown = [name for name in names if name not in readers.DATASET_PATHS]
+    if unknown:
+        raise ValueError(f"unknown snapshot datasets: {','.join(unknown)}")
+    for name in names:
         frame, row_count, warning = _load_export_frame(lake_root, name)
         frames[name] = frame
         row_counts[name] = row_count
@@ -18309,6 +18433,12 @@ def _stale_rows(frames: dict[str, pl.DataFrame]) -> pl.DataFrame:
             status = "closed_research_snapshot"
         if name in EVENT_DRIVEN_V5_DATASETS and status == "stale" and v5_telemetry_is_current:
             status = EVENT_DRIVEN_V5_DATASETS[name]
+        if (
+            name in readers.V5_PAPER_TELEMETRY_DATASETS
+            and status == "stale"
+            and v5_telemetry_is_current
+        ):
+            status = "waiting_for_v5_paper_telemetry"
         if (
             name in EVENT_DRIVEN_OKX_READONLY_DATASETS
             and status == "stale"

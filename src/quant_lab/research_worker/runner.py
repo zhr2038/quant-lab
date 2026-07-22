@@ -27,6 +27,8 @@ from quant_lab.research_plane.contracts import (
     RESEARCH_TASK_ADAPTER,
     AlphaFactorySnapshotManifest,
     AlphaFactoryTask,
+    FactorResearchSnapshotManifest,
+    FactorResearchTask,
     ResearchTaskEnvelope,
     ResearchTaskLease,
     ResearchTaskState,
@@ -41,9 +43,11 @@ from quant_lab.research_worker.alpha_factory import compute_alpha_factory_from_s
 from quant_lab.research_worker.entry_quality_history import (
     compute_entry_quality_history_from_snapshot,
 )
+from quant_lab.research_worker.factor_research import compute_factor_research_result
 from quant_lab.research_worker.result_writer import (
     write_alpha_factory_result_bundle,
     write_entry_quality_history_result_bundle,
+    write_factor_research_result_bundle,
 )
 from quant_lab.transfer.snapshot_sync import sync_snapshot_blobs
 
@@ -52,6 +56,7 @@ STOP = threading.Event()
 _STATUS_UPLOAD_LOCK = threading.RLock()
 _LEASE_UPLOAD_LOCK = threading.RLock()
 _HANDOFF_READY_MARKER = ".HANDOFF_READY"
+_NON_RETRYABLE_TASK_ERRORS = frozenset({"worker_code_mismatch"})
 
 
 @dataclass(frozen=True)
@@ -403,6 +408,14 @@ def process_claimed_task(config: Config, task_id: str) -> None:
                     snapshot,
                     task,
                 )
+            elif isinstance(task, FactorResearchTask):
+                if not isinstance(snapshot, FactorResearchSnapshotManifest):
+                    raise ValueError("research_task_snapshot_type_mismatch")
+                compute = compute_factor_research_result(
+                    sync_result.snapshot_root,
+                    snapshot,
+                    task,
+                )
             else:
                 compute = compute_entry_quality_history_from_snapshot(
                     sync_result.snapshot_root,
@@ -422,6 +435,26 @@ def process_claimed_task(config: Config, task_id: str) -> None:
                 if not isinstance(snapshot, AlphaFactorySnapshotManifest):
                     raise ValueError("research_task_snapshot_type_mismatch")
                 result_root, manifest, receipt = write_alpha_factory_result_bundle(
+                    config.data_root / "results",
+                    task=task,
+                    snapshot=snapshot,
+                    compute=compute,
+                    worker_id=config.worker_id,
+                    worker_commit=config.worker_commit,
+                    worker_key_id=config.worker_key_id,
+                    worker_signing_key=signing_key,
+                    claimed_at=claimed_at,
+                    input_bytes=snapshot.total_input_bytes,
+                    cache_hit_bytes=status.cache_hit_bytes,
+                    downloaded_bytes=status.downloaded_bytes,
+                    peak_rss_bytes=peak_rss,
+                    compute_duration_seconds=time.perf_counter() - started,
+                    max_result_bytes=config.max_result_bytes,
+                )
+            elif isinstance(task, FactorResearchTask):
+                if not isinstance(snapshot, FactorResearchSnapshotManifest):
+                    raise ValueError("research_task_snapshot_type_mismatch")
+                result_root, manifest, receipt = write_factor_research_result_bundle(
                     config.data_root / "results",
                     task=task,
                     snapshot=snapshot,
@@ -490,6 +523,13 @@ def _task_status_dimensions(task: ResearchTaskEnvelope) -> tuple[Any, Any, str, 
             task.as_of_date,
             task.as_of_date,
             "alpha_factory",
+            "research",
+        )
+    if isinstance(task, FactorResearchTask):
+        return (
+            task.start_date,
+            task.end_date,
+            "factor_research",
             "research",
         )
     return (
@@ -683,19 +723,37 @@ def _handle_failure(config: Config, task_id: str, exc: Exception) -> None:
         )
         return
     current = _read_local_or_remote_status(config, task_id, work)
-    attempt = current.attempt if current is not None else 1
+    attempt = current.attempt if current is not None else 0
+    if current is None or current.state == ResearchTaskState.PENDING:
+        attempt += 1
     max_attempts = current.max_attempts if current is not None else 3
-    retry = attempt < max_attempts
+    rejected = isinstance(exc, ValueError) and str(exc) in _NON_RETRYABLE_TASK_ERRORS
+    retry = not rejected and attempt < max_attempts
     now = datetime.now(UTC)
     if current is not None:
         status = current.model_copy(
             update={
-                "state": ResearchTaskState.PENDING if retry else ResearchTaskState.FAILED,
+                "state": (
+                    ResearchTaskState.REJECTED
+                    if rejected
+                    else ResearchTaskState.PENDING
+                    if retry
+                    else ResearchTaskState.FAILED
+                ),
+                "worker_id": current.worker_id or config.worker_id,
+                "claimed_at": current.claimed_at or now,
                 "heartbeat_at": now,
                 "completed_at": None if retry else now,
                 "lease_expires_at": None,
+                "attempt": attempt,
                 "last_error": f"{type(exc).__name__}:{str(exc)[:800]}",
-                "import_status": "retry_pending" if retry else "worker_failed",
+                "import_status": (
+                    "worker_rejected_code_mismatch"
+                    if rejected
+                    else "retry_pending"
+                    if retry
+                    else "worker_failed"
+                ),
             }
         )
         with contextlib.suppress(Exception):

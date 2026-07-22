@@ -154,6 +154,7 @@ def write_snapshot_meta(
             "snapshot_generated_at",
             "generated_at",
             "generated_at_utc",
+            "updated_at",
             "created_at",
             "as_of_ts",
             "as_of_date",

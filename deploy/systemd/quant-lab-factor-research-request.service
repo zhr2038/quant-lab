@@ -1,0 +1,36 @@
+[Unit]
+Description=Seal bounded Factor Research Snapshot and enqueue NAS task
+After=quant-lab-v5-telemetry-sync.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=quantlab
+Group=quantlab
+WorkingDirectory=/opt/quant-lab
+EnvironmentFile=/etc/quant-lab/research-plane.env
+Environment=PYTHONUNBUFFERED=1
+Environment=POLARS_MAX_THREADS=1
+Environment=MALLOC_ARENA_MAX=2
+UMask=0007
+ExecCondition=/bin/bash -lc '[ "${QUANT_LAB_NAS_RESEARCH_ENABLED:-0}" = "1" ] && [ "${QUANT_LAB_NAS_FACTOR_RESEARCH_ENABLED:-0}" = "1" ]'
+ExecStartPre=/usr/bin/test -d /var/lib/quant-lab/lake/bronze/lake_file_index
+ExecStartPre=/usr/bin/install -d -m 2770 /var/lib/quant-lab/lake/gold/research_hypothesis_registry /var/lib/quant-lab/lake/gold/research_trial_ledger /var/lib/quant-lab/lake/silver/market_bar /var/lib/quant-lab/lake/silver/market_bar_health
+ExecStartPre=/bin/bash -lc 'exec /opt/quant-lab/.venv/bin/qlab okx-backfill-factor-research-history --lake-root "${QUANT_LAB_LAKE_ROOT}" --date auto --max-history-days 730 --symbols BTC-USDT,ETH-USDT,SOL-USDT,BNB-USDT --bar 1H --max-pages-per-symbol 100 --limit 300 --minimum-coverage 0.98 --require-complete'
+ExecStart=/bin/bash -lc 'set -euo pipefail; COMMIT="$(git -C /opt/quant-lab rev-parse HEAD)"; exec /opt/quant-lab/.venv/bin/qlab request-factor-research --lake-root "${QUANT_LAB_LAKE_ROOT}" --queue-root "${QUANT_LAB_RESEARCH_QUEUE_ROOT}" --key-id "${QUANT_LAB_RESEARCH_TASK_KEY_ID}" --quant-lab-commit "$COMMIT" --date auto --start-date auto --end-date auto --max-history-days 730'
+TimeoutStartSec=20min
+Nice=10
+IOSchedulingClass=idle
+CPUQuota=30%
+MemoryHigh=500M
+MemoryMax=900M
+TasksMax=64
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadOnlyPaths=/opt/quant-lab /var/lib/quant-lab/lake
+ReadWritePaths=/var/lib/quant-lab/research_queue /var/lib/quant-lab/lake/gold /var/lib/quant-lab/lake/bronze/lake_file_index /var/lib/quant-lab/lake/silver/market_bar /var/lib/quant-lab/lake/silver/market_bar_health
+
+[Install]
+WantedBy=multi-user.target

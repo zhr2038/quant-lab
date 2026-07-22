@@ -13,6 +13,7 @@ from quant_lab.ingest.okx_public import (
     OKXPublicConfig,
     OKXPublicTimeout,
     backfill_expanded_usdt_spot_market_bars,
+    backfill_factor_research_market_history,
     normalize_okx_candles_to_market_bars,
     publish_market_bars_to_lake,
     select_okx_usdt_spot_universe,
@@ -392,6 +393,79 @@ def test_backfill_expanded_universe_deepens_only_symbols_with_internal_gaps(tmp_
     assert sum(symbol == "XRP-USDT" for symbol, _after in client.history_requests) == 1
 
 
+def test_factor_research_history_backfill_is_bounded_resumable_and_idempotent(tmp_path):
+    lake_root = tmp_path / "lake"
+    client = _FactorResearchHistoryClient()
+    start = datetime(2026, 1, 1, 0, tzinfo=UTC)
+    end = datetime(2026, 1, 1, 4, tzinfo=UTC)
+
+    first = backfill_factor_research_market_history(
+        lake_root=lake_root,
+        start_at=start,
+        end_at=end,
+        symbols=["BTC-USDT"],
+        client=client,
+        max_pages_per_symbol=4,
+        limit=2,
+        minimum_coverage=1.0,
+        page_sleep_seconds=0,
+    )
+    calls_after_first = len(client.history_requests)
+    second = backfill_factor_research_market_history(
+        lake_root=lake_root,
+        start_at=start,
+        end_at=end,
+        symbols=["BTC-USDT"],
+        client=client,
+        max_pages_per_symbol=4,
+        limit=2,
+        minimum_coverage=1.0,
+        page_sleep_seconds=0,
+    )
+    market = read_parquet_dataset(lake_root / "silver" / "market_bar")
+
+    assert first.complete is True
+    assert first.expected_bars_per_symbol == 4
+    assert first.coverage_by_symbol == {"BTC-USDT": 1.0}
+    assert first.fetched_pages == 2
+    assert market.height == 4
+    assert market.get_column("ts").min() == start
+    assert market.get_column("ts").max() == end - timedelta(hours=1)
+    assert len(client.history_requests) == calls_after_first
+    assert second.fetched_pages == 0
+    assert second.skipped_symbols == ["BTC-USDT"]
+
+
+def test_factor_research_history_backfill_refetches_window_with_internal_gap(tmp_path):
+    lake_root = tmp_path / "lake"
+    start = datetime(2026, 1, 1, 0, tzinfo=UTC)
+    end = datetime(2026, 1, 1, 4, tzinfo=UTC)
+    existing = normalize_okx_candles_to_market_bars(
+        [_candle(start), _candle(end - timedelta(hours=1))],
+        inst_id="BTC-USDT",
+        bar="1H",
+        market_type="SPOT",
+    )
+    publish_market_bars_to_lake(existing, lake_root)
+    client = _FactorResearchHistoryClient()
+
+    result = backfill_factor_research_market_history(
+        lake_root=lake_root,
+        start_at=start,
+        end_at=end,
+        symbols=["BTC-USDT"],
+        client=client,
+        max_pages_per_symbol=4,
+        limit=2,
+        minimum_coverage=1.0,
+        page_sleep_seconds=0,
+    )
+
+    assert client.history_requests[0] is None
+    assert result.complete is True
+    assert result.coverage_by_symbol == {"BTC-USDT": 1.0}
+
+
 def test_forbidden_keywords_do_not_appear_in_implementation_code():
     implementation_files = [
         Path("src/quant_lab/ingest/okx_public.py"),
@@ -566,6 +640,50 @@ class _GapRepairExpandedUniverseClient(_FakeExpandedUniverseClient):
         )
         ts = str(cursor - 60 * 60 * 1000)
         return [[ts, "100", "101", "99", "100.5", "10", "10", "1005", "1"]]
+
+
+class _FactorResearchHistoryClient:
+    def __init__(self) -> None:
+        self.history_requests: list[str | None] = []
+        self.pages = {
+            None: [
+                _candle(datetime(2026, 1, 1, 3, tzinfo=UTC)),
+                _candle(datetime(2026, 1, 1, 2, tzinfo=UTC)),
+            ],
+            str(int(datetime(2026, 1, 1, 2, tzinfo=UTC).timestamp() * 1000)): [
+                _candle(datetime(2026, 1, 1, 1, tzinfo=UTC)),
+                _candle(datetime(2026, 1, 1, 0, tzinfo=UTC)),
+            ],
+        }
+
+    def get_history_candles(
+        self,
+        inst_id: str,
+        bar: str,
+        after: str | None = None,
+        before: str | None = None,
+        limit: int = 100,
+    ) -> list[list[str]]:
+        assert inst_id == "BTC-USDT"
+        assert bar == "1H"
+        assert before is None
+        assert limit == 2
+        self.history_requests.append(after)
+        return self.pages.get(after, [])
+
+
+def _candle(ts: datetime) -> list[str]:
+    return [
+        str(int(ts.timestamp() * 1000)),
+        "100",
+        "101",
+        "99",
+        "100.5",
+        "10",
+        "10",
+        "1005",
+        "1",
+    ]
 
 
 def _forbidden_auth_headers() -> list[str]:

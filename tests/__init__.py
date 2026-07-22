@@ -1,1 +1,1 @@
-"""Test helpers for quant-lab."""
+"""Local test support package."""

@@ -22,9 +22,11 @@ export function AIResearchPanel({ research }: { research: Record<string, unknown
   const findings = safeRows(research.findings);
   const rootCause = safeRows(research.root_cause_tree);
   const nextActions = safeRows(research.next_actions);
-  const factors = safeRows(research.factor_proposals);
-  const paperDrafts = safeRows(research.paper_strategy_drafts);
-  const experiments = safeRows(research.experiment_proposals);
+  const hypotheses = safeRows(research.research_hypothesis_drafts);
+  const dataProposals = safeRows(research.data_collection_proposals);
+  const attributionExperiments = safeRows(research.attribution_experiments);
+  const factorProposals = safeRows(research.factor_proposals);
+  const experimentProposals = safeRows(research.experiment_proposals);
   const codeTargets = safeRows(research.code_review_targets);
   const validationEvents = safeRows(research.validation_events);
   const primaryId = stringValue(research.primary_bottleneck_id, "");
@@ -43,6 +45,18 @@ export function AIResearchPanel({ research }: { research: Record<string, unknown
   const preflightStatus = stringValue(latest.preflight_status, "NOT_AVAILABLE");
   const preflightDisplay = preflightStatus === "NOT_AVAILABLE" ? "LEGACY NOT RECORDED" : preflightStatus;
   const routeSections = jsonStringList(latest.route_sections_json);
+  const usesFactorProposalFallback = !hypotheses.length && factorProposals.length > 0;
+  const usesExperimentProposalFallback = !attributionExperiments.length && experimentProposals.length > 0;
+  const findingCount = metricCount(latest.finding_count, findings.length);
+  const hypothesisCount = metricCount(
+    usesFactorProposalFallback ? latest.factor_proposal_count : latest.hypothesis_draft_count,
+    usesFactorProposalFallback ? factorProposals.length : hypotheses.length
+  );
+  const dataProposalCount = metricCount(latest.data_collection_proposal_count, dataProposals.length);
+  const experimentCount = metricCount(
+    usesExperimentProposalFallback ? latest.experiment_count : latest.attribution_experiment_count,
+    usesExperimentProposalFallback ? experimentProposals.length : attributionExperiments.length
+  );
   const statusLabel = running > 0 && hasResult
     ? `RUNNING · ${sourcePackIsStale ? "OLD RESULT" : "LAST RESULT"}`
     : pending > 0 && hasResult
@@ -71,10 +85,10 @@ export function AIResearchPanel({ research }: { research: Record<string, unknown
 
       <div className="ai-metrics">
         <Metric icon={Layers3} label="历史运行" value={counts.run_count} />
-        <Metric icon={FileSearch} label="本轮发现" value={latest.finding_count} />
-        <Metric icon={Sparkles} label="本轮因子草案" value={latest.factor_proposal_count} />
-        <Metric icon={BrainCircuit} label="本轮 Paper 草案" value={latest.paper_draft_count} />
-        <Metric icon={FlaskConical} label="本轮实验草案" value={latest.experiment_count} />
+        <Metric icon={FileSearch} label="本轮发现" value={findingCount} />
+        <Metric icon={Sparkles} label={usesFactorProposalFallback ? "本轮因子草案" : "本轮研究假设"} value={hypothesisCount} />
+        <Metric icon={FileSearch} label="数据采集建议" value={dataProposalCount} />
+        <Metric icon={FlaskConical} label={usesExperimentProposalFallback ? "验证实验草案" : "归因实验"} value={experimentCount} />
         <Metric icon={Clock3} label="队列" value={`${pending} / ${running}`} sub="pending / running" />
       </div>
 
@@ -128,9 +142,14 @@ export function AIResearchPanel({ research }: { research: Record<string, unknown
         </section>
 
         <div className="ai-evidence-grid">
-          <EvidenceList title="诊断发现" rows={findings} primary="summary" secondary="category" trailing="severity" empty="等待 Stage 1 诊断" />
-          <EvidenceList title="因子研究草案" rows={factors} primary="factor_name" secondary="economic_rationale" trailing="proposal_state" empty="暂无因子草案" />
-          <EvidenceList title="Paper / 实验草案" rows={paperDrafts.concat(experiments)} primary="draft_id" fallbackPrimary="proposal_id" secondary="hypothesis" trailing="mode" empty="暂无 Paper 或实验草案" />
+          <EvidenceList title="诊断发现" rows={findings} totalCount={findingCount} primary="summary" secondary="category" trailing="severity" empty="等待 Stage 1 诊断" />
+          {usesFactorProposalFallback
+            ? <EvidenceList title="因子研究草案" rows={factorProposals} primary="factor_name" fallbackPrimary="proposal_id" secondary="hypothesis" trailing="proposal_state" empty="暂无因子研究草案" />
+            : <EvidenceList title="研究假设草案" rows={hypotheses} primary="title" fallbackPrimary="hypothesis_id" secondary="economic_return_payer" trailing="proposal_state" empty="暂无通过证据门槛的研究假设" />}
+          <EvidenceList title="数据采集建议" rows={dataProposals} primary="title" fallbackPrimary="proposal_id" secondary="observed_data_gap" trailing="proposal_state" empty="当前没有新增数据采集建议" />
+          {usesExperimentProposalFallback
+            ? <EvidenceList title="验证实验草案" rows={experimentProposals} primary="objective" fallbackPrimary="proposal_id" secondary="hypothesis" trailing="proposal_state" empty="暂无验证实验草案" />
+            : <EvidenceList title="归因实验" rows={attributionExperiments} primary="title" fallbackPrimary="experiment_id" secondary="attribution_question" trailing="proposal_state" empty="暂无可执行的只读归因实验" />}
           <EvidenceList title="代码复核目标" rows={codeTargets} primary="path_or_component" secondary="reason" trailing="priority" empty="暂无代码复核目标" />
         </div>
       </div>
@@ -149,6 +168,12 @@ function jsonStringList(value: unknown): string[] {
   }
 }
 
+function metricCount(value: unknown, fallback: number): number {
+  if (value === null || value === undefined || value === "") return fallback;
+  const parsed = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? Math.max(parsed, fallback) : fallback;
+}
+
 function Metric({ icon: Icon, label, value, sub }: { icon: typeof BrainCircuit; label: string; value: unknown; sub?: string }) {
   return (
     <article className="ai-metric">
@@ -158,18 +183,27 @@ function Metric({ icon: Icon, label, value, sub }: { icon: typeof BrainCircuit; 
   );
 }
 
-function EvidenceList({ title, rows, primary, fallbackPrimary, secondary, trailing, empty }: {
+function EvidenceList({ title, rows, totalCount, primary, fallbackPrimary, secondary, trailing, empty }: {
   title: string;
   rows: Record<string, unknown>[];
+  totalCount?: number;
   primary: string;
   fallbackPrimary?: string;
   secondary: string;
   trailing: string;
   empty: string;
 }) {
+  const shownCount = Math.min(rows.length, 6);
+  const resolvedTotal = metricCount(totalCount, rows.length);
+  const countLabel = resolvedTotal > rows.length
+    ? `显示 ${shownCount} / 已载入 ${rows.length} / 总计 ${resolvedTotal}`
+    : shownCount < rows.length
+      ? `显示 ${shownCount} / 共 ${rows.length}`
+      : String(resolvedTotal);
+
   return (
     <section className="ai-evidence-list">
-      <h3>{title}<span>{rows.length}</span></h3>
+      <h3>{title}<span>{countLabel}</span></h3>
       <div>
         {rows.length ? rows.slice(0, 6).map((row, index) => (
           <article

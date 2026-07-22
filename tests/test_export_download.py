@@ -110,3 +110,18 @@ def test_download_rejects_unverified_pack(tmp_path: Path, monkeypatch) -> None:
         params=_query(row, secret, int(time.time()) + 300),
     )
     assert response.status_code == 409
+
+
+def test_nginx_keeps_operator_auth_but_allows_signed_downloads() -> None:
+    config = (
+        Path(__file__).resolve().parents[1] / "deploy" / "nas_export_download" / "nginx.conf"
+    ).read_text(encoding="utf-8")
+
+    assert 'auth_basic "Expert Pack NAS";' in config
+    download_location = config.split("location /download/ {", 1)[1].split("}", 1)[0]
+    protected_location = config.split("location /_protected/ {", 1)[1].split("}", 1)[0]
+
+    assert "auth_basic off;" in download_location
+    assert "proxy_pass http://download-api:8080;" in download_location
+    assert "auth_basic off;" in protected_location
+    assert "internal;" in protected_location

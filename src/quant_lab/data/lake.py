@@ -205,6 +205,8 @@ def _write_parquet_dataset_unlocked(
     df: pl.DataFrame,
     dataset_path: str | Path,
     partition_by: str | Sequence[str] | None = None,
+    *,
+    preserve_files: Sequence[str] = (),
 ) -> Path:
     path = Path(dataset_path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -217,6 +219,7 @@ def _write_parquet_dataset_unlocked(
         backup = path.parent / f"__{path.name}_backup_{uuid.uuid4().hex}"
         try:
             sorted_df.write_parquet(staging, partition_by=partition_by, mkdir=True)
+            _copy_preserved_dataset_files(path, staging, preserve_files)
             _ensure_internal_tree_permissions(staging)
             if path.exists():
                 _replace_path(path, backup)
@@ -241,6 +244,7 @@ def _write_parquet_dataset_unlocked(
         staging.mkdir(parents=True, exist_ok=False)
         _ensure_lake_dir_permissions(staging)
         sorted_df.write_parquet(staging / "data.parquet")
+        _copy_preserved_dataset_files(path, staging, preserve_files)
         if path.exists():
             _replace_path(path, backup)
         try:
@@ -732,6 +736,7 @@ def upsert_parquet_dataset(
     max_rows_sort_by: Sequence[str] | None = None,
     max_rows_descending: bool = True,
     streaming_upsert: bool = False,
+    preserve_files: Sequence[str] = (),
 ) -> int:
     path = Path(dataset_path)
     with _dataset_lock(path):
@@ -741,6 +746,7 @@ def upsert_parquet_dataset(
                     df,
                     path,
                     key_columns=key_columns,
+                    preserve_files=preserve_files,
                 )
             except Exception:
                 logger.warning(
@@ -761,7 +767,11 @@ def upsert_parquet_dataset(
                 sort_by=max_rows_sort_by,
                 descending=max_rows_descending,
             )
-        _write_parquet_dataset_unlocked(combined, path)
+        _write_parquet_dataset_unlocked(
+            combined,
+            path,
+            preserve_files=preserve_files,
+        )
         return combined.height
 
 
@@ -770,12 +780,17 @@ def _streaming_upsert_parquet_dataset_unlocked(
     dataset_path: Path,
     *,
     key_columns: Sequence[str],
+    preserve_files: Sequence[str] = (),
 ) -> int:
     """Upsert a small batch into a large Parquet history with bounded memory."""
 
     files = _parquet_files(dataset_path)
     if not files:
-        _write_parquet_dataset_unlocked(df, dataset_path)
+        _write_parquet_dataset_unlocked(
+            df,
+            dataset_path,
+            preserve_files=preserve_files,
+        )
         return df.height
     existing_schema = _scan_parquet_files(files, schema_union=True).collect_schema().names()
     available_keys = [
@@ -832,6 +847,7 @@ def _streaming_upsert_parquet_dataset_unlocked(
         incoming_path.unlink()
         _remove_internal_path(temp_directory)
         rows = int(pl.scan_parquet(output_path).select(pl.len()).collect().item())
+        _copy_preserved_dataset_files(path, staging, preserve_files)
         _ensure_internal_tree_permissions(staging)
         if path.exists():
             _replace_path(path, backup)
@@ -1765,6 +1781,28 @@ def _remove_stale_parquet_files(path: Path, keep: Path) -> None:
     for child in sorted(path.rglob("*"), key=lambda item: len(item.parts), reverse=True):
         if child.is_dir() and not any(child.iterdir()):
             child.rmdir()
+
+
+def _copy_preserved_dataset_files(
+    source_root: Path,
+    destination_root: Path,
+    file_names: Sequence[str],
+) -> None:
+    for file_name in file_names:
+        relative = Path(file_name)
+        if (
+            not file_name
+            or relative.is_absolute()
+            or len(relative.parts) != 1
+            or relative.name != file_name
+            or file_name in {".", ".."}
+        ):
+            raise ValueError(f"invalid preserved dataset file name: {file_name!r}")
+        source = source_root / relative
+        if source.is_symlink():
+            raise ValueError(f"preserved dataset file must not be a symlink: {file_name}")
+        if source.is_file():
+            shutil.copy2(source, destination_root / relative)
 
 
 @contextmanager

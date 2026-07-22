@@ -408,8 +408,15 @@ def test_v5_candidate_evidence_snapshot_is_signed_and_immutable(tmp_path: Path) 
     assert reused.snapshot_materialized is False
 
     extra = root / "files" / "silver" / "market_bar" / "unexpected.parquet"
-    extra.parent.mkdir(parents=True, exist_ok=True)
-    pl.DataFrame({"value": [1]}).write_parquet(extra)
+    # The production snapshot is deliberately sealed read-only. Temporarily
+    # unlock only this leaf so the test can simulate an out-of-band mutation
+    # on POSIX as well as Windows, then restore the sealed permissions.
+    extra.parent.chmod(0o750)
+    try:
+        pl.DataFrame({"value": [1]}).write_parquet(extra)
+        extra.chmod(0o440)
+    finally:
+        extra.parent.chmod(0o550)
     with pytest.raises(ValueError, match="file_set_mismatch"):
         verify_v5_candidate_evidence_snapshot_manifest(
             created.manifest,

@@ -105,7 +105,13 @@ from quant_lab.research.sol_protect_paper_loss import (
     build_and_publish_sol_protect_paper_loss_attribution,
 )
 from quant_lab.research.strategy_evidence import build_and_publish_strategy_evidence
-from quant_lab.research_plane.contracts import DEFAULT_RESEARCH_MAX_RESULT_BYTES
+from quant_lab.research_plane.contracts import (
+    DEFAULT_FACTOR_FACTORY_MAX_RESULT_BYTES,
+    DEFAULT_FACTOR_FACTORY_MAX_SNAPSHOT_BYTES,
+    DEFAULT_FACTOR_FACTORY_MAX_UNCOMPRESSED_BYTES,
+    DEFAULT_FACTOR_FACTORY_MAX_VALUE_PARTITION_BYTES,
+    DEFAULT_RESEARCH_MAX_RESULT_BYTES,
+)
 from quant_lab.research_plane.importer import (
     import_pending_entry_quality_history_results,
     validate_pending_entry_quality_history_results,
@@ -113,6 +119,7 @@ from quant_lab.research_plane.importer import (
 from quant_lab.research_plane.queue import (
     create_alpha_factory_task,
     create_entry_quality_history_task,
+    create_factor_factory_task,
     create_factor_research_task,
 )
 from quant_lab.research_plane.signatures import load_public_key, load_signing_key
@@ -303,9 +310,7 @@ def okx_backfill_factor_research_history(
         str,
         typer.Option("--date", help="UTC task day in YYYY-MM-DD format or auto."),
     ] = "auto",
-    max_history_days: Annotated[
-        int, typer.Option("--max-history-days", min=30, max=730)
-    ] = 730,
+    max_history_days: Annotated[int, typer.Option("--max-history-days", min=30, max=730)] = 730,
     symbols: Annotated[
         str,
         typer.Option("--symbols", help="Locked comma-separated research symbols."),
@@ -1720,6 +1725,12 @@ def build_factor_factory_command(
     ] = False,
     dry_run: Annotated[bool, typer.Option("--dry-run/--apply")] = False,
 ) -> None:
+    if not _enabled_environment("QUANT_LAB_LOCAL_FACTOR_FACTORY_ENABLED"):
+        raise typer.BadParameter(
+            "local Factor Factory fallback disabled; set "
+            "QUANT_LAB_LOCAL_FACTOR_FACTORY_ENABLED=1 only during an approved "
+            "maintenance window"
+        )
     parsed_horizons = tuple(int(item.strip()) for item in horizon_bars.split(",") if item.strip())
     result = run_with_job_metrics(
         lake_root=lake_root,
@@ -1942,9 +1953,7 @@ def request_factor_research_command(
     as_of_date: Annotated[str, typer.Option("--date")] = "auto",
     start_date: Annotated[str, typer.Option("--start-date")] = "auto",
     end_date: Annotated[str, typer.Option("--end-date")] = "auto",
-    max_history_days: Annotated[
-        int, typer.Option("--max-history-days", min=30, max=730)
-    ] = 730,
+    max_history_days: Annotated[int, typer.Option("--max-history-days", min=30, max=730)] = 730,
 ) -> None:
     if not _enabled_environment("QUANT_LAB_NAS_RESEARCH_ENABLED"):
         raise typer.BadParameter("QUANT_LAB_NAS_RESEARCH_ENABLED must be 1")
@@ -1969,6 +1978,93 @@ def request_factor_research_command(
             {
                 "task": task.model_dump(mode="json"),
                 "status": status.model_dump(mode="json"),
+            },
+            ensure_ascii=True,
+            sort_keys=True,
+            indent=2,
+        )
+    )
+
+
+@app.command("request-factor-factory")
+def request_factor_factory_command(
+    lake_root: Annotated[Path, typer.Option("--lake-root", file_okay=False, dir_okay=True)],
+    queue_root: Annotated[Path, typer.Option("--queue-root", file_okay=False, dir_okay=True)],
+    signing_key_path: Annotated[
+        Path,
+        typer.Option(
+            "--signing-key-path",
+            envvar="QUANT_LAB_RESEARCH_TASK_PRIVATE_KEY_PATH",
+            exists=True,
+            dir_okay=False,
+        ),
+    ],
+    key_id: Annotated[str, typer.Option("--key-id")],
+    quant_lab_commit: Annotated[str, typer.Option("--quant-lab-commit")],
+    as_of_date: Annotated[str, typer.Option("--date")] = "auto",
+    feature_set: Annotated[str, typer.Option("--feature-set")] = "core",
+    feature_version: Annotated[str, typer.Option("--feature-version")] = "v0.1",
+    factor_version: Annotated[str, typer.Option("--factor-version")] = "v0.1",
+    timeframe: Annotated[str, typer.Option("--timeframe")] = "1H",
+    horizon_bars: Annotated[str, typer.Option("--horizon-bars")] = "4,8,24,72",
+    decision_delay_bars: Annotated[int, typer.Option("--decision-delay-bars", min=1)] = 1,
+    max_factors: Annotated[int, typer.Option("--max-factors", min=1, max=200)] = 200,
+    min_samples: Annotated[int, typer.Option("--min-samples", min=1)] = 100,
+    top_quantile: Annotated[float, typer.Option("--top-quantile", min=0.01, max=0.50)] = 0.2,
+    cost_quantile: Annotated[str, typer.Option("--cost-quantile")] = "p75",
+    max_input_bytes: Annotated[
+        int, typer.Option("--max-input-bytes", min=1)
+    ] = DEFAULT_FACTOR_FACTORY_MAX_SNAPSHOT_BYTES,
+    max_input_rows: Annotated[int, typer.Option("--max-input-rows", min=1)] = 150_000_000,
+    max_pending_tasks: Annotated[int, typer.Option("--max-pending-tasks", min=1, max=1)] = 1,
+    min_recompute_interval_seconds: Annotated[
+        int, typer.Option("--min-recompute-interval-seconds", min=0)
+    ] = 6 * 60 * 60,
+) -> None:
+    if not _enabled_environment("QUANT_LAB_NAS_RESEARCH_ENABLED"):
+        raise typer.BadParameter("QUANT_LAB_NAS_RESEARCH_ENABLED must be 1")
+    if not _enabled_environment("QUANT_LAB_NAS_FACTOR_FACTORY_ENABLED"):
+        raise typer.BadParameter("QUANT_LAB_NAS_FACTOR_FACTORY_ENABLED must be 1")
+    day = datetime.now(UTC).date() if as_of_date == "auto" else date.fromisoformat(as_of_date)
+    horizons = tuple(
+        sorted({int(value.strip()) for value in horizon_bars.split(",") if value.strip()})
+    )
+    result = create_factor_factory_task(
+        lake_root,
+        queue_root,
+        as_of_date=day,
+        feature_set=feature_set,
+        feature_version=feature_version,
+        factor_version=factor_version,
+        timeframe=timeframe,
+        horizon_bars=horizons,
+        decision_delay_bars=decision_delay_bars,
+        max_factors=max_factors,
+        min_samples=min_samples,
+        top_quantile=top_quantile,
+        cost_quantile=cost_quantile,
+        signing_key=load_signing_key(signing_key_path),
+        signature_key_id=key_id,
+        quant_lab_commit=quant_lab_commit,
+        max_input_bytes=max_input_bytes,
+        max_input_rows=max_input_rows,
+        max_pending_tasks=max_pending_tasks,
+        min_recompute_interval_seconds=min_recompute_interval_seconds,
+    )
+    event_by_state = {
+        "task_created": "FACTOR_FACTORY_TASK_CREATED",
+        "already_current": "FACTOR_FACTORY_ALREADY_CURRENT",
+        "already_current_no_update": "FACTOR_FACTORY_ALREADY_CURRENT_NO_UPDATE",
+        "recompute_deferred": "FACTOR_FACTORY_RECOMPUTE_DEFERRED",
+    }
+    events = [event_by_state[result.state]]
+    if result.snapshot_rehydrated:
+        events.insert(0, "FACTOR_FACTORY_SNAPSHOT_REHYDRATED")
+    typer.echo(
+        json.dumps(
+            {
+                "events": events,
+                **result.model_dump(),
             },
             ensure_ascii=True,
             sort_keys=True,
@@ -2265,6 +2361,18 @@ def import_entry_quality_history_results_command(
     max_result_bytes: Annotated[
         int, typer.Option("--max-result-bytes", min=1)
     ] = DEFAULT_RESEARCH_MAX_RESULT_BYTES,
+    factor_factory_max_result_bytes: Annotated[
+        int, typer.Option("--factor-factory-max-result-bytes", min=1)
+    ] = DEFAULT_FACTOR_FACTORY_MAX_RESULT_BYTES,
+    factor_factory_max_value_partition_bytes: Annotated[
+        int, typer.Option("--factor-factory-max-value-partition-bytes", min=1)
+    ] = DEFAULT_FACTOR_FACTORY_MAX_VALUE_PARTITION_BYTES,
+    factor_factory_max_file_count: Annotated[
+        int, typer.Option("--factor-factory-max-file-count", min=1)
+    ] = 20_000,
+    factor_factory_max_uncompressed_bytes: Annotated[
+        int, typer.Option("--factor-factory-max-uncompressed-bytes", min=1)
+    ] = DEFAULT_FACTOR_FACTORY_MAX_UNCOMPRESSED_BYTES,
     validate_only: Annotated[
         bool,
         typer.Option(
@@ -2282,6 +2390,10 @@ def import_entry_quality_history_results_command(
         "expected_worker_key_id": worker_key_id,
         "expected_quant_lab_commit": quant_lab_commit,
         "max_result_bytes": max_result_bytes,
+        "factor_factory_max_result_bytes": factor_factory_max_result_bytes,
+        "factor_factory_max_value_partition_bytes": (factor_factory_max_value_partition_bytes),
+        "factor_factory_max_file_count": factor_factory_max_file_count,
+        "factor_factory_max_uncompressed_bytes": factor_factory_max_uncompressed_bytes,
     }
     if validate_only:
         results = validate_pending_entry_quality_history_results(queue_root, **common)

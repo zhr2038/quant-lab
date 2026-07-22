@@ -75,9 +75,7 @@ def current_factor_research_generation_binding(
     )
     missing = [field for field in required if not pointer.get(field)]
     if missing:
-        raise RuntimeError(
-            "factor_research_generation_binding_incomplete:" + ",".join(missing)
-        )
+        raise RuntimeError("factor_research_generation_binding_incomplete:" + ",".join(missing))
     generation_id = str(pointer["generation_id"])
     for field in (
         "factor_generation_digest",
@@ -104,9 +102,7 @@ def current_factor_research_generation_binding(
         "factor_generation_published_at": published_at,
         "hypothesis_registry_digest": str(pointer["hypothesis_registry_digest"]),
         "trial_ledger_digest": str(pointer["trial_ledger_digest"]),
-        "factor_generation_fresh": (
-            alpha_as_of_date - generation_as_of_date
-        ).days
+        "factor_generation_fresh": (alpha_as_of_date - generation_as_of_date).days
         <= FACTOR_RESEARCH_GENERATION_FRESH_DAYS,
         "factor_generation_hypothesis_ids": tuple(
             sorted(str(item) for item in pointer["hypothesis_ids"])
@@ -128,9 +124,7 @@ def publish_factor_research_generation(
     existing_registry = read_parquet_dataset(root / RESEARCH_HYPOTHESIS_REGISTRY_DATASET)
     existing_ledger = read_parquet_dataset(root / RESEARCH_TRIAL_LEDGER_DATASET)
     snapshot_files = Path(snapshot_root) / "files"
-    planned_registry = read_parquet_dataset(
-        snapshot_files / RESEARCH_HYPOTHESIS_REGISTRY_DATASET
-    )
+    planned_registry = read_parquet_dataset(snapshot_files / RESEARCH_HYPOTHESIS_REGISTRY_DATASET)
     planned_ledger = read_parquet_dataset(snapshot_files / RESEARCH_TRIAL_LEDGER_DATASET)
     if hypothesis_registry_digest(planned_registry) != manifest.hypothesis_registry_digest:
         raise ValueError("factor_research_snapshot_hypothesis_registry_digest_mismatch")
@@ -196,6 +190,7 @@ def publish_factor_research_generation(
     staging_root.mkdir(parents=True, exist_ok=False)
     items: list[AtomicPublishItem] = []
     row_counts: dict[str, int] = {}
+    managed_row_counts: dict[str, int] = {}
     try:
         control_frames = (
             (
@@ -234,6 +229,7 @@ def publish_factor_research_generation(
                 generation_payload=generation_payload,
             )
             row_counts[name] = normalized.height
+            managed_row_counts[name] = normalized.height
             items.append(AtomicPublishItem(target=target, staged=staged.relative_to(root)))
 
         for index, spec in enumerate(FACTOR_RESEARCH_OUTPUT_SPECS):
@@ -256,6 +252,7 @@ def publish_factor_research_generation(
                 generation_payload=generation_payload,
             )
             row_counts[spec.dataset_name] = merged.height
+            managed_row_counts[spec.dataset_name] = _managed_factor_research_rows(merged)
             items.append(
                 AtomicPublishItem(target=spec.relative_path, staged=staged.relative_to(root))
             )
@@ -277,6 +274,8 @@ def publish_factor_research_generation(
         pointer = generation_payload | {
             "datasets": list(row_counts),
             "row_counts": row_counts,
+            "managed_row_counts": managed_row_counts,
+            "shared_gold_ownership": True,
         }
         commit_atomic_research_generation(
             root,
@@ -328,6 +327,9 @@ def verify_factor_research_generation(
     ):
         raise RuntimeError("factor_research_generation_safety_mismatch")
     rows = {str(key): int(value) for key, value in dict(pointer.get("row_counts") or {}).items()}
+    managed_rows = {
+        str(key): int(value) for key, value in dict(pointer.get("managed_row_counts") or {}).items()
+    }
     if expected_rows is not None and rows != expected_rows:
         raise RuntimeError("factor_research_generation_row_count_mismatch")
     targets = {
@@ -339,19 +341,21 @@ def verify_factor_research_generation(
     }
     if set(rows) != set(targets):
         raise RuntimeError("factor_research_generation_dataset_set_mismatch")
+    if managed_rows and set(managed_rows) != set(targets):
+        raise RuntimeError("factor_research_generation_managed_dataset_set_mismatch")
     for dataset_name, target in targets.items():
-        metadata = json.loads(
-            (root / target / "_research_generation.json").read_text("utf-8")
-        )
+        metadata = json.loads((root / target / "_research_generation.json").read_text("utf-8"))
         if metadata.get("generation_id") != generation_id:
             raise RuntimeError(f"factor_research_dataset_generation_mismatch:{target}")
-        if (
-            metadata.get("factor_generation_digest")
-            != pointer.get("factor_generation_digest")
-        ):
+        if metadata.get("factor_generation_digest") != pointer.get("factor_generation_digest"):
             raise RuntimeError(f"factor_research_dataset_digest_mismatch:{target}")
         if count_parquet_rows(root / target) != rows[dataset_name]:
             raise RuntimeError(f"factor_research_dataset_row_count_mismatch:{target}")
+        if managed_rows and dataset_name in {
+            spec.dataset_name for spec in FACTOR_RESEARCH_OUTPUT_SPECS
+        }:
+            if _managed_factor_research_dataset_rows(root / target) != managed_rows[dataset_name]:
+                raise RuntimeError(f"factor_research_dataset_managed_row_count_mismatch:{target}")
     return rows
 
 
@@ -368,26 +372,28 @@ def _updated_trial_ledger(
     decisions = evidence.select("trial_id", "decision")
     if set(decisions.get_column("trial_id").to_list()) != trial_ids:
         raise ValueError("factor_research_trial_decisions_incomplete")
-    updated = existing.join(
-        decisions.rename({"decision": "_result_decision"}), on="trial_id", how="left"
-    ).with_columns(
-        pl.when(pl.col("trial_id").is_in(sorted(trial_ids)))
-        .then(pl.lit("COMPLETED"))
-        .otherwise(pl.col("status"))
-        .alias("status"),
-        pl.when(pl.col("trial_id").is_in(sorted(trial_ids)))
-        .then(pl.col("_result_decision"))
-        .otherwise(pl.col("decision"))
-        .alias("decision"),
-        pl.when(pl.col("trial_id").is_in(sorted(trial_ids)))
-        .then(pl.coalesce(pl.col("started_at"), pl.lit(started_at)))
-        .otherwise(pl.col("started_at"))
-        .alias("started_at"),
-        pl.when(pl.col("trial_id").is_in(sorted(trial_ids)))
-        .then(pl.lit(completed_at))
-        .otherwise(pl.col("finished_at"))
-        .alias("finished_at"),
-    ).drop("_result_decision")
+    updated = (
+        existing.join(decisions.rename({"decision": "_result_decision"}), on="trial_id", how="left")
+        .with_columns(
+            pl.when(pl.col("trial_id").is_in(sorted(trial_ids)))
+            .then(pl.lit("COMPLETED"))
+            .otherwise(pl.col("status"))
+            .alias("status"),
+            pl.when(pl.col("trial_id").is_in(sorted(trial_ids)))
+            .then(pl.col("_result_decision"))
+            .otherwise(pl.col("decision"))
+            .alias("decision"),
+            pl.when(pl.col("trial_id").is_in(sorted(trial_ids)))
+            .then(pl.coalesce(pl.col("started_at"), pl.lit(started_at)))
+            .otherwise(pl.col("started_at"))
+            .alias("started_at"),
+            pl.when(pl.col("trial_id").is_in(sorted(trial_ids)))
+            .then(pl.lit(completed_at))
+            .otherwise(pl.col("finished_at"))
+            .alias("finished_at"),
+        )
+        .drop("_result_decision")
+    )
     return _normalize_frame(updated, TRIAL_LEDGER_SCHEMA).sort("trial_id")
 
 
@@ -446,9 +452,7 @@ def _updated_hypothesis_registry(
 
 def _hypothesis_status(evidence: pl.DataFrame) -> str:
     decisions = set(evidence.get_column("decision").drop_nulls().to_list())
-    signal_validities = set(
-        evidence.get_column("signal_validity").drop_nulls().to_list()
-    )
+    signal_validities = set(evidence.get_column("signal_validity").drop_nulls().to_list())
     if FactorResearchDecision.PAPER_CANDIDATE.value in decisions:
         return HypothesisStatus.PAPER_CANDIDATE.value
     if "PASS" in signal_validities:
@@ -485,14 +489,9 @@ def _merge_managed_factor_rows(
 ) -> pl.DataFrame:
     current = _normalize_frame(existing, schema).drop_nulls(list(primary_keys))
     replacement = _normalize_frame(incoming, schema)
-    null_primary_keys = [
-        key for key in primary_keys if replacement.get_column(key).null_count()
-    ]
+    null_primary_keys = [key for key in primary_keys if replacement.get_column(key).null_count()]
     if null_primary_keys:
-        raise ValueError(
-            "factor_research_publish_primary_key_null:"
-            + ",".join(null_primary_keys)
-        )
+        raise ValueError("factor_research_publish_primary_key_null:" + ",".join(null_primary_keys))
     if not current.is_empty() and "hypothesis_id" in current.columns:
         managed = pl.col("hypothesis_id").is_in(sorted(hypothesis_ids))
         if "as_of_date" in current.columns:
@@ -516,6 +515,27 @@ def _normalize_frame(
         if column not in normalized.columns:
             normalized = normalized.with_columns(pl.lit(None, dtype=dtype).alias(column))
     return normalized.select(list(schema)).cast(schema, strict=True)
+
+
+def _managed_factor_research_rows(frame: pl.DataFrame) -> int:
+    if frame.is_empty() or "source" not in frame.columns:
+        return 0
+    return frame.filter(pl.col("source") == FACTOR_RESEARCH_SOURCE).height
+
+
+def _managed_factor_research_dataset_rows(path: Path) -> int:
+    files = sorted(candidate for candidate in path.rglob("*.parquet") if candidate.is_file())
+    if not files:
+        return 0
+    lazy = pl.scan_parquet([str(candidate) for candidate in files], extra_columns="ignore")
+    if "source" not in lazy.collect_schema().names():
+        return 0
+    return int(
+        lazy.filter(pl.col("source") == FACTOR_RESEARCH_SOURCE)
+        .select(pl.len())
+        .collect(engine="streaming")
+        .item()
+    )
 
 
 def _stage_dataset(

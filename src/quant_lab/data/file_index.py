@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Iterable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -11,10 +13,11 @@ from quant_lab.data.lake import (
     read_parquet_dataset,
     write_single_file_parquet_dataset_in_place,
 )
+from quant_lab.export_plane.signatures import sha256_file
 
 LAKE_FILE_INDEX = Path("bronze") / "lake_file_index"
 TIMESTAMP_COLUMNS = ("ts", "timestamp", "received_at", "created_at", "minute_ts")
-INDEX_VERSION = "lake_file_index.v0.2"
+INDEX_VERSION = "lake_file_index.v0.3"
 
 
 def build_lake_file_index(
@@ -33,7 +36,7 @@ def build_lake_file_index(
         rows.extend(_index_dataset(root, absolute, existing_by_key=existing_by_key))
     frame = pl.DataFrame(rows, infer_schema_length=None)
     output = _merged_index_frame(existing, frame, indexed_datasets=indexed_datasets)
-    if not output.is_empty():
+    if output.columns and not _frames_equal(existing, output):
         write_single_file_parquet_dataset_in_place(output, root / LAKE_FILE_INDEX)
     return frame
 
@@ -155,23 +158,30 @@ def _index_dataset(
     for file_path in sorted(dataset_path.rglob("*.parquet")):
         if not file_path.is_file() or _is_internal_file(file_path):
             continue
+        relative_path = str(file_path.relative_to(lake_root)).replace("\\", "/")
         try:
             stat = file_path.stat()
-        except Exception:
-            continue
-        relative_path = str(file_path.relative_to(lake_root)).replace("\\", "/")
+        except OSError as exc:
+            raise RuntimeError(f"lake_file_index_source_stat_failed:{relative_path}") from exc
         existing = existing_by_key.get((dataset, relative_path))
         if (
             existing is not None
             and _int_value(existing.get("mtime_ns")) == stat.st_mtime_ns
-            and _int_value(existing.get("file_size")) == stat.st_size
+            and _int_value(existing.get("size_bytes") or existing.get("file_size")) == stat.st_size
+            and _stable_index_identity_present(existing)
         ):
             rows.append(_reuse_index_row(existing, stat=stat, indexed_at=indexed_at))
             continue
         try:
             min_ts, max_ts, row_count = _file_time_bounds(file_path)
-        except Exception:
-            continue
+            source_sha = sha256_file(file_path)
+            schema_fingerprint = _parquet_schema_fingerprint(file_path)
+            uncompressed_bytes = _parquet_uncompressed_bytes(file_path)
+            after = file_path.stat()
+        except Exception as exc:
+            raise RuntimeError(f"lake_file_index_source_read_failed:{relative_path}") from exc
+        if (stat.st_size, stat.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+            raise RuntimeError(f"lake_file_index_source_changed:{relative_path}")
         rows.append(
             {
                 "dataset": dataset,
@@ -180,8 +190,12 @@ def _index_dataset(
                 "max_ts": _iso(max_ts),
                 "row_count": row_count,
                 "file_size": stat.st_size,
+                "size_bytes": stat.st_size,
                 "mtime_ns": stat.st_mtime_ns,
-                "source_sha": f"{stat.st_mtime_ns}:{stat.st_size}",
+                "sha256": source_sha,
+                "source_sha": source_sha,
+                "schema_fingerprint": schema_fingerprint,
+                "uncompressed_bytes": uncompressed_bytes,
                 "indexed_at": indexed_at,
                 "index_version": INDEX_VERSION,
                 "reused_from_previous_index": False,
@@ -201,10 +215,12 @@ def _existing_rows_by_key(frame: pl.DataFrame) -> dict[tuple[str, str], dict[str
 def _reuse_index_row(row: dict[str, Any], *, stat, indexed_at: str) -> dict[str, Any]:
     reused = dict(row)
     reused["file_size"] = stat.st_size
+    reused["size_bytes"] = stat.st_size
     reused["mtime_ns"] = stat.st_mtime_ns
-    reused["source_sha"] = str(reused.get("source_sha") or f"{stat.st_mtime_ns}:{stat.st_size}")
+    reused["sha256"] = str(reused["sha256"])
+    reused["source_sha"] = str(reused["sha256"])
     reused["indexed_at"] = str(reused.get("indexed_at") or indexed_at)
-    reused["index_version"] = str(reused.get("index_version") or INDEX_VERSION)
+    reused["index_version"] = INDEX_VERSION
     reused["reused_from_previous_index"] = True
     return reused
 
@@ -223,7 +239,7 @@ def _merged_index_frame(
     if not updated.is_empty():
         frames.append(updated)
     if not frames:
-        return pl.DataFrame()
+        return existing.head(0) if existing.columns else pl.DataFrame()
     return pl.concat(frames, how="diagonal_relaxed")
 
 
@@ -246,6 +262,51 @@ def _file_time_bounds(file_path: Path) -> tuple[datetime | None, datetime | None
         _coerce_datetime(frame.item(0, "max_ts")),
         int(frame.item(0, "rows") or 0),
     )
+
+
+def _stable_index_identity_present(row: dict[str, Any]) -> bool:
+    sha = str(row.get("sha256") or "")
+    schema = str(row.get("schema_fingerprint") or "")
+    return (
+        str(row.get("index_version") or "") == INDEX_VERSION
+        and len(sha) == 64
+        and all(character in "0123456789abcdef" for character in sha)
+        and len(schema) == 64
+        and all(character in "0123456789abcdef" for character in schema)
+        and _int_value(row.get("uncompressed_bytes")) is not None
+    )
+
+
+def _parquet_schema_fingerprint(file_path: Path) -> str:
+    schema = pl.read_parquet_schema(file_path)
+    payload = json.dumps(
+        [(str(name), str(dtype)) for name, dtype in schema.items()],
+        ensure_ascii=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _parquet_uncompressed_bytes(file_path: Path) -> int:
+    import pyarrow.parquet as pq  # noqa: PLC0415
+
+    metadata = pq.ParquetFile(file_path).metadata
+    return sum(
+        metadata.row_group(row_group).column(column).total_uncompressed_size
+        for row_group in range(metadata.num_row_groups)
+        for column in range(metadata.num_columns)
+    )
+
+
+def _frames_equal(left: pl.DataFrame, right: pl.DataFrame) -> bool:
+    if left.is_empty() or right.is_empty():
+        return left.is_empty() and right.is_empty()
+    if set(left.columns) != set(right.columns):
+        return False
+    # This flag describes the current in-memory scan, not durable file identity.
+    # Ignoring it prevents a second whole-index rewrite after every real change.
+    columns = sorted(set(left.columns) - {"reused_from_previous_index"})
+    return left.select(columns).equals(right.select(columns))
 
 
 def _timestamp_expr(column: str) -> pl.Expr:

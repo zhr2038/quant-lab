@@ -12,6 +12,10 @@ from quant_lab.research_plane.contracts import (
     RESEARCH_SNAPSHOT_ADAPTER,
     RESEARCH_TASK_ADAPTER,
 )
+from quant_lab.research_plane.factor_factory_snapshot import (
+    cleanup_stale_factor_factory_rehydrate_partials,
+)
+from quant_lab.research_plane.snapshot_lock import snapshot_payload_lock
 from quant_lab.research_plane.status import ensure_research_queue_layout
 
 DEFAULT_SNAPSHOT_RETENTION_DAYS = 7
@@ -44,6 +48,7 @@ def gc_research_snapshot_payloads(
         raise ValueError("snapshot max_payload_bytes must be non-negative")
     queue = ensure_research_queue_layout(queue_root)
     observed_at = now or datetime.now(UTC)
+    cleanup_stale_factor_factory_rehydrate_partials(queue, now=observed_at)
     active = _active_snapshot_ids(queue)
     snapshots = _snapshot_records(queue)
     bytes_before = sum(record[2] for record in snapshots)
@@ -72,9 +77,7 @@ def gc_research_snapshot_payloads(
         for generated_at, snapshot_id, payload_bytes in snapshots:
             if snapshot_id in active or payload_bytes <= 0 or snapshot_id in selected:
                 continue
-            release_candidates.append(
-                (generated_at, snapshot_id, payload_bytes, "capacity_limit")
-            )
+            release_candidates.append((generated_at, snapshot_id, payload_bytes, "capacity_limit"))
             selected.add(snapshot_id)
             bytes_remaining -= payload_bytes
             if bytes_remaining <= max_payload_bytes:
@@ -109,6 +112,25 @@ def release_snapshot_payload(
     now: datetime | None = None,
 ) -> bool:
     queue = ensure_research_queue_layout(queue_root)
+    try:
+        with snapshot_payload_lock(queue, snapshot_id, timeout_seconds=0):
+            return _release_snapshot_payload_locked(
+                queue,
+                snapshot_id,
+                reason=reason,
+                now=now,
+            )
+    except TimeoutError:
+        return False
+
+
+def _release_snapshot_payload_locked(
+    queue: Path,
+    snapshot_id: str,
+    *,
+    reason: str,
+    now: datetime | None,
+) -> bool:
     if snapshot_id in _active_snapshot_ids(queue):
         return False
     snapshot_root = queue / "snapshots" / snapshot_id
@@ -155,9 +177,7 @@ def _snapshot_records(queue: Path) -> list[tuple[datetime, str, int]]:
         if not manifest_path.is_file():
             continue
         try:
-            manifest = RESEARCH_SNAPSHOT_ADAPTER.validate_json(
-                manifest_path.read_text("utf-8")
-            )
+            manifest = RESEARCH_SNAPSHOT_ADAPTER.validate_json(manifest_path.read_text("utf-8"))
         except (OSError, ValueError):
             continue
         payload_bytes = manifest.total_input_bytes if (snapshot_root / "files").exists() else 0
@@ -172,15 +192,21 @@ def _active_snapshot_ids(queue: Path) -> set[str]:
         for task_path in (queue / state).glob("*/task.json"):
             try:
                 snapshot_ids.add(
-                    RESEARCH_TASK_ADAPTER.validate_json(
-                        task_path.read_text("utf-8")
-                    ).snapshot_id
+                    RESEARCH_TASK_ADAPTER.validate_json(task_path.read_text("utf-8")).snapshot_id
                 )
             except (OSError, ValueError):
                 continue
     for manifest_path in (queue / "results" / "inbox").glob("*/manifest.json"):
         try:
             payload = json.loads(manifest_path.read_text("utf-8"))
+        except (OSError, ValueError):
+            continue
+        snapshot_id = str(payload.get("snapshot_id") or "")
+        if snapshot_id:
+            snapshot_ids.add(snapshot_id)
+    for marker_path in (queue / "snapshots").glob(".rehydrate.*.partial/REHYDRATE.json"):
+        try:
+            payload = json.loads(marker_path.read_text("utf-8"))
         except (OSError, ValueError):
             continue
         snapshot_id = str(payload.get("snapshot_id") or "")

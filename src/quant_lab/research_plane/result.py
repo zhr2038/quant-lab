@@ -39,6 +39,8 @@ from quant_lab.research_plane.contracts import (
     AlphaFactorySnapshotManifest,
     AlphaFactoryTask,
     AlphaFactoryWorkerReceipt,
+    FactorFactorySnapshotManifest,
+    FactorFactoryTask,
     FactorResearchResultManifest,
     FactorResearchSnapshotManifest,
     FactorResearchTask,
@@ -47,6 +49,9 @@ from quant_lab.research_plane.contracts import (
     ResearchSnapshotManifest,
     ResearchTask,
     ResearchWorkerReceipt,
+)
+from quant_lab.research_plane.factor_factory_snapshot import (
+    verify_factor_factory_snapshot_manifest,
 )
 from quant_lab.research_plane.signatures import sha256_bytes, sha256_file, verify_payload
 from quant_lab.research_plane.snapshot import (
@@ -59,19 +64,13 @@ FORBIDDEN_LIVE_STATE = "LIVE_SMALL_READY"
 ALPHA_FACTORY_FORBIDDEN_LIVE_STATES = frozenset(
     {"LIVE_SMALL_READY", "LIVE", "CANARY", "ENFORCE", "AUTO_PROMOTE"}
 )
-ALPHA_FACTORY_RESULT_DECISIONS = frozenset(
-    {"RESEARCH", "KEEP_SHADOW", "KILL", "PAPER_READY"}
-)
+ALPHA_FACTORY_RESULT_DECISIONS = frozenset({"RESEARCH", "KEEP_SHADOW", "KILL", "PAPER_READY"})
 ALPHA_FACTORY_DECISIONS_BY_DATASET = {
     "second_stage_alpha_factory_summary": frozenset(
         {"RESEARCH_ONLY", "KEEP_SHADOW", "KILL", "PAPER_READY"}
     ),
-    "exit_policy_review_sample": frozenset(
-        {"RESEARCH_ONLY", "REVIEW_EXIT_POLICY"}
-    ),
-    "exit_policy_review_summary": frozenset(
-        {"RESEARCH_ONLY", "REVIEW_EXIT_POLICY"}
-    ),
+    "exit_policy_review_sample": frozenset({"RESEARCH_ONLY", "REVIEW_EXIT_POLICY"}),
+    "exit_policy_review_summary": frozenset({"RESEARCH_ONLY", "REVIEW_EXIT_POLICY"}),
     "alpha_factory_result": ALPHA_FACTORY_RESULT_DECISIONS,
 }
 REQUIRED_ANTI_LEAKAGE_CHECKS = frozenset(
@@ -95,9 +94,7 @@ ALPHA_FACTORY_REQUIRED_REPORTS = frozenset(
         "reports/alpha_factory_anti_leakage.json",
     }
 )
-ALPHA_FACTORY_WINDOWED_AS_OF_DATASETS = frozenset(
-    {"second_stage_alpha_factory_sample"}
-)
+ALPHA_FACTORY_WINDOWED_AS_OF_DATASETS = frozenset({"second_stage_alpha_factory_sample"})
 FACTOR_RESEARCH_REQUIRED_REPORTS = frozenset(
     {
         "reports/factor_research_worker_report.json",
@@ -142,11 +139,12 @@ class ValidatedFactorResearchResult:
 
 
 def validate_research_task_snapshot(
-    task: ResearchTask | AlphaFactoryTask | FactorResearchTask,
+    task: ResearchTask | AlphaFactoryTask | FactorResearchTask | FactorFactoryTask,
     snapshot: (
         ResearchSnapshotManifest
         | AlphaFactorySnapshotManifest
         | FactorResearchSnapshotManifest
+        | FactorFactorySnapshotManifest
     ),
     *,
     task_public_key: Ed25519PublicKey,
@@ -155,13 +153,19 @@ def validate_research_task_snapshot(
     snapshot_root: Path | None = None,
 ) -> None:
     matching_types = (
-        isinstance(task, ResearchTask) and isinstance(snapshot, ResearchSnapshotManifest)
-    ) or (
-        isinstance(task, AlphaFactoryTask)
-        and isinstance(snapshot, AlphaFactorySnapshotManifest)
-    ) or (
-        isinstance(task, FactorResearchTask)
-        and isinstance(snapshot, FactorResearchSnapshotManifest)
+        (isinstance(task, ResearchTask) and isinstance(snapshot, ResearchSnapshotManifest))
+        or (
+            isinstance(task, AlphaFactoryTask)
+            and isinstance(snapshot, AlphaFactorySnapshotManifest)
+        )
+        or (
+            isinstance(task, FactorResearchTask)
+            and isinstance(snapshot, FactorResearchSnapshotManifest)
+        )
+        or (
+            isinstance(task, FactorFactoryTask)
+            and isinstance(snapshot, FactorFactorySnapshotManifest)
+        )
     )
     if not matching_types:
         raise ValueError("research_task_snapshot_type_mismatch")
@@ -170,11 +174,18 @@ def validate_research_task_snapshot(
     if snapshot.signature_key_id != expected_key_id:
         raise ValueError("research_snapshot_unknown_signature_key")
     verify_payload(task, task.signature, task_public_key)
-    verify_payload(snapshot, snapshot.signature, task_public_key)
+    if not isinstance(snapshot, FactorFactorySnapshotManifest):
+        verify_payload(snapshot, snapshot.signature, task_public_key)
     if isinstance(snapshot, AlphaFactorySnapshotManifest):
         verify_alpha_factory_snapshot_manifest(snapshot, final_root=snapshot_root)
     elif isinstance(snapshot, FactorResearchSnapshotManifest):
         verify_factor_research_snapshot_manifest(snapshot, final_root=snapshot_root)
+    elif isinstance(snapshot, FactorFactorySnapshotManifest):
+        verify_factor_factory_snapshot_manifest(
+            snapshot,
+            final_root=snapshot_root,
+            public_key=task_public_key,
+        )
     else:
         verify_snapshot_manifest(snapshot, final_root=snapshot_root)
     if task.snapshot_id != snapshot.snapshot_id:
@@ -249,12 +260,56 @@ def validate_research_task_snapshot(
         )
         if observed_identity != expected_identity:
             raise ValueError("research_task_snapshot_factor_research_identity_mismatch")
+    elif isinstance(task, FactorFactoryTask) and isinstance(
+        snapshot,
+        FactorFactorySnapshotManifest,
+    ):
+        expected_identity = (
+            task.parameters.model_dump(exclude={"as_of_date"}),
+            task.factor_plan_digest,
+            task.source_input_digest,
+            task.cost_input_digest,
+        )
+        observed_identity = (
+            {
+                "feature_set": snapshot.feature_set,
+                "feature_version": snapshot.feature_version,
+                "factor_version": snapshot.factor_version,
+                "timeframe": snapshot.timeframe,
+                "horizon_bars": snapshot.horizon_bars,
+                "decision_delay_bars": snapshot.decision_delay_bars,
+                "max_factors": snapshot.max_factors,
+                "min_samples": snapshot.min_samples,
+                "top_quantile": snapshot.top_quantile,
+                "cost_quantile": snapshot.cost_quantile,
+                "result_mode": snapshot.result_mode,
+                "history_mode": snapshot.history_mode,
+            },
+            snapshot.factor_plan_digest,
+            snapshot.source_input_digest,
+            snapshot.cost_input_digest,
+        )
+        if snapshot.schema_version == "quant_lab_factor_factory_snapshot.v1":
+            expected_identity += (
+                task.previous_generation_id,
+                task.previous_generation_digest,
+                task.as_of_date,
+            )
+            observed_identity += (
+                snapshot.previous_generation_id,
+                snapshot.previous_generation_digest,
+                snapshot.as_of_date,
+            )
+        if observed_identity != expected_identity:
+            raise ValueError("research_task_snapshot_factor_factory_identity_mismatch")
     elif isinstance(task, ResearchTask) and isinstance(snapshot, ResearchSnapshotManifest):
         if task.entry_quality_schema_version != snapshot.entry_quality_schema_version:
             raise ValueError("research_task_snapshot_schema_mismatch")
     else:  # pragma: no cover - guarded above; keeps the type boundary explicit.
         raise ValueError("research_task_snapshot_type_mismatch")
-    if task.selected_v5_bundle_id != snapshot.selected_v5_bundle_id:
+    if not isinstance(task, FactorFactoryTask) and (
+        task.selected_v5_bundle_id != snapshot.selected_v5_bundle_id
+    ):
         raise ValueError("research_task_snapshot_bundle_mismatch")
     if expected_quant_lab_commit is not None and task.quant_lab_commit != expected_quant_lab_commit:
         raise ValueError("research_task_current_commit_mismatch")
@@ -372,9 +427,7 @@ def validate_alpha_factory_result_bundle(
         raise ValueError("alpha_factory_receipt_manifest_sha256_mismatch")
     expected_specs = {spec.dataset_name: spec for spec in ALPHA_FACTORY_COMPUTE_OUTPUT_SPECS}
     actual_outputs = {item.dataset_name: item for item in manifest.outputs}
-    if set(actual_outputs) != set(expected_specs) or len(manifest.outputs) != len(
-        expected_specs
-    ):
+    if set(actual_outputs) != set(expected_specs) or len(manifest.outputs) != len(expected_specs):
         raise ValueError("alpha_factory_result_output_set_mismatch")
     report_paths = {item.relative_path for item in manifest.reports}
     if report_paths != ALPHA_FACTORY_REQUIRED_REPORTS or len(manifest.reports) != len(
@@ -398,9 +451,7 @@ def validate_alpha_factory_result_bundle(
         if list(schema.items()) != list(spec.schema.items()):
             raise ValueError(f"alpha_factory_result_schema_mismatch:{dataset_name}")
         if schema_fingerprint(schema) != output.schema_fingerprint:
-            raise ValueError(
-                f"alpha_factory_result_schema_fingerprint_mismatch:{dataset_name}"
-            )
+            raise ValueError(f"alpha_factory_result_schema_fingerprint_mismatch:{dataset_name}")
         lazy = pl.scan_parquet(path)
         actual_rows = int(lazy.select(pl.len()).collect(engine="streaming").item())
         if actual_rows != output.row_count:
@@ -419,13 +470,8 @@ def validate_alpha_factory_result_bundle(
                 f"alpha_factory_result_report_integrity_mismatch:{report.relative_path}"
             )
         payload = path.read_bytes()
-        if any(
-            state.encode("ascii") in payload
-            for state in ALPHA_FACTORY_FORBIDDEN_LIVE_STATES
-        ):
-            raise ValueError(
-                f"alpha_factory_result_live_state_forbidden:{report.relative_path}"
-            )
+        if any(state.encode("ascii") in payload for state in ALPHA_FACTORY_FORBIDDEN_LIVE_STATES):
+            raise ValueError(f"alpha_factory_result_live_state_forbidden:{report.relative_path}")
         reports[Path(report.relative_path).name] = payload
     _validate_alpha_anti_leakage_report(
         reports["alpha_factory_anti_leakage.json"],
@@ -437,9 +483,7 @@ def validate_alpha_factory_result_bundle(
         task=task,
         snapshot=snapshot,
     )
-    _validate_factor_bridge_report(
-        root / "reports" / "factor_strategy_bridge_candidates.csv"
-    )
+    _validate_factor_bridge_report(root / "reports" / "factor_strategy_bridge_candidates.csv")
     output_rows = sum(item.row_count for item in manifest.outputs)
     if receipt.output_rows != output_rows:
         raise ValueError("alpha_factory_receipt_output_rows_mismatch")
@@ -481,14 +525,12 @@ def validate_factor_research_result_bundle(
         raise ValueError("factor_research_receipt_manifest_sha256_mismatch")
     expected_specs = {spec.dataset_name: spec for spec in FACTOR_RESEARCH_OUTPUT_SPECS}
     actual_outputs = {item.dataset_name: item for item in manifest.outputs}
-    if set(actual_outputs) != set(expected_specs) or len(manifest.outputs) != len(
-        expected_specs
-    ):
+    if set(actual_outputs) != set(expected_specs) or len(manifest.outputs) != len(expected_specs):
         raise ValueError("factor_research_result_output_set_mismatch")
     report_paths = {item.relative_path for item in manifest.reports}
-    if report_paths != FACTOR_RESEARCH_REQUIRED_REPORTS or len(
-        manifest.reports
-    ) != len(FACTOR_RESEARCH_REQUIRED_REPORTS):
+    if report_paths != FACTOR_RESEARCH_REQUIRED_REPORTS or len(manifest.reports) != len(
+        FACTOR_RESEARCH_REQUIRED_REPORTS
+    ):
         raise ValueError("factor_research_result_report_set_mismatch")
     declared_bytes = sum(item.size_bytes for item in manifest.outputs) + sum(
         item.size_bytes for item in manifest.reports
@@ -507,9 +549,7 @@ def validate_factor_research_result_bundle(
         if list(schema.items()) != list(spec.schema.items()):
             raise ValueError(f"factor_research_result_schema_mismatch:{dataset_name}")
         if schema_fingerprint(schema) != output.schema_fingerprint:
-            raise ValueError(
-                f"factor_research_result_schema_fingerprint_mismatch:{dataset_name}"
-            )
+            raise ValueError(f"factor_research_result_schema_fingerprint_mismatch:{dataset_name}")
         lazy = pl.scan_parquet(path)
         actual_rows = int(lazy.select(pl.len()).collect(engine="streaming").item())
         if actual_rows != output.row_count:
@@ -521,9 +561,7 @@ def validate_factor_research_result_bundle(
 
     _validate_factor_research_membership(output_paths, task=task)
     if snapshot_root is not None:
-        _validate_factor_research_trial_ledger(
-            Path(snapshot_root), task=task, snapshot=snapshot
-        )
+        _validate_factor_research_trial_ledger(Path(snapshot_root), task=task, snapshot=snapshot)
 
     reports: dict[str, bytes] = {}
     for report in manifest.reports:
@@ -533,13 +571,8 @@ def validate_factor_research_result_bundle(
                 f"factor_research_result_report_integrity_mismatch:{report.relative_path}"
             )
         payload = path.read_bytes()
-        if any(
-            state.encode("ascii") in payload
-            for state in ALPHA_FACTORY_FORBIDDEN_LIVE_STATES
-        ):
-            raise ValueError(
-                f"factor_research_result_live_state_forbidden:{report.relative_path}"
-            )
+        if any(state.encode("ascii") in payload for state in ALPHA_FACTORY_FORBIDDEN_LIVE_STATES):
+            raise ValueError(f"factor_research_result_live_state_forbidden:{report.relative_path}")
         reports[Path(report.relative_path).name] = payload
     _validate_factor_research_anti_leakage_report(
         reports["factor_research_anti_leakage.json"], task=task, snapshot=snapshot
@@ -686,10 +719,7 @@ def _validate_alpha_factory_result_binding(
         raise ValueError("alpha_factory_receipt_cache_hit_bytes_mismatch")
     if receipt.anti_leakage_status != manifest.anti_leakage_status:
         raise ValueError("alpha_factory_receipt_anti_leakage_mismatch")
-    if (
-        receipt.anti_leakage_violation_count
-        != manifest.anti_leakage_violation_count
-    ):
+    if receipt.anti_leakage_violation_count != manifest.anti_leakage_violation_count:
         raise ValueError("alpha_factory_receipt_anti_leakage_count_mismatch")
     if receipt.completed_at != manifest.completed_at:
         raise ValueError("alpha_factory_receipt_completed_at_mismatch")
@@ -756,10 +786,7 @@ def _validate_factor_research_result_binding(
         raise ValueError("factor_research_receipt_cache_hit_bytes_mismatch")
     if receipt.anti_leakage_status != manifest.anti_leakage_status:
         raise ValueError("factor_research_receipt_anti_leakage_mismatch")
-    if (
-        receipt.anti_leakage_violation_count
-        != manifest.anti_leakage_violation_count
-    ):
+    if receipt.anti_leakage_violation_count != manifest.anti_leakage_violation_count:
         raise ValueError("factor_research_receipt_anti_leakage_count_mismatch")
     if receipt.completed_at != manifest.completed_at:
         raise ValueError("factor_research_receipt_completed_at_mismatch")
@@ -774,14 +801,10 @@ def _validate_alpha_frame_scope(
     schema = lazy.collect_schema()
     if "as_of_date" in schema:
         null_count = int(
-            lazy.select(pl.col("as_of_date").null_count())
-            .collect(engine="streaming")
-            .item()
+            lazy.select(pl.col("as_of_date").null_count()).collect(engine="streaming").item()
         )
         if null_count:
-            raise ValueError(
-                f"alpha_factory_result_scope_null:{dataset_name}:as_of_date"
-            )
+            raise ValueError(f"alpha_factory_result_scope_null:{dataset_name}:as_of_date")
         values = (
             lazy.select(pl.col("as_of_date").cast(pl.Utf8).unique())
             .collect(engine="streaming")
@@ -798,20 +821,15 @@ def _validate_alpha_frame_scope(
             if dataset_name in ALPHA_FACTORY_WINDOWED_AS_OF_DATASETS:
                 first_allowed = task.as_of_date - timedelta(days=task.lookback_days)
                 in_scope = all(
-                    first_allowed <= scoped_day <= task.as_of_date
-                    for scoped_day in scoped_days
+                    first_allowed <= scoped_day <= task.as_of_date for scoped_day in scoped_days
                 )
             else:
                 in_scope = scoped_days == {task.as_of_date}
             if not in_scope:
-                raise ValueError(
-                    f"alpha_factory_result_scope_mismatch:{dataset_name}:as_of_date"
-                )
+                raise ValueError(f"alpha_factory_result_scope_mismatch:{dataset_name}:as_of_date")
     if "candidate_id" in schema:
         null_count = int(
-            lazy.select(pl.col("candidate_id").null_count())
-            .collect(engine="streaming")
-            .item()
+            lazy.select(pl.col("candidate_id").null_count()).collect(engine="streaming").item()
         )
         if null_count:
             raise ValueError(f"alpha_factory_result_null_candidate_id:{dataset_name}")
@@ -848,15 +866,11 @@ def _validate_alpha_frame_safety(lazy: pl.LazyFrame, dataset_name: str) -> None:
     schema = lazy.collect_schema()
     forbidden_decisions = ALPHA_FACTORY_FORBIDDEN_LIVE_STATES
     if "max_live_notional_usdt" in schema:
-        invalid = lazy.filter(
-            pl.col("max_live_notional_usdt").fill_null(0.0) != 0.0
-        ).limit(1)
+        invalid = lazy.filter(pl.col("max_live_notional_usdt").fill_null(0.0) != 0.0).limit(1)
         if not invalid.collect(engine="streaming").is_empty():
             raise ValueError(f"alpha_factory_result_nonzero_live_notional:{dataset_name}")
     if "safety_mode" in schema:
-        invalid = lazy.filter(
-            pl.col("safety_mode").fill_null("") != "paper_shadow_only"
-        ).limit(1)
+        invalid = lazy.filter(pl.col("safety_mode").fill_null("") != "paper_shadow_only").limit(1)
         if not invalid.collect(engine="streaming").is_empty():
             raise ValueError(f"alpha_factory_result_unsafe_safety_mode:{dataset_name}")
     for column in ("decision", "candidate_state", "promotion_state", "recommended_mode"):
@@ -866,9 +880,7 @@ def _validate_alpha_frame_safety(lazy: pl.LazyFrame, dataset_name: str) -> None:
             pl.col(column).cast(pl.Utf8).str.to_uppercase().is_in(forbidden_decisions)
         ).limit(1)
         if not invalid.collect(engine="streaming").is_empty():
-            raise ValueError(
-                f"alpha_factory_result_live_state_forbidden:{dataset_name}:{column}"
-            )
+            raise ValueError(f"alpha_factory_result_live_state_forbidden:{dataset_name}:{column}")
     if "decision" in schema:
         allowed = ALPHA_FACTORY_DECISIONS_BY_DATASET.get(
             dataset_name,
@@ -901,9 +913,7 @@ def _validate_alpha_frame_safety(lazy: pl.LazyFrame, dataset_name: str) -> None:
     if {"template_name", "parameter_json"}.issubset(schema):
         bridge_rows = (
             lazy.filter(
-                pl.col("template_name")
-                .str.to_lowercase()
-                .str.contains("factor_strategy_bridge")
+                pl.col("template_name").str.to_lowercase().str.contains("factor_strategy_bridge")
             )
             .select("parameter_json")
             .collect(engine="streaming")
@@ -912,13 +922,9 @@ def _validate_alpha_frame_safety(lazy: pl.LazyFrame, dataset_name: str) -> None:
             try:
                 parameters = json.loads(str(row.get("parameter_json") or "{}"))
             except (TypeError, ValueError, json.JSONDecodeError) as exc:
-                raise ValueError(
-                    "alpha_factory_result_factor_bridge_parameters_invalid"
-                ) from exc
+                raise ValueError("alpha_factory_result_factor_bridge_parameters_invalid") from exc
             if parameters.get("strategy_review_only") is not True:
-                raise ValueError(
-                    "alpha_factory_result_factor_bridge_not_strategy_review_only"
-                )
+                raise ValueError("alpha_factory_result_factor_bridge_not_strategy_review_only")
     if {"strategy_candidate", "futures_data_available"}.issubset(schema):
         invalid_futures_data = lazy.filter(
             pl.col("strategy_candidate").str.to_lowercase().str.contains("futures")
@@ -1073,9 +1079,7 @@ def _validate_factor_research_scope(
             .to_list()
         )
         if values and set(values) != {task.as_of_date.isoformat()}:
-            raise ValueError(
-                f"factor_research_result_scope_mismatch:{dataset_name}:as_of_date"
-            )
+            raise ValueError(f"factor_research_result_scope_mismatch:{dataset_name}:as_of_date")
     expected_data_snapshot_id = f"factor-input-{task.source_input_digest[:24]}"
     if "data_snapshot_id" in schema:
         values = (
@@ -1107,9 +1111,7 @@ def _validate_factor_research_scope(
             .to_list()
         )
         if values != set(task.trial_ids):
-            raise ValueError(
-                f"factor_research_result_trial_membership_mismatch:{dataset_name}"
-            )
+            raise ValueError(f"factor_research_result_trial_membership_mismatch:{dataset_name}")
 
 
 def _validate_factor_research_unique_keys(
@@ -1164,15 +1166,11 @@ def _validate_factor_research_safety(lazy: pl.LazyFrame, dataset_name: str) -> N
             .is_in(sorted(ALPHA_FACTORY_FORBIDDEN_LIVE_STATES))
         ).limit(1)
         if not invalid.collect(engine="streaming").is_empty():
-            raise ValueError(
-                f"factor_research_result_live_state_forbidden:{dataset_name}:{column}"
-            )
+            raise ValueError(f"factor_research_result_live_state_forbidden:{dataset_name}:{column}")
     if "decision" in schema:
         invalid = lazy.filter(
             pl.col("decision").is_null()
-            | ~pl.col("decision").cast(pl.Utf8).is_in(
-                sorted(FACTOR_RESEARCH_ALLOWED_DECISIONS)
-            )
+            | ~pl.col("decision").cast(pl.Utf8).is_in(sorted(FACTOR_RESEARCH_ALLOWED_DECISIONS))
         ).limit(1)
         if not invalid.collect(engine="streaming").is_empty():
             raise ValueError(f"factor_research_result_unknown_decision:{dataset_name}")
@@ -1184,9 +1182,7 @@ def _validate_factor_research_safety(lazy: pl.LazyFrame, dataset_name: str) -> N
             .is_in(sorted(FACTOR_RESEARCH_ALLOWED_CANDIDATE_STATES))
         ).limit(1)
         if not invalid.collect(engine="streaming").is_empty():
-            raise ValueError(
-                f"factor_research_result_unknown_candidate_state:{dataset_name}"
-            )
+            raise ValueError(f"factor_research_result_unknown_candidate_state:{dataset_name}")
 
 
 def _validate_factor_research_membership(
@@ -1226,9 +1222,7 @@ def _validate_factor_research_membership(
             .to_list()
         )
         if not observed.issubset(factor_ids):
-            raise ValueError(
-                f"factor_research_result_factor_identity_mismatch:{dataset_name}"
-            )
+            raise ValueError(f"factor_research_result_factor_identity_mismatch:{dataset_name}")
     evidence_rows = int(
         pl.scan_parquet(output_paths["factor_evidence"])
         .select(pl.len())
@@ -1253,9 +1247,7 @@ def _validate_factor_research_trial_ledger(
     task: FactorResearchTask,
     snapshot: FactorResearchSnapshotManifest,
 ) -> None:
-    ledger = read_parquet_dataset(
-        snapshot_root / "files" / RESEARCH_TRIAL_LEDGER_DATASET
-    )
+    ledger = read_parquet_dataset(snapshot_root / "files" / RESEARCH_TRIAL_LEDGER_DATASET)
     if trial_ledger_digest(ledger) != snapshot.trial_ledger_digest:
         raise ValueError("factor_research_result_trial_ledger_digest_mismatch")
     if set(ledger.get_column("trial_id").to_list()) != set(task.trial_ids):
@@ -1373,17 +1365,10 @@ def _validate_frame_scope(
     if "quant_lab_git_commit" in frame.columns and not frame.is_empty():
         commit_series = frame.get_column("quant_lab_git_commit")
         if commit_series.null_count():
-            raise ValueError(
-                f"research_result_scope_null:{dataset_name}:quant_lab_git_commit"
-            )
-        values = {
-            str(value)
-            for value in commit_series.cast(pl.Utf8).to_list()
-        }
+            raise ValueError(f"research_result_scope_null:{dataset_name}:quant_lab_git_commit")
+        values = {str(value) for value in commit_series.cast(pl.Utf8).to_list()}
         if values != {task.quant_lab_commit}:
-            raise ValueError(
-                f"research_result_scope_mismatch:{dataset_name}:quant_lab_git_commit"
-            )
+            raise ValueError(f"research_result_scope_mismatch:{dataset_name}:quant_lab_git_commit")
     if "source_version" in frame.columns and not frame.is_empty():
         source_series = frame.get_column("source_version")
         if source_series.null_count():
@@ -1391,9 +1376,7 @@ def _validate_frame_scope(
         expected_source_version = f"entry_quality:{task.quant_lab_commit}"
         values = {str(value) for value in source_series.cast(pl.Utf8).to_list()}
         if values != {expected_source_version}:
-            raise ValueError(
-                f"research_result_scope_mismatch:{dataset_name}:source_version"
-            )
+            raise ValueError(f"research_result_scope_mismatch:{dataset_name}:source_version")
     start_dt = datetime.combine(task.start_date, time.min, tzinfo=UTC)
     end_dt = datetime.combine(task.end_date + timedelta(days=1), time.min, tzinfo=UTC)
     for column in ("entry_ts", "ts_utc"):

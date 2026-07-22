@@ -1,0 +1,11 @@
+[Unit]
+Description=Poll Factor Factory input identity hourly and enqueue bounded NAS research
+
+[Timer]
+OnCalendar=*-*-* *:38:00 UTC
+RandomizedDelaySec=3min
+Persistent=true
+Unit=quant-lab-factor-factory-request.service
+
+[Install]
+WantedBy=timers.target

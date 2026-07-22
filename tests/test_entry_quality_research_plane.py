@@ -1589,6 +1589,47 @@ def test_worker_handoff_exposes_inbox_before_cloud_status_ownership(
     ]
 
 
+def test_worker_result_upload_normalizes_shared_group_permissions(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config = _research_worker_config(tmp_path)
+    result_root = tmp_path / "result"
+    result_root.mkdir()
+    (result_root / "result.json").write_text("{}", encoding="utf-8")
+    uploads: list[tuple[Path, str, bool]] = []
+    commands: list[str] = []
+
+    def fake_scp(
+        _config,
+        local_path: Path,
+        remote_path: str,
+        *,
+        recursive: bool = False,
+    ) -> None:
+        uploads.append((local_path, remote_path, recursive))
+
+    def fake_ssh(_config, command: str, *, check: bool = True):
+        commands.append(command)
+        return subprocess.CompletedProcess([], 0, "", "")
+
+    monkeypatch.setattr(runner_module, "_scp_to", fake_scp)
+    monkeypatch.setattr(runner_module, "_ssh", fake_ssh)
+
+    remote_partial = runner_module._upload_result_partial(
+        config,
+        "entry-quality-history-permissions",
+        result_root,
+    )
+    runner_module._mark_result_partial_ready(config, remote_partial)
+
+    assert uploads == [(result_root, remote_partial, True)]
+    assert "-exec chmod 2770 {} +" in commands[0]
+    assert "-exec chmod 0660 {} +" in commands[0]
+    assert commands[1].startswith("touch ")
+    assert commands[1].endswith(" && chmod 0660 " + remote_partial + "/.HANDOFF_READY")
+
+
 def test_worker_heartbeat_updates_only_monotonic_lease(
     tmp_path: Path,
     monkeypatch,

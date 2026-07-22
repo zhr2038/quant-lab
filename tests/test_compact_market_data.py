@@ -409,18 +409,31 @@ def test_lake_file_index_reuses_unchanged_rows_and_scans_only_new_files(
         [{"symbol": "BNB-USDT", "ts": datetime(2026, 5, 31, 10, tzinfo=UTC), "size": 2.0}]
     ).write_parquet(second)
     original_bounds = file_index_module._file_time_bounds
-    build_lake_file_index(lake, ["silver/trade_print"])
+    original_sha = file_index_module.sha256_file
+    initial = build_lake_file_index(lake, ["silver/trade_print"])
+    assert initial.get_column("sha256").str.len_chars().to_list() == [64, 64]
+    assert initial.get_column("schema_fingerprint").str.len_chars().to_list() == [64, 64]
+    assert initial.get_column("uncompressed_bytes").min() > 0
+    assert initial.get_column("size_bytes").to_list() == initial.get_column("file_size").to_list()
 
     def fail_scan(_path):
         raise AssertionError("unchanged file should reuse indexed bounds")
 
     monkeypatch.setattr(file_index_module, "_file_time_bounds", fail_scan)
+    monkeypatch.setattr(
+        file_index_module,
+        "sha256_file",
+        lambda _path: (_ for _ in ()).throw(
+            AssertionError("unchanged file should reuse indexed SHA")
+        ),
+    )
     reused = build_lake_file_index(lake, ["silver/trade_print"])
     assert reused.height == 2
     assert "indexed_at" in reused.columns
     assert "index_version" in reused.columns
     assert reused.get_column("reused_from_previous_index").to_list() == [True, True]
 
+    monkeypatch.setattr(file_index_module, "sha256_file", original_sha)
     third = source / "third.parquet"
     pl.DataFrame(
         [{"symbol": "BNB-USDT", "ts": datetime(2026, 5, 31, 11, tzinfo=UTC), "size": 3.0}]
@@ -441,6 +454,30 @@ def test_lake_file_index_reuses_unchanged_rows_and_scans_only_new_files(
     reused_flags = updated.sort("path").get_column("reused_from_previous_index").to_list()
     assert reused_flags.count(True) == 2
     assert reused_flags.count(False) == 1
+
+
+def test_lake_file_index_fails_closed_when_source_changes_during_index(
+    tmp_path,
+    monkeypatch,
+):
+    lake = tmp_path / "lake"
+    source = lake / "silver/trade_print"
+    source.mkdir(parents=True)
+    target = source / "changing.parquet"
+    pl.DataFrame(
+        [{"symbol": "BTC-USDT", "ts": datetime(2026, 5, 31, 9, tzinfo=UTC)}]
+    ).write_parquet(target)
+    original_sha = file_index_module.sha256_file
+
+    def mutate_mtime(path):
+        digest = original_sha(path)
+        stat = Path(path).stat()
+        os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000))
+        return digest
+
+    monkeypatch.setattr(file_index_module, "sha256_file", mutate_mtime)
+    with pytest.raises(RuntimeError, match="lake_file_index_source_changed"):
+        build_lake_file_index(lake, ["silver/trade_print"])
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX directory permissions required")

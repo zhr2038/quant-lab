@@ -1,9 +1,11 @@
-# NAS Entry Quality History Research Worker
+# NAS Research Worker
 
-This container pulls signed, sealed Entry Quality History snapshots from qyun2,
-computes research-only derived data, signs the result, and uploads it for strict
-cloud validation. It has no exchange credentials, does not mount the cloud Lake,
-and cannot publish Gold or influence live orders.
+This container pulls signed, sealed Entry Quality History, Alpha Factory,
+Factor Research, and Factor Factory snapshots from qyun2, computes
+research-only derived data, signs the result, and uploads it for strict cloud
+validation. It has no exchange credentials, does not mount the cloud Lake, and
+cannot publish Gold or influence live orders. Factor Factory claims are skipped
+unless `QUANT_RESEARCH_FACTOR_FACTORY_ENABLED=1`.
 
 ## Host preparation
 

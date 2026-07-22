@@ -138,6 +138,7 @@ The repository includes these timer templates:
 - `deploy/systemd/quant-lab-v5-telemetry-sync.timer`
 - `deploy/systemd/quant-lab-v5-daily-analysis.timer`
 - `deploy/systemd/quant-lab-v5-research-refresh.timer`
+- `deploy/systemd/quant-lab-v5-candidate-evidence-request.timer`
 - `deploy/systemd/quant-lab-v5-regime-router.timer`
 - `deploy/systemd/quant-lab-alpha-factory.timer`
 - `deploy/systemd/quant-lab-alpha-evidence.timer`
@@ -149,8 +150,11 @@ Suggested production order:
 
 - V5 telemetry sync: every 10 minutes, one newest bundle per run.
 - V5 telemetry analysis: every 30 minutes, using `--skip-candidate-gold`.
-- Candidate labels, strategy evidence, alpha factory, entry-quality summaries,
-  paper tracking, and alpha discovery board: every 1 hour. This cadence keeps
+- Candidate Evidence NAS request: every hour at minute 20 UTC with up to two
+  minutes of randomized delay. After cutover it owns Candidate Labels and
+  Evidence Samples; qyun2 still derives and publishes all control outputs.
+- Alpha factory, entry-quality summaries, paper tracking, and alpha discovery
+  board: every 1 hour. This cadence keeps
   `strategy_opportunity_advisory` below V5's 90 minute freshness window without
   making daily expert export rescan historical research state.
 - Regime router: every 30 minutes, as an independent short job.

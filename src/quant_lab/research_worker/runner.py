@@ -29,6 +29,13 @@ from quant_lab.research_plane.contracts import (
     DEFAULT_FACTOR_FACTORY_MAX_UNCOMPRESSED_BYTES,
     DEFAULT_FACTOR_FACTORY_MAX_VALUE_PARTITION_BYTES,
     DEFAULT_RESEARCH_MAX_RESULT_BYTES,
+    DEFAULT_V5_CANDIDATE_EVIDENCE_MAX_FILE_COUNT,
+    DEFAULT_V5_CANDIDATE_EVIDENCE_MAX_INPUT_UNCOMPRESSED_BYTES,
+    DEFAULT_V5_CANDIDATE_EVIDENCE_MAX_PARTITION_BYTES,
+    DEFAULT_V5_CANDIDATE_EVIDENCE_MAX_PARTITION_UNCOMPRESSED_BYTES,
+    DEFAULT_V5_CANDIDATE_EVIDENCE_MAX_RESULT_BYTES,
+    DEFAULT_V5_CANDIDATE_EVIDENCE_MAX_RESULT_UNCOMPRESSED_BYTES,
+    DEFAULT_V5_CANDIDATE_EVIDENCE_MAX_SNAPSHOT_BYTES,
     RESEARCH_SNAPSHOT_ADAPTER,
     RESEARCH_TASK_ADAPTER,
     AlphaFactorySnapshotManifest,
@@ -41,6 +48,8 @@ from quant_lab.research_plane.contracts import (
     ResearchTaskLease,
     ResearchTaskState,
     ResearchTaskStatus,
+    V5CandidateEvidenceSnapshotManifest,
+    V5CandidateEvidenceTask,
 )
 from quant_lab.research_plane.result import validate_research_task_snapshot
 from quant_lab.research_plane.signatures import (
@@ -58,6 +67,12 @@ from quant_lab.research_worker.result_writer import (
     write_entry_quality_history_result_bundle,
     write_factor_factory_result_bundle,
     write_factor_research_result_bundle,
+)
+from quant_lab.research_worker.v5_candidate_evidence import (
+    compute_v5_candidate_evidence_result,
+)
+from quant_lab.research_worker.v5_candidate_evidence_result_writer import (
+    write_v5_candidate_evidence_result_bundle,
 )
 from quant_lab.transfer.snapshot_sync import sync_snapshot_blobs
 
@@ -101,6 +116,29 @@ class Config:
     factor_factory_max_input_uncompressed_bytes: int = (
         DEFAULT_FACTOR_FACTORY_MAX_INPUT_UNCOMPRESSED_BYTES
     )
+    v5_candidate_evidence_enabled: bool = False
+    v5_candidate_evidence_max_snapshot_bytes: int = (
+        DEFAULT_V5_CANDIDATE_EVIDENCE_MAX_SNAPSHOT_BYTES
+    )
+    v5_candidate_evidence_max_input_uncompressed_bytes: int = (
+        DEFAULT_V5_CANDIDATE_EVIDENCE_MAX_INPUT_UNCOMPRESSED_BYTES
+    )
+    v5_candidate_evidence_max_result_bytes: int = (
+        DEFAULT_V5_CANDIDATE_EVIDENCE_MAX_RESULT_BYTES
+    )
+    v5_candidate_evidence_max_result_uncompressed_bytes: int = (
+        DEFAULT_V5_CANDIDATE_EVIDENCE_MAX_RESULT_UNCOMPRESSED_BYTES
+    )
+    v5_candidate_evidence_max_partition_bytes: int = (
+        DEFAULT_V5_CANDIDATE_EVIDENCE_MAX_PARTITION_BYTES
+    )
+    v5_candidate_evidence_max_partition_uncompressed_bytes: int = (
+        DEFAULT_V5_CANDIDATE_EVIDENCE_MAX_PARTITION_UNCOMPRESSED_BYTES
+    )
+    v5_candidate_evidence_max_file_count: int = (
+        DEFAULT_V5_CANDIDATE_EVIDENCE_MAX_FILE_COUNT
+    )
+    v5_candidate_evidence_max_input_rows: int = 5_000_000
     ssh_timeout_seconds: int = 90
     scp_timeout_seconds: int = 900
 
@@ -164,6 +202,56 @@ class Config:
                     str(DEFAULT_FACTOR_FACTORY_MAX_INPUT_UNCOMPRESSED_BYTES),
                 )
             ),
+            v5_candidate_evidence_enabled=_bool_env(
+                "QUANT_RESEARCH_V5_CANDIDATE_EVIDENCE_ENABLED", False
+            ),
+            v5_candidate_evidence_max_snapshot_bytes=int(
+                os.environ.get(
+                    "QUANT_LAB_V5_CANDIDATE_EVIDENCE_MAX_SNAPSHOT_BYTES",
+                    str(DEFAULT_V5_CANDIDATE_EVIDENCE_MAX_SNAPSHOT_BYTES),
+                )
+            ),
+            v5_candidate_evidence_max_input_uncompressed_bytes=int(
+                os.environ.get(
+                    "QUANT_LAB_V5_CANDIDATE_EVIDENCE_MAX_INPUT_UNCOMPRESSED_BYTES",
+                    str(DEFAULT_V5_CANDIDATE_EVIDENCE_MAX_INPUT_UNCOMPRESSED_BYTES),
+                )
+            ),
+            v5_candidate_evidence_max_result_bytes=int(
+                os.environ.get(
+                    "QUANT_LAB_V5_CANDIDATE_EVIDENCE_MAX_RESULT_BYTES",
+                    str(DEFAULT_V5_CANDIDATE_EVIDENCE_MAX_RESULT_BYTES),
+                )
+            ),
+            v5_candidate_evidence_max_result_uncompressed_bytes=int(
+                os.environ.get(
+                    "QUANT_LAB_V5_CANDIDATE_EVIDENCE_MAX_RESULT_UNCOMPRESSED_BYTES",
+                    str(DEFAULT_V5_CANDIDATE_EVIDENCE_MAX_RESULT_UNCOMPRESSED_BYTES),
+                )
+            ),
+            v5_candidate_evidence_max_partition_bytes=int(
+                os.environ.get(
+                    "QUANT_LAB_V5_CANDIDATE_EVIDENCE_MAX_PARTITION_BYTES",
+                    str(DEFAULT_V5_CANDIDATE_EVIDENCE_MAX_PARTITION_BYTES),
+                )
+            ),
+            v5_candidate_evidence_max_partition_uncompressed_bytes=int(
+                os.environ.get(
+                    "QUANT_LAB_V5_CANDIDATE_EVIDENCE_MAX_PARTITION_UNCOMPRESSED_BYTES",
+                    str(DEFAULT_V5_CANDIDATE_EVIDENCE_MAX_PARTITION_UNCOMPRESSED_BYTES),
+                )
+            ),
+            v5_candidate_evidence_max_file_count=int(
+                os.environ.get(
+                    "QUANT_LAB_V5_CANDIDATE_EVIDENCE_MAX_FILE_COUNT",
+                    str(DEFAULT_V5_CANDIDATE_EVIDENCE_MAX_FILE_COUNT),
+                )
+            ),
+            v5_candidate_evidence_max_input_rows=int(
+                os.environ.get(
+                    "QUANT_LAB_V5_CANDIDATE_EVIDENCE_MAX_INPUT_ROWS", "5000000"
+                )
+            ),
             heavy_job_lock=Path(
                 os.environ.get("QUANT_HEAVY_JOB_LOCK", "/runtime/quant-runtime/heavy-job.lock")
             ),
@@ -205,16 +293,23 @@ def main() -> int:
 def claim_next_task(config: Config) -> str | None:
     root = shlex.quote(config.cloud_queue_root)
     allow_factor_factory = "1" if config.factor_factory_enabled else "0"
+    allow_v5_candidate_evidence = (
+        "1" if getattr(config, "v5_candidate_evidence_enabled", False) else "0"
+    )
     script = (
         "set -eu; "
         f"root={root}; "
         f"allow_factor_factory={allow_factor_factory}; "
+        f"allow_v5_candidate_evidence={allow_v5_candidate_evidence}; "
         'task=""; '
         'for candidate in $(find "$root/pending" -mindepth 1 -maxdepth 1 -type d '
         "-printf '%f\\n' 2>/dev/null | LC_ALL=C sort); do "
         "case \"$candidate\" in *[!A-Za-z0-9_.:-]*|'') continue;; esac; "
         'if [ "$allow_factor_factory" != "1" ] && '
         'grep -Eq \'"task_type"[[:space:]]*:[[:space:]]*"factor_factory"\' '
+        '"$root/pending/$candidate/task.json"; then continue; fi; '
+        'if [ "$allow_v5_candidate_evidence" != "1" ] && '
+        'grep -Eq \'"task_type"[[:space:]]*:[[:space:]]*"v5_candidate_evidence"\' '
         '"$root/pending/$candidate/task.json"; then continue; fi; '
         'task="$candidate"; break; done; '
         '[ -n "$task" ] || exit 44; '
@@ -377,6 +472,8 @@ def process_claimed_task(config: Config, task_id: str) -> None:
         raise ValueError("research_task_id_mismatch")
     if isinstance(task, FactorFactoryTask) and not config.factor_factory_enabled:
         raise RuntimeError("factor_factory_worker_disabled")
+    if isinstance(task, V5CandidateEvidenceTask) and not config.v5_candidate_evidence_enabled:
+        raise RuntimeError("v5_candidate_evidence_worker_disabled")
     if task.quant_lab_commit != config.worker_commit:
         raise ValueError("worker_code_mismatch")
     snapshot_dir = work / "snapshot-control"
@@ -444,6 +541,18 @@ def process_claimed_task(config: Config, task_id: str) -> None:
                 > config.factor_factory_max_input_uncompressed_bytes
             ):
                 raise ValueError("factor_factory_input_uncompressed_size_limit_exceeded")
+        elif isinstance(snapshot, V5CandidateEvidenceSnapshotManifest):
+            if snapshot.total_input_bytes > config.v5_candidate_evidence_max_snapshot_bytes:
+                raise ValueError("v5_candidate_evidence_snapshot_input_size_limit_exceeded")
+            if (
+                snapshot.estimated_uncompressed_bytes
+                > config.v5_candidate_evidence_max_input_uncompressed_bytes
+            ):
+                raise ValueError(
+                    "v5_candidate_evidence_input_uncompressed_size_limit_exceeded"
+                )
+            if snapshot.total_input_rows > config.v5_candidate_evidence_max_input_rows:
+                raise ValueError("v5_candidate_evidence_input_row_limit_exceeded")
         sync_result = sync_snapshot_blobs(
             snapshot,
             data_root=config.data_root,
@@ -458,6 +567,14 @@ def process_claimed_task(config: Config, task_id: str) -> None:
             batch_fetch_workers=config.batch_fetch_workers,
             min_free_disk_bytes=config.min_free_disk_bytes,
             max_snapshot_bytes=config.max_snapshot_bytes,
+        )
+        validate_research_task_snapshot(
+            task,
+            snapshot,
+            task_public_key=task_public_key,
+            expected_key_id=config.task_key_id,
+            expected_quant_lab_commit=config.worker_commit,
+            snapshot_root=sync_result.snapshot_root,
         )
         status = status.model_copy(
             update={
@@ -487,6 +604,27 @@ def process_claimed_task(config: Config, task_id: str) -> None:
                     max_input_uncompressed_bytes=(
                         config.factor_factory_max_input_uncompressed_bytes
                     ),
+                    work_dir=work,
+                )
+            elif isinstance(task, V5CandidateEvidenceTask):
+                if not isinstance(snapshot, V5CandidateEvidenceSnapshotManifest):
+                    raise ValueError("research_task_snapshot_type_mismatch")
+                compute = compute_v5_candidate_evidence_result(
+                    sync_result.snapshot_root,
+                    snapshot,
+                    task,
+                    stage_callback=lambda stage: _upload_v5_candidate_evidence_stage(
+                        config,
+                        status,
+                        work,
+                        stage,
+                    ),
+                    max_snapshot_bytes=config.v5_candidate_evidence_max_snapshot_bytes,
+                    max_input_uncompressed_bytes=(
+                        config.v5_candidate_evidence_max_input_uncompressed_bytes
+                    ),
+                    max_input_rows=config.v5_candidate_evidence_max_input_rows,
+                    min_free_disk_bytes=config.min_free_disk_bytes,
                     work_dir=work,
                 )
             elif isinstance(task, AlphaFactoryTask):
@@ -542,6 +680,34 @@ def process_claimed_task(config: Config, task_id: str) -> None:
                     max_value_partition_bytes=(config.factor_factory_max_value_partition_bytes),
                     max_file_count=config.factor_factory_max_file_count,
                     max_uncompressed_bytes=config.factor_factory_max_uncompressed_bytes,
+                )
+            elif isinstance(task, V5CandidateEvidenceTask):
+                if not isinstance(snapshot, V5CandidateEvidenceSnapshotManifest):
+                    raise ValueError("research_task_snapshot_type_mismatch")
+                result_root, manifest, receipt = write_v5_candidate_evidence_result_bundle(
+                    config.data_root / "results",
+                    task=task,
+                    snapshot=snapshot,
+                    compute=compute,
+                    worker_id=config.worker_id,
+                    worker_commit=config.worker_commit,
+                    worker_key_id=config.worker_key_id,
+                    worker_signing_key=signing_key,
+                    claimed_at=claimed_at,
+                    input_bytes=snapshot.total_input_bytes,
+                    cache_hit_bytes=status.cache_hit_bytes,
+                    downloaded_bytes=status.downloaded_bytes,
+                    peak_rss_bytes=peak_rss,
+                    compute_duration_seconds=time.perf_counter() - started,
+                    max_result_bytes=config.v5_candidate_evidence_max_result_bytes,
+                    max_result_uncompressed_bytes=(
+                        config.v5_candidate_evidence_max_result_uncompressed_bytes
+                    ),
+                    max_partition_bytes=config.v5_candidate_evidence_max_partition_bytes,
+                    max_partition_uncompressed_bytes=(
+                        config.v5_candidate_evidence_max_partition_uncompressed_bytes
+                    ),
+                    max_file_count=config.v5_candidate_evidence_max_file_count,
                 )
             elif isinstance(task, AlphaFactoryTask):
                 if not isinstance(snapshot, AlphaFactorySnapshotManifest):
@@ -628,6 +794,7 @@ def process_claimed_task(config: Config, task_id: str) -> None:
         if heartbeat.is_alive():
             _stop_heartbeat(config, heartbeat_stop, heartbeat)
         shutil.rmtree(work / "factor-factory-stage", ignore_errors=True)
+        shutil.rmtree(work / "v5-candidate-evidence-stage", ignore_errors=True)
 
 
 def _task_status_dimensions(task: ResearchTaskEnvelope) -> tuple[Any, Any, str, str]:
@@ -651,6 +818,13 @@ def _task_status_dimensions(task: ResearchTaskEnvelope) -> tuple[Any, Any, str, 
             task.end_date,
             "factor_research",
             "research",
+        )
+    if isinstance(task, V5CandidateEvidenceTask):
+        return (
+            task.as_of_date - timedelta(days=task.lookback_days),
+            task.as_of_date,
+            f"{task.mode}/lookback_{task.lookback_days}d",
+            "signed_candidate_event",
         )
     return (
         task.parameters.start_date,
@@ -686,9 +860,35 @@ def _upload_factor_factory_stage(
     )
 
 
+def _upload_v5_candidate_evidence_stage(
+    config: Config,
+    status: ResearchTaskStatus,
+    work: Path,
+    stage: str,
+) -> None:
+    allowed = {
+        ResearchTaskState.COMPUTING_LABELS.value,
+        ResearchTaskState.COMPUTING_SAMPLES.value,
+    }
+    if stage not in allowed:
+        raise ValueError(f"unknown_v5_candidate_evidence_stage:{stage}")
+    _upload_status(
+        config,
+        status.model_copy(
+            update={
+                "state": ResearchTaskState(stage),
+                "heartbeat_at": datetime.now(UTC),
+            }
+        ),
+        work,
+    )
+
+
 def _max_result_bytes_for_task(config: Config, task: ResearchTaskEnvelope) -> int:
     if isinstance(task, FactorFactoryTask):
         return config.factor_factory_max_result_bytes
+    if isinstance(task, V5CandidateEvidenceTask):
+        return config.v5_candidate_evidence_max_result_bytes
     return config.max_result_bytes
 
 
@@ -1078,6 +1278,35 @@ def _validate_config(config: Config) -> None:
         raise ValueError("FACTOR_FACTORY_MAX_UNCOMPRESSED_BYTES must be positive")
     if config.factor_factory_max_input_uncompressed_bytes <= 0:
         raise ValueError("FACTOR_FACTORY_MAX_INPUT_UNCOMPRESSED_BYTES must be positive")
+    v5_capacity_values = {
+        "QUANT_LAB_V5_CANDIDATE_EVIDENCE_MAX_SNAPSHOT_BYTES": (
+            config.v5_candidate_evidence_max_snapshot_bytes
+        ),
+        "QUANT_LAB_V5_CANDIDATE_EVIDENCE_MAX_INPUT_UNCOMPRESSED_BYTES": (
+            config.v5_candidate_evidence_max_input_uncompressed_bytes
+        ),
+        "QUANT_LAB_V5_CANDIDATE_EVIDENCE_MAX_RESULT_BYTES": (
+            config.v5_candidate_evidence_max_result_bytes
+        ),
+        "QUANT_LAB_V5_CANDIDATE_EVIDENCE_MAX_RESULT_UNCOMPRESSED_BYTES": (
+            config.v5_candidate_evidence_max_result_uncompressed_bytes
+        ),
+        "QUANT_LAB_V5_CANDIDATE_EVIDENCE_MAX_PARTITION_BYTES": (
+            config.v5_candidate_evidence_max_partition_bytes
+        ),
+        "QUANT_LAB_V5_CANDIDATE_EVIDENCE_MAX_PARTITION_UNCOMPRESSED_BYTES": (
+            config.v5_candidate_evidence_max_partition_uncompressed_bytes
+        ),
+        "QUANT_LAB_V5_CANDIDATE_EVIDENCE_MAX_FILE_COUNT": (
+            config.v5_candidate_evidence_max_file_count
+        ),
+        "QUANT_LAB_V5_CANDIDATE_EVIDENCE_MAX_INPUT_ROWS": (
+            config.v5_candidate_evidence_max_input_rows
+        ),
+    }
+    for name, value in v5_capacity_values.items():
+        if value <= 0:
+            raise ValueError(f"{name} must be positive")
     config.data_root.mkdir(parents=True, exist_ok=True)
 
 

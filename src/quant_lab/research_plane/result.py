@@ -49,6 +49,8 @@ from quant_lab.research_plane.contracts import (
     ResearchSnapshotManifest,
     ResearchTask,
     ResearchWorkerReceipt,
+    V5CandidateEvidenceSnapshotManifest,
+    V5CandidateEvidenceTask,
 )
 from quant_lab.research_plane.factor_factory_snapshot import (
     verify_factor_factory_snapshot_manifest,
@@ -58,6 +60,9 @@ from quant_lab.research_plane.snapshot import (
     verify_alpha_factory_snapshot_manifest,
     verify_factor_research_snapshot_manifest,
     verify_snapshot_manifest,
+)
+from quant_lab.research_plane.v5_candidate_evidence_snapshot import (
+    verify_v5_candidate_evidence_snapshot_manifest,
 )
 
 FORBIDDEN_LIVE_STATE = "LIVE_SMALL_READY"
@@ -139,12 +144,19 @@ class ValidatedFactorResearchResult:
 
 
 def validate_research_task_snapshot(
-    task: ResearchTask | AlphaFactoryTask | FactorResearchTask | FactorFactoryTask,
+    task: (
+        ResearchTask
+        | AlphaFactoryTask
+        | FactorResearchTask
+        | FactorFactoryTask
+        | V5CandidateEvidenceTask
+    ),
     snapshot: (
         ResearchSnapshotManifest
         | AlphaFactorySnapshotManifest
         | FactorResearchSnapshotManifest
         | FactorFactorySnapshotManifest
+        | V5CandidateEvidenceSnapshotManifest
     ),
     *,
     task_public_key: Ed25519PublicKey,
@@ -166,6 +178,10 @@ def validate_research_task_snapshot(
             isinstance(task, FactorFactoryTask)
             and isinstance(snapshot, FactorFactorySnapshotManifest)
         )
+        or (
+            isinstance(task, V5CandidateEvidenceTask)
+            and isinstance(snapshot, V5CandidateEvidenceSnapshotManifest)
+        )
     )
     if not matching_types:
         raise ValueError("research_task_snapshot_type_mismatch")
@@ -174,7 +190,10 @@ def validate_research_task_snapshot(
     if snapshot.signature_key_id != expected_key_id:
         raise ValueError("research_snapshot_unknown_signature_key")
     verify_payload(task, task.signature, task_public_key)
-    if not isinstance(snapshot, FactorFactorySnapshotManifest):
+    if not isinstance(
+        snapshot,
+        (FactorFactorySnapshotManifest, V5CandidateEvidenceSnapshotManifest),
+    ):
         verify_payload(snapshot, snapshot.signature, task_public_key)
     if isinstance(snapshot, AlphaFactorySnapshotManifest):
         verify_alpha_factory_snapshot_manifest(snapshot, final_root=snapshot_root)
@@ -186,6 +205,15 @@ def validate_research_task_snapshot(
             final_root=snapshot_root,
             public_key=task_public_key,
         )
+    elif isinstance(snapshot, V5CandidateEvidenceSnapshotManifest):
+        if snapshot_root is None:
+            verify_payload(snapshot, snapshot.signature, task_public_key)
+        else:
+            verify_v5_candidate_evidence_snapshot_manifest(
+                snapshot,
+                final_root=snapshot_root,
+                public_key=task_public_key,
+            )
     else:
         verify_snapshot_manifest(snapshot, final_root=snapshot_root)
     if task.snapshot_id != snapshot.snapshot_id:
@@ -302,12 +330,38 @@ def validate_research_task_snapshot(
             )
         if observed_identity != expected_identity:
             raise ValueError("research_task_snapshot_factor_factory_identity_mismatch")
+    elif isinstance(task, V5CandidateEvidenceTask) and isinstance(
+        snapshot,
+        V5CandidateEvidenceSnapshotManifest,
+    ):
+        expected_identity = (
+            task.input_fingerprint_digest,
+            task.as_of_date,
+            task.mode,
+            task.lookback_days,
+            task.horizon_hours,
+            task.include_historical_outcomes,
+            task.candidate_label_schema_version,
+            task.strategy_evidence_version,
+        )
+        observed_identity = (
+            snapshot.input_fingerprint_digest,
+            snapshot.as_of_date,
+            snapshot.mode,
+            snapshot.lookback_days,
+            snapshot.horizon_hours,
+            snapshot.include_historical_outcomes,
+            snapshot.candidate_label_schema_version,
+            snapshot.strategy_evidence_version,
+        )
+        if observed_identity != expected_identity:
+            raise ValueError("research_task_snapshot_v5_candidate_evidence_identity_mismatch")
     elif isinstance(task, ResearchTask) and isinstance(snapshot, ResearchSnapshotManifest):
         if task.entry_quality_schema_version != snapshot.entry_quality_schema_version:
             raise ValueError("research_task_snapshot_schema_mismatch")
     else:  # pragma: no cover - guarded above; keeps the type boundary explicit.
         raise ValueError("research_task_snapshot_type_mismatch")
-    if not isinstance(task, FactorFactoryTask) and (
+    if not isinstance(task, (FactorFactoryTask, V5CandidateEvidenceTask)) and (
         task.selected_v5_bundle_id != snapshot.selected_v5_bundle_id
     ):
         raise ValueError("research_task_snapshot_bundle_mismatch")

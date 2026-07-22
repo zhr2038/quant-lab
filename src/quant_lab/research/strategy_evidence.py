@@ -278,16 +278,17 @@ def build_strategy_evidence_samples(
     else:
         labels = read_parquet_dataset(root / LABEL_DATASET)
         events = read_parquet_dataset(root / EVENT_DATASET)
-    cost_context = _CostContext(root)
-    if labels.is_empty():
-        warnings.append("v5_candidate_label_empty")
+    candidate_samples, candidate_warnings = compute_v5_candidate_evidence_samples(
+        labels,
+        events,
+        as_of_date=as_of_date,
+    )
+    warnings.extend(candidate_warnings)
+    if not include_historical_outcomes:
+        return candidate_samples, warnings
 
-    event_context = _event_context_by_candidate_id(events)
-    rows: list[dict[str, Any]] = []
-    for label in labels.to_dicts():
-        sample = _sample_from_candidate_label(label, event_context)
-        if sample is not None:
-            rows.append(sample)
+    cost_context = _CostContext(root)
+    rows = candidate_samples.to_dicts()
     for dataset_name, relative_path in (
         OUTCOME_DATASETS.items() if include_historical_outcomes else []
     ):
@@ -306,6 +307,33 @@ def build_strategy_evidence_samples(
         for outcome in _dedupe_outcome_source_rows(dataset_name, frame.to_dicts()):
             rows.extend(_samples_from_outcome_row(dataset_name, outcome, cost_context))
 
+    rows = _dedupe_formal_sample_rows(_filter_samples_as_of(rows, as_of_date))
+    skipped_unknown = _unknown_symbol_count(rows)
+    rows = _drop_unknown_symbol_samples(rows)
+    if skipped_unknown:
+        warnings.append(f"strategy_evidence_unknown_symbol_samples_skipped:{skipped_unknown}")
+    if not rows:
+        return pl.DataFrame(schema=SAMPLE_SCHEMA), warnings
+    return normalize_strategy_evidence_samples(_formal_samples_frame(rows)), warnings
+
+
+def compute_v5_candidate_evidence_samples(
+    labels: pl.DataFrame,
+    events: pl.DataFrame,
+    *,
+    as_of_date: str | None = None,
+) -> tuple[pl.DataFrame, list[str]]:
+    """Extract V5 Candidate Evidence Samples without Lake, network, or control I/O."""
+
+    warnings: list[str] = []
+    if labels.is_empty():
+        warnings.append("v5_candidate_label_empty")
+    event_context = _event_context_by_candidate_id(events)
+    rows: list[dict[str, Any]] = []
+    for label in labels.to_dicts():
+        sample = _sample_from_candidate_label(label, event_context)
+        if sample is not None:
+            rows.append(sample)
     rows = _dedupe_formal_sample_rows(_filter_samples_as_of(rows, as_of_date))
     skipped_unknown = _unknown_symbol_count(rows)
     rows = _drop_unknown_symbol_samples(rows)
@@ -503,13 +531,27 @@ def publish_strategy_evidence_quality(
     warnings: list[str],
 ) -> int:
     dataset_path = Path(lake_root) / STRATEGY_EVIDENCE_QUALITY_DATASET
-    created_at = datetime.now(UTC)
-    rows = _quality_rows_for_warnings(as_of_date, warnings, created_at)
-    frame = pl.DataFrame(rows, schema=QUALITY_SCHEMA, orient="row")
+    frame = derive_strategy_evidence_quality(as_of_date, warnings)
     existing = read_parquet_dataset(dataset_path)
     combined = _replace_matching_as_of_dates(existing, frame)
     write_parquet_dataset(combined, dataset_path)
     return combined.height
+
+
+def derive_strategy_evidence_quality(
+    as_of_date: date,
+    warnings: list[str],
+    *,
+    created_at: datetime | None = None,
+) -> pl.DataFrame:
+    """Derive cloud-owned Strategy Evidence Quality without Lake I/O."""
+
+    rows = _quality_rows_for_warnings(
+        as_of_date,
+        warnings,
+        created_at or datetime.now(UTC),
+    )
+    return pl.DataFrame(rows, schema=QUALITY_SCHEMA, orient="row")
 
 
 def _quality_rows_for_warnings(

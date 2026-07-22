@@ -8,6 +8,36 @@ from typing import Annotated, Literal, TypeAlias
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator, model_validator
 
 from quant_lab.factors.plan import EffectiveFactorPlan
+from quant_lab.research_plane.v5_candidate_evidence_contracts import (  # noqa: F401
+    DEFAULT_V5_CANDIDATE_EVIDENCE_MAX_FILE_COUNT,
+    DEFAULT_V5_CANDIDATE_EVIDENCE_MAX_INPUT_UNCOMPRESSED_BYTES,
+    DEFAULT_V5_CANDIDATE_EVIDENCE_MAX_PARTITION_BYTES,
+    DEFAULT_V5_CANDIDATE_EVIDENCE_MAX_PARTITION_UNCOMPRESSED_BYTES,
+    DEFAULT_V5_CANDIDATE_EVIDENCE_MAX_RESULT_BYTES,
+    DEFAULT_V5_CANDIDATE_EVIDENCE_MAX_RESULT_UNCOMPRESSED_BYTES,
+    DEFAULT_V5_CANDIDATE_EVIDENCE_MAX_SNAPSHOT_BYTES,
+    V5_CANDIDATE_EVIDENCE_FINGERPRINT_SCHEMA,
+    V5_CANDIDATE_EVIDENCE_HORIZONS,
+    V5_CANDIDATE_EVIDENCE_PROJECTION_VERSION,
+    V5_CANDIDATE_EVIDENCE_RECEIPT_SCHEMA,
+    V5_CANDIDATE_EVIDENCE_RESULT_SCHEMA,
+    V5_CANDIDATE_EVIDENCE_SNAPSHOT_SCHEMA,
+    V5_CANDIDATE_EVIDENCE_TASK_SCHEMA,
+    V5_CANDIDATE_EVIDENCE_TASK_TYPE,
+    V5_CANDIDATE_LABEL_DELTA_PRIMARY_KEYS,
+    V5_STRATEGY_EVIDENCE_SAMPLE_DELTA_PRIMARY_KEYS,
+    V5CandidateEvidenceAntiLeakageCheck,
+    V5CandidateEvidenceInputFingerprint,
+    V5CandidateEvidenceOutputDataset,
+    V5CandidateEvidenceReportFile,
+    V5CandidateEvidenceResultManifest,
+    V5CandidateEvidenceSnapshotFile,
+    V5CandidateEvidenceSnapshotManifest,
+    V5CandidateEvidenceSourceFileIdentity,
+    V5CandidateEvidenceTask,
+    V5CandidateEvidenceTaskPayload,
+    V5CandidateEvidenceWorkerReceipt,
+)
 
 RESEARCH_SNAPSHOT_SCHEMA = "quant_lab_research_snapshot.v1"
 RESEARCH_TASK_SCHEMA = "quant_lab_research_task.v1"
@@ -56,6 +86,7 @@ class ResearchTaskState(StrEnum):
     COMPUTING = "computing"
     COMPUTING_VALUES = "computing_values"
     COMPUTING_LABELS = "computing_labels"
+    COMPUTING_SAMPLES = "computing_samples"
     COMPUTING_EVIDENCE = "computing_evidence"
     COMPUTING_CORRELATION = "computing_correlation"
     VALIDATING_ON_NAS = "validating_on_nas"
@@ -1013,7 +1044,11 @@ class FactorFactoryTask(StrictModel):
 
 
 ResearchTaskEnvelope: TypeAlias = Annotated[
-    ResearchTask | AlphaFactoryTask | FactorResearchTask | FactorFactoryTask,
+    ResearchTask
+    | AlphaFactoryTask
+    | FactorResearchTask
+    | FactorFactoryTask
+    | V5CandidateEvidenceTask,
     Field(discriminator="task_type"),
 ]
 RESEARCH_TASK_ADAPTER = TypeAdapter(ResearchTaskEnvelope)
@@ -1023,7 +1058,8 @@ ResearchSnapshotEnvelope: TypeAlias = Annotated[
     ResearchSnapshotManifest
     | AlphaFactorySnapshotManifest
     | FactorResearchSnapshotManifest
-    | FactorFactorySnapshotManifest,
+    | FactorFactorySnapshotManifest
+    | V5CandidateEvidenceSnapshotManifest,
     Field(discriminator="schema_version"),
 ]
 RESEARCH_SNAPSHOT_ADAPTER = TypeAdapter(ResearchSnapshotEnvelope)
@@ -1519,7 +1555,8 @@ ResearchResultEnvelope: TypeAlias = Annotated[
     ResearchResultManifest
     | AlphaFactoryResultManifest
     | FactorResearchResultManifest
-    | FactorFactoryResultManifest,
+    | FactorFactoryResultManifest
+    | V5CandidateEvidenceResultManifest,
     Field(discriminator="task_type"),
 ]
 RESEARCH_RESULT_ADAPTER = TypeAdapter(ResearchResultEnvelope)
@@ -1670,7 +1707,8 @@ ResearchReceiptEnvelope: TypeAlias = Annotated[
     ResearchWorkerReceipt
     | AlphaFactoryWorkerReceipt
     | FactorResearchWorkerReceipt
-    | FactorFactoryWorkerReceipt,
+    | FactorFactoryWorkerReceipt
+    | V5CandidateEvidenceWorkerReceipt,
     Field(discriminator="schema_version"),
 ]
 RESEARCH_RECEIPT_ADAPTER = TypeAdapter(ResearchReceiptEnvelope)
@@ -1701,6 +1739,7 @@ class ResearchTaskStatus(StrictModel):
         "alpha_factory",
         "factor_research",
         "factor_factory",
+        "v5_candidate_evidence",
     ] = ENTRY_QUALITY_HISTORY_TASK_TYPE
     start_date: date
     end_date: date
@@ -1755,6 +1794,7 @@ class ResearchTaskLease(StrictModel):
         "alpha_factory",
         "factor_research",
         "factor_factory",
+        "v5_candidate_evidence",
     ] = ENTRY_QUALITY_HISTORY_TASK_TYPE
     worker_id: str = Field(min_length=1, max_length=180)
     claimed_at: datetime

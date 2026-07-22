@@ -1,11 +1,14 @@
 # NAS Research Worker
 
 This container pulls signed, sealed Entry Quality History, Alpha Factory,
-Factor Research, and Factor Factory snapshots from qyun2, computes
+Factor Research, Factor Factory, and V5 Candidate Evidence snapshots from qyun2, computes
 research-only derived data, signs the result, and uploads it for strict cloud
 validation. It has no exchange credentials, does not mount the cloud Lake, and
 cannot publish Gold or influence live orders. Factor Factory claims are skipped
-unless `QUANT_RESEARCH_FACTOR_FACTORY_ENABLED=1`.
+unless `QUANT_RESEARCH_FACTOR_FACTORY_ENABLED=1`. V5 Candidate Evidence claims
+are likewise skipped unless
+`QUANT_RESEARCH_V5_CANDIDATE_EVIDENCE_ENABLED=1`; those results contain only
+Candidate Label and Evidence Sample deltas, never PAPER/LIVE decisions.
 
 ## Host preparation
 

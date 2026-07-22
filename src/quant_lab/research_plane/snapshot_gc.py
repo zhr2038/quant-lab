@@ -17,6 +17,9 @@ from quant_lab.research_plane.factor_factory_snapshot import (
 )
 from quant_lab.research_plane.snapshot_lock import snapshot_payload_lock
 from quant_lab.research_plane.status import ensure_research_queue_layout
+from quant_lab.research_plane.v5_candidate_evidence_snapshot import (
+    cleanup_stale_v5_candidate_evidence_rehydrate_partials,
+)
 
 DEFAULT_SNAPSHOT_RETENTION_DAYS = 7
 DEFAULT_SNAPSHOT_PAYLOAD_CAP_BYTES = 10 * 1024**3
@@ -48,6 +51,7 @@ def gc_research_snapshot_payloads(
         raise ValueError("snapshot max_payload_bytes must be non-negative")
     queue = ensure_research_queue_layout(queue_root)
     observed_at = now or datetime.now(UTC)
+    cleanup_stale_v5_candidate_evidence_rehydrate_partials(queue, now=observed_at)
     cleanup_stale_factor_factory_rehydrate_partials(queue, now=observed_at)
     active = _active_snapshot_ids(queue)
     snapshots = _snapshot_records(queue)

@@ -1,0 +1,37 @@
+[Unit]
+Description=Preflight V5 Candidate Evidence identity and conditionally enqueue NAS research
+After=quant-lab-v5-telemetry-sync.service quant-lab-okx-rest-backfill.service quant-lab-feature-publish.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=quantlab
+Group=quantlab
+WorkingDirectory=/opt/quant-lab
+EnvironmentFile=/etc/quant-lab/research-plane.env
+Environment=PYTHONUNBUFFERED=1
+Environment=POLARS_MAX_THREADS=1
+Environment=MALLOC_ARENA_MAX=2
+UMask=0007
+ExecCondition=/bin/bash -lc '[ "${QUANT_LAB_NAS_RESEARCH_ENABLED:-0}" = "1" ] && [ "${QUANT_LAB_NAS_V5_CANDIDATE_EVIDENCE_ENABLED:-0}" = "1" ]'
+ExecStartPre=/usr/bin/test -d /var/lib/quant-lab/lake/bronze/lake_file_index
+ExecStartPre=/usr/bin/test -d /var/lib/quant-lab/lake/silver/v5_candidate_event
+ExecStartPre=/usr/bin/test -d /var/lib/quant-lab/lake/silver/market_bar
+ExecStartPre=/usr/bin/test -d /var/lib/quant-lab/lake/silver/v5_run_summary
+ExecStart=/bin/bash -lc 'set -euo pipefail; COMMIT="$(git -C /opt/quant-lab rev-parse HEAD)"; exec /opt/quant-lab/.venv/bin/qlab request-v5-candidate-evidence --lake-root "${QUANT_LAB_LAKE_ROOT}" --queue-root "${QUANT_LAB_RESEARCH_QUEUE_ROOT}" --key-id "${QUANT_LAB_RESEARCH_TASK_KEY_ID}" --quant-lab-commit "$COMMIT" --date auto --max-input-bytes "${QUANT_LAB_V5_CANDIDATE_EVIDENCE_MAX_SNAPSHOT_BYTES:-536870912}" --max-input-uncompressed-bytes "${QUANT_LAB_V5_CANDIDATE_EVIDENCE_MAX_INPUT_UNCOMPRESSED_BYTES:-1073741824}" --max-input-rows "${QUANT_LAB_V5_CANDIDATE_EVIDENCE_MAX_INPUT_ROWS:-5000000}"'
+TimeoutStartSec=20min
+Nice=10
+IOSchedulingClass=idle
+CPUQuota=30%
+MemoryHigh=500M
+MemoryMax=900M
+TasksMax=64
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadOnlyPaths=/opt/quant-lab /var/lib/quant-lab/lake
+ReadWritePaths=/var/lib/quant-lab/research_queue /var/lib/quant-lab/lake/bronze/lake_file_index
+
+[Install]
+WantedBy=multi-user.target

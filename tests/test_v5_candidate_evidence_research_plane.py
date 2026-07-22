@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import subprocess
+import tempfile
 from datetime import UTC, date, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -26,6 +27,7 @@ from quant_lab.research.strategy_evidence import (
 )
 from quant_lab.research_plane import importer as importer_module
 from quant_lab.research_plane import queue as queue_module
+from quant_lab.research_plane import v5_candidate_evidence_publish as publish_module
 from quant_lab.research_plane import v5_candidate_evidence_result as result_module
 from quant_lab.research_plane.importer import (
     import_entry_quality_history_result,
@@ -788,11 +790,32 @@ def test_v5_candidate_evidence_worker_is_symbol_staged_and_decision_free(
         snapshot_root=queue / "snapshots" / created.manifest.snapshot_id,
     )
     assert published["published"] is True
-    verified_rows = verify_v5_candidate_evidence_generation_fast(
-        lake,
-        manifest.generation_id,
-        expected_input_fingerprint=manifest.input_fingerprint_digest,
-    )
+    validation_temp_root = tmp_path / "read-only-generation-validation"
+    validation_temp_root.mkdir()
+    created_validation_dirs: list[Path] = []
+    real_mkdtemp = tempfile.mkdtemp
+
+    def validation_mkdtemp(*, prefix: str) -> str:
+        created = Path(real_mkdtemp(prefix=prefix, dir=validation_temp_root))
+        created_validation_dirs.append(created)
+        return str(created)
+
+    verify_patch = pytest.MonkeyPatch()
+    verify_patch.setattr(publish_module.tempfile, "mkdtemp", validation_mkdtemp)
+    gold_mode = (lake / "gold").stat().st_mode
+    (lake / "gold").chmod(0o555)
+    try:
+        verified_rows = verify_v5_candidate_evidence_generation_fast(
+            lake,
+            manifest.generation_id,
+            expected_input_fingerprint=manifest.input_fingerprint_digest,
+        )
+    finally:
+        (lake / "gold").chmod(gold_mode)
+        verify_patch.undo()
+    assert len(created_validation_dirs) == len(V5_CANDIDATE_EVIDENCE_DATASETS)
+    assert all(path.parent == validation_temp_root for path in created_validation_dirs)
+    assert not any(path.exists() for path in created_validation_dirs)
     assert set(verified_rows) == {
         "v5_candidate_label",
         "v5_candidate_quality_daily",

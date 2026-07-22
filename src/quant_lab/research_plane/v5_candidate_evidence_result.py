@@ -438,11 +438,18 @@ def _validate_declared_file_set(
         *(item.relative_path for item in manifest.outputs),
         *(item.relative_path for item in manifest.reports),
     }
-    actual = {
-        str(path.relative_to(root)).replace("\\", "/")
-        for path in root.rglob("*")
-        if path.is_file()
-    }
+    handoff_marker = root / ".HANDOFF_READY"
+    if handoff_marker.exists() and (
+        not handoff_marker.is_file() or handoff_marker.stat().st_size != 0
+    ):
+        raise ValueError("v5_candidate_evidence_result_handoff_marker_invalid")
+    actual: set[str] = set()
+    for path in root.rglob("*"):
+        if path.is_symlink():
+            raise ValueError("v5_candidate_evidence_result_symlink_forbidden")
+        if path.is_file():
+            actual.add(str(path.relative_to(root)).replace("\\", "/"))
+    actual.discard(".HANDOFF_READY")
     if actual != expected:
         raise ValueError("v5_candidate_evidence_result_file_set_mismatch")
 

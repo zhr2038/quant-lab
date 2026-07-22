@@ -707,6 +707,8 @@ def test_v5_candidate_evidence_worker_is_symbol_staged_and_decision_free(
         "v5_candidate_label_delta",
         "strategy_evidence_sample_delta",
     }
+    handoff_marker = result_root / ".HANDOFF_READY"
+    handoff_marker.touch()
     late_unsigned = manifest.model_copy(
         update={
             "previous_generation_id": "v5-candidate-evidence-generation-old",
@@ -762,6 +764,23 @@ def test_v5_candidate_evidence_worker_is_symbol_staged_and_decision_free(
         max_partition_uncompressed_bytes=5 * 1024 * 1024,
         max_file_count=100,
     )
+    handoff_marker.write_text("not-empty", encoding="utf-8")
+    with pytest.raises(ValueError, match="handoff_marker_invalid"):
+        result_module.validate_v5_candidate_evidence_result_bundle(
+            result_root,
+            manifest=manifest,
+            receipt=receipt,
+            task=task,
+            snapshot=created.manifest,
+            worker_public_key=worker_key.public_key(),
+            expected_worker_key_id="test-worker-key",
+            max_result_bytes=10 * 1024 * 1024,
+            max_result_uncompressed_bytes=10 * 1024 * 1024,
+            max_partition_bytes=5 * 1024 * 1024,
+            max_partition_uncompressed_bytes=5 * 1024 * 1024,
+            max_file_count=100,
+        )
+    handoff_marker.write_text("", encoding="utf-8")
     _seed_other_strategy_evidence_source(lake, samples)
     published = publish_v5_candidate_evidence_generation(
         lake,

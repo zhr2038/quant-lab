@@ -60,6 +60,9 @@ from quant_lab.research_plane.contracts import (
     ResearchTaskState,
     ResearchTaskStatus,
 )
+from quant_lab.research_plane.factor_factory_publish import (
+    verify_factor_factory_generation_fast,
+)
 from quant_lab.research_plane.factor_factory_snapshot import (
     FactorFactorySnapshotPreflight,
     load_factor_factory_generation_binding,
@@ -177,11 +180,31 @@ def create_factor_factory_task(
     lake = Path(lake_root).resolve(strict=True)
     current = _read_factor_factory_pointer(lake / FACTOR_FACTORY_GENERATION_POINTER)
     if _factor_factory_pointer_matches_preflight(current, preflight):
+        current_generation_id = str(current.get("generation_id") or "") or None
+        try:
+            if current_generation_id is None:
+                raise RuntimeError("factor_factory_generation_id_missing")
+            verify_factor_factory_generation_fast(lake, current_generation_id)
+        except Exception as exc:
+            result = FactorFactoryTaskRequestResult(
+                state="generation_integrity_failed",
+                task_created=False,
+                snapshot_materialized=False,
+                current_generation_id=current_generation_id,
+                reason=f"factor_factory_generation_integrity_failed:{exc}",
+                snapshot_id=preflight.snapshot_id,
+                input_fingerprint=preflight.input_fingerprint.model_dump(mode="json"),
+                fingerprint_matches_generation=True,
+                compressed_input_bytes=sum(item.size_bytes for item in preflight.source_files),
+                estimated_uncompressed_input_bytes=preflight.estimated_uncompressed_bytes,
+            )
+            _write_factor_factory_request_result(queue, result)
+            return result
         result = FactorFactoryTaskRequestResult(
             state="already_current",
             task_created=False,
             snapshot_materialized=False,
-            current_generation_id=str(current.get("generation_id") or "") or None,
+            current_generation_id=current_generation_id,
             reason="factor_factory_inputs_unchanged",
             snapshot_id=preflight.snapshot_id,
             input_fingerprint=preflight.input_fingerprint.model_dump(mode="json"),

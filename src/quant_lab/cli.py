@@ -2062,6 +2062,7 @@ def request_factor_factory_command(
         "already_current": "FACTOR_FACTORY_ALREADY_CURRENT",
         "already_current_no_update": "FACTOR_FACTORY_ALREADY_CURRENT_NO_UPDATE",
         "recompute_deferred": "FACTOR_FACTORY_RECOMPUTE_DEFERRED",
+        "generation_integrity_failed": "FACTOR_FACTORY_GENERATION_INTEGRITY_FAILED",
     }
     events = [event_by_state[result.state]]
     if result.snapshot_rehydrated:

@@ -323,6 +323,23 @@ def verify_factor_factory_generation(
     *,
     expected_rows: dict[str, int] | None = None,
 ) -> dict[str, int]:
+    """Run the complete post-publication verification for one generation."""
+
+    return verify_factor_factory_generation_fast(
+        lake_root,
+        generation_id,
+        expected_rows=expected_rows,
+    )
+
+
+def verify_factor_factory_generation_fast(
+    lake_root: str | Path,
+    generation_id: str,
+    *,
+    expected_rows: dict[str, int] | None = None,
+) -> dict[str, int]:
+    """Verify the current five-table generation without rebuilding a snapshot."""
+
     root = Path(lake_root)
     pointer = json.loads((root / FACTOR_FACTORY_GENERATION_POINTER).read_text("utf-8"))
     if pointer.get("schema_version") != FACTOR_FACTORY_GENERATION_SCHEMA:

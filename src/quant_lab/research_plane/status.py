@@ -220,6 +220,12 @@ def _research_plane_status_for_type(
         }
     ):
         state = "up_to_date"
+    elif (
+        active is None
+        and request_status
+        and request_status.get("state") == "generation_integrity_failed"
+    ):
+        state = "generation_integrity_failed"
     payload = {
         "schema_version": schema_version,
         "task_type": task_type,

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import tempfile
 import uuid
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
@@ -573,8 +574,9 @@ def _validate_staged_dataset(
     files = _parquet_files(dataset_root)
     if not files:
         raise ValueError(f"v5_candidate_evidence_publish_dataset_missing:{dataset_name}")
-    temporary = dataset_root.parent / f".duckdb-validate-{uuid.uuid4().hex}"
-    temporary.mkdir(parents=True, exist_ok=False)
+    temporary = Path(
+        tempfile.mkdtemp(prefix=f"quant-lab-v5-{dataset_name}-validate-")
+    )
     connection: duckdb.DuckDBPyConnection | None = None
     try:
         _require_writable_spill_directory(temporary)

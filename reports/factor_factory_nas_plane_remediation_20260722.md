@@ -1,14 +1,14 @@
 # Factor Factory NAS Research Plane Remediation Acceptance Report
 
-Status: **CANDIDATE ACCEPTED; PRODUCTION GO BLOCKED BY DRAFT MERGE GATE**
+Status: **REBASED CANDIDATE ACCEPTED; PRODUCTION GO PENDING MERGE AND DEPLOYMENT**
 
-This report covers implementation commit
-`98a76eda9c0f7b6cef68f45933c36ab343aa6693` and its report-only descendant. It
-is deliberately not a final production acceptance report yet. PR #37 and PR
-#38 remain Draft, GitHub `main`
-is still `49ad71fb9d3043e4882546fd8b8d4ff0ba93106b`, and qyun2/NAS remain on
+This report covers rebased implementation commit
+`d224e7e7a6131ae2cc09db0eba8a26300e72e7a7` and its report-only descendants.
+It is deliberately not a final production acceptance report yet. PR #37 was
+merged as `c1625ab8126e93f758d5c86fff6b69d2b028e718`; PR #38 is now directly based
+on that `main` commit and its exact rebased head passed CI. qyun2/NAS remain on
 `ab0d4c149e8717da891b2ac11bbb03f9e783ecb9`. Evidence that can only be produced
-after the final `main` merge is marked `PENDING_FINAL_MAIN` rather than being
+after the final PR #38 merge is marked `PENDING_FINAL_MAIN` rather than being
 borrowed from an older SHA.
 
 ## 1. Previous call chain
@@ -213,7 +213,7 @@ and retain 40/40 Anti-Leakage PASS.
 
 ## 13. Modified files
 
-Candidate `98a76ed` changes 26 files:
+Rebased implementation candidate `d224e7e` changes 26 files:
 
 - deployment limits and scheduling under `deploy/nas_research_worker` and
   `deploy/systemd`;
@@ -247,7 +247,7 @@ Coverage includes:
 
 | Check | Result |
 | --- | --- |
-| Full pytest | `1551 passed, 4 skipped in 268.66s` |
+| Full pytest after direct-main rebase | `1551 passed, 4 skipped in 283.53s` |
 | Cross-plane focused pytest | `177 passed, 1 skipped` |
 | Factor/GC focused pytest | PASS |
 | `ruff check .` | PASS |
@@ -258,10 +258,11 @@ Coverage includes:
 
 ## 16. GitHub CI
 
-Candidate `98a76ed` has two successful CI runs at the exact SHA:
+Rebased report head `5e0956cf7a3fac3114a674378760b217332c4f79`
+has two successful CI runs at the exact SHA:
 
-- push run `29847349061`: PASS in 4m24s;
-- pull_request run `29847351446`: PASS in 4m28s.
+- push run `29880962238`: PASS in 4m20s;
+- pull_request run `29880964239`: PASS in 4m21s.
 
 Each workflow installed `.[dev]`, ran full Ruff, and ran full pytest.
 
@@ -269,27 +270,32 @@ Each workflow installed `.[dev]`, ran full Ruff, and ran full pytest.
 
 - Head: `6652c3669f09ad25ce582900bbd810dba72c0c37`.
 - Base: `main`.
-- GitHub: `OPEN`, `CLEAN`, `MERGEABLE`, both CI runs SUCCESS.
+- GitHub: `MERGED` by ordinary merge commit
+  `c1625ab8126e93f758d5c86fff6b69d2b028e718`.
 - Review threads/reviews: none.
 - Code/safety review: no P0/P1 found; signed Research Plane, atomic cloud
   authority, zero-live-effect boundaries, and exact generation binding remain.
-- Draft decision: keep Draft until the owner explicitly authorizes merge; its
-  own PR text says it must not be auto-merged.
+- The owner explicitly authorized Ready plus an ordinary merge commit before
+  the merge was performed.
 
 ## 18. PR #38 topology
 
-- Head: `98a76eda9c0f7b6cef68f45933c36ab343aa6693`.
-- Current base: `refactor/hypothesis-driven-factor-research`.
-- GitHub: `OPEN`, `CLEAN`, `MERGEABLE`, Draft, both CI runs SUCCESS.
-- Direct-main rebase: `PENDING_FINAL_MAIN`; it cannot be performed correctly
-  until PR #37 is merged.
+- Runtime implementation head:
+  `d224e7e7a6131ae2cc09db0eba8a26300e72e7a7`.
+- Verified report head before this evidence-only update:
+  `5e0956cf7a3fac3114a674378760b217332c4f79`.
+- Current base: `main` at
+  `c1625ab8126e93f758d5c86fff6b69d2b028e718`.
+- GitHub: `OPEN`, `CLEAN`, `MERGEABLE`, Draft, both exact-head CI runs SUCCESS.
+- Direct-main rebase: complete; the rebase tree exactly matched the pre-rebase
+  tree, and the full local suite was rerun afterward.
 
 ## 19. Final candidate SHA
 
-Reviewed implementation commit:
-`98a76eda9c0f7b6cef68f45933c36ab343aa6693`. The PR may have a later
+Reviewed rebased implementation commit:
+`d224e7e7a6131ae2cc09db0eba8a26300e72e7a7`. The PR has a later
 documentation-only descendant containing this report. Neither is yet the final
-production SHA because the required main rebase and merge have not occurred.
+production SHA because the required PR #38 merge has not occurred.
 
 ## 20. qyun2/NAS deployment SHA
 
@@ -297,7 +303,7 @@ Current verified state on 2026-07-22:
 
 | Surface | SHA / state |
 | --- | --- |
-| GitHub main | `49ad71fb9d3043e4882546fd8b8d4ff0ba93106b` |
+| GitHub main | `c1625ab8126e93f758d5c86fff6b69d2b028e718` |
 | qyun2 repo | clean `ab0d4c149e8717da891b2ac11bbb03f9e783ecb9` |
 | NAS repo | clean `ab0d4c149e8717da891b2ac11bbb03f9e783ecb9` |
 | NAS image worker commit | `ab0d4c149e8717da891b2ac11bbb03f9e783ecb9` |
@@ -347,8 +353,8 @@ Missing metrics remain explicitly unknown until final-main execution.
 
 ## 26. Remaining risks
 
-1. PR #37 and #38 are still unmerged Drafts; production cannot truthfully claim
-   main provenance.
+1. PR #38 is still an unmerged Draft; production cannot truthfully claim its
+   final main provenance until that authorized merge completes.
 2. Worker compute remains monolithic. The 4 GiB gate is conservative but final
    resource proof applies only to the measured production input.
 3. Changed-Shard is not implemented; the six-hour floor limits, but does not
@@ -388,9 +394,9 @@ redeploy the previous known-good main SHA only with an explicit rollback decisio
 | 6 | Credible NAS input gates | PASS_CODE; live RSS pending |
 | 7 | Importer gate before global scan | PASS |
 | 8 | Full tests | PASS |
-| 9 | PR #37 mergeable or merged | PASS_MERGEABLE; still Draft |
-| 10 | PR #38 directly based on main | **FAIL_PENDING_MERGE** |
+| 9 | PR #37 mergeable or merged | PASS_MERGED |
+| 10 | PR #38 directly based on main | PASS_REBASED_AND_CI |
 | 11 | final main equals production/NAS/task/result | **FAIL_PENDING_MERGE** |
 | 12 | final SHA RUN_ONCE plus Shadow | **FAIL_PENDING_DEPLOYMENT** |
 
-Overall verdict: **NO-GO until conditions 10–12 are proven on final main**.
+Overall verdict: **NO-GO until conditions 11–12 are proven on final main**.

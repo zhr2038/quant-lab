@@ -386,6 +386,7 @@ def test_factor_factory_uses_shared_worker_and_hourly_cloud_request_only():
     assert "21600" in request_service
     assert "--factor-factory-max-result-bytes" in importer
     assert "--factor-factory-max-value-partition-bytes" in importer
+    assert "--factor-factory-max-value-partition-uncompressed-bytes" in importer
     assert "--factor-factory-max-file-count" in importer
     assert "--factor-factory-max-uncompressed-bytes" in importer
     assert "build-factor-factory" not in refresh_service

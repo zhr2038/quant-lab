@@ -35,6 +35,7 @@ from quant_lab.research_plane.contracts import (
     DEFAULT_FACTOR_FACTORY_MAX_RESULT_BYTES,
     DEFAULT_FACTOR_FACTORY_MAX_UNCOMPRESSED_BYTES,
     DEFAULT_FACTOR_FACTORY_MAX_VALUE_PARTITION_BYTES,
+    DEFAULT_FACTOR_FACTORY_MAX_VALUE_PARTITION_UNCOMPRESSED_BYTES,
     DEFAULT_RESEARCH_MAX_RESULT_BYTES,
     RESEARCH_RECEIPT_ADAPTER,
     RESEARCH_RESULT_ADAPTER,
@@ -125,6 +126,9 @@ def validate_entry_quality_history_result_for_import(
     factor_factory_max_value_partition_bytes: int = (
         DEFAULT_FACTOR_FACTORY_MAX_VALUE_PARTITION_BYTES
     ),
+    factor_factory_max_value_partition_uncompressed_bytes: int = (
+        DEFAULT_FACTOR_FACTORY_MAX_VALUE_PARTITION_UNCOMPRESSED_BYTES
+    ),
     factor_factory_max_file_count: int = 20_000,
     factor_factory_max_uncompressed_bytes: int = DEFAULT_FACTOR_FACTORY_MAX_UNCOMPRESSED_BYTES,
 ) -> ResearchImportValidationResult:
@@ -173,6 +177,9 @@ def validate_entry_quality_history_result_for_import(
             expected_worker_key_id=expected_worker_key_id,
             max_result_bytes=factor_factory_max_result_bytes,
             max_value_partition_bytes=factor_factory_max_value_partition_bytes,
+            max_value_partition_uncompressed_bytes=(
+                factor_factory_max_value_partition_uncompressed_bytes
+            ),
             max_file_count=factor_factory_max_file_count,
             max_uncompressed_bytes=factor_factory_max_uncompressed_bytes,
         )
@@ -263,6 +270,9 @@ def validate_pending_entry_quality_history_results(
     factor_factory_max_value_partition_bytes: int = (
         DEFAULT_FACTOR_FACTORY_MAX_VALUE_PARTITION_BYTES
     ),
+    factor_factory_max_value_partition_uncompressed_bytes: int = (
+        DEFAULT_FACTOR_FACTORY_MAX_VALUE_PARTITION_UNCOMPRESSED_BYTES
+    ),
     factor_factory_max_file_count: int = 20_000,
     factor_factory_max_uncompressed_bytes: int = DEFAULT_FACTOR_FACTORY_MAX_UNCOMPRESSED_BYTES,
 ) -> list[ResearchImportValidationResult]:
@@ -287,6 +297,9 @@ def validate_pending_entry_quality_history_results(
                 max_result_bytes=max_result_bytes,
                 factor_factory_max_result_bytes=factor_factory_max_result_bytes,
                 factor_factory_max_value_partition_bytes=(factor_factory_max_value_partition_bytes),
+                factor_factory_max_value_partition_uncompressed_bytes=(
+                    factor_factory_max_value_partition_uncompressed_bytes
+                ),
                 factor_factory_max_file_count=factor_factory_max_file_count,
                 factor_factory_max_uncompressed_bytes=(factor_factory_max_uncompressed_bytes),
             )
@@ -309,6 +322,9 @@ def import_entry_quality_history_result(
     factor_factory_max_value_partition_bytes: int = (
         DEFAULT_FACTOR_FACTORY_MAX_VALUE_PARTITION_BYTES
     ),
+    factor_factory_max_value_partition_uncompressed_bytes: int = (
+        DEFAULT_FACTOR_FACTORY_MAX_VALUE_PARTITION_UNCOMPRESSED_BYTES
+    ),
     factor_factory_max_file_count: int = 20_000,
     factor_factory_max_uncompressed_bytes: int = DEFAULT_FACTOR_FACTORY_MAX_UNCOMPRESSED_BYTES,
 ) -> ResearchImportResult:
@@ -327,6 +343,9 @@ def import_entry_quality_history_result(
             expected_quant_lab_commit=expected_quant_lab_commit,
             max_result_bytes=factor_factory_max_result_bytes,
             max_value_partition_bytes=factor_factory_max_value_partition_bytes,
+            max_value_partition_uncompressed_bytes=(
+                factor_factory_max_value_partition_uncompressed_bytes
+            ),
             max_file_count=factor_factory_max_file_count,
             max_uncompressed_bytes=factor_factory_max_uncompressed_bytes,
         )
@@ -682,6 +701,7 @@ def _import_factor_factory_result(
     expected_quant_lab_commit: str,
     max_result_bytes: int,
     max_value_partition_bytes: int,
+    max_value_partition_uncompressed_bytes: int,
     max_file_count: int,
     max_uncompressed_bytes: int,
 ) -> ResearchImportResult:
@@ -770,6 +790,7 @@ def _import_factor_factory_result(
             expected_worker_key_id=expected_worker_key_id,
             max_result_bytes=max_result_bytes,
             max_value_partition_bytes=max_value_partition_bytes,
+            max_value_partition_uncompressed_bytes=max_value_partition_uncompressed_bytes,
             max_file_count=max_file_count,
             max_uncompressed_bytes=max_uncompressed_bytes,
         )
@@ -1041,6 +1062,9 @@ def import_pending_entry_quality_history_results(
     factor_factory_max_value_partition_bytes: int = (
         DEFAULT_FACTOR_FACTORY_MAX_VALUE_PARTITION_BYTES
     ),
+    factor_factory_max_value_partition_uncompressed_bytes: int = (
+        DEFAULT_FACTOR_FACTORY_MAX_VALUE_PARTITION_UNCOMPRESSED_BYTES
+    ),
     factor_factory_max_file_count: int = 20_000,
     factor_factory_max_uncompressed_bytes: int = DEFAULT_FACTOR_FACTORY_MAX_UNCOMPRESSED_BYTES,
 ) -> list[ResearchImportResult]:
@@ -1062,6 +1086,9 @@ def import_pending_entry_quality_history_results(
                 max_result_bytes=max_result_bytes,
                 factor_factory_max_result_bytes=factor_factory_max_result_bytes,
                 factor_factory_max_value_partition_bytes=(factor_factory_max_value_partition_bytes),
+                factor_factory_max_value_partition_uncompressed_bytes=(
+                    factor_factory_max_value_partition_uncompressed_bytes
+                ),
                 factor_factory_max_file_count=factor_factory_max_file_count,
                 factor_factory_max_uncompressed_bytes=(factor_factory_max_uncompressed_bytes),
             )

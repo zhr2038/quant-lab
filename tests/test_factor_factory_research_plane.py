@@ -173,6 +173,11 @@ def test_factor_factory_signed_full_history_round_trip(tmp_path: Path) -> None:
     assert len(compute.anti_leakage["checks"]) == len(FACTOR_FACTORY_ANTI_LEAKAGE_CHECKS)
     assert compute.anti_leakage["status"] == "PASS"
     assert compute.anti_leakage["violation_count"] == 0
+    assert compute.worker_report["streaming_enabled"] is True
+    assert compute.worker_report["factor_value_stage_partition_count"] > 0
+    assert compute.worker_report["peak_rss_bytes_observed"] > 0
+    assert compute.worker_report["temporary_disk_peak_bytes"] > 0
+    assert "feature_scan_released" in compute.worker_report["stage_release_events"]
 
     results_root = tmp_path / "worker-results"
     result_root, manifest, receipt = write_factor_factory_result_bundle(
@@ -309,6 +314,23 @@ def test_factor_factory_empty_input_completes_without_gold_update(tmp_path: Path
     assert result.state == "completed"
     assert not (lake / FACTOR_FACTORY_GENERATION_POINTER).exists()
     assert (lake / FACTOR_FACTORY_NO_UPDATE_POINTER).is_file()
+    no_update_pointer = json.loads(
+        (lake / FACTOR_FACTORY_NO_UPDATE_POINTER).read_text("utf-8")
+    )
+    assert {
+        "schema_version",
+        "quant_lab_commit",
+        "factor_plan_digest",
+        "feature_input_digest",
+        "market_input_digest",
+        "cost_input_digest",
+        "combined_input_digest",
+        "reason",
+        "observed_at",
+        "research_only",
+        "live_order_effect",
+    }.issubset(no_update_pointer)
+    assert no_update_pointer["reason"] == "factor_factory_input_still_empty"
     assert all(not (lake / path).exists() for path in FACTOR_FACTORY_DATASETS.values())
     assert (snapshot_root / "FILES_RELEASED.json").is_file()
     assert not (snapshot_root / "files").exists()
@@ -324,6 +346,9 @@ def test_factor_factory_empty_input_completes_without_gold_update(tmp_path: Path
     assert repeated.state == "already_current_no_update"
     assert repeated.task_created is False
     assert repeated.snapshot_materialized is False
+    repeated_status = research_plane_status(queue)["tasks"]["factor_factory"]
+    assert repeated_status["request_outcome"] == "already_current_no_update"
+    assert repeated_status["no_update_reason"] == "factor_factory_input_still_empty"
 
     _write_bars(lake, count=12)
     publish_features(lake)
@@ -429,6 +454,18 @@ def test_factor_factory_nas_round_trip_matches_legacy_full_fixture(
         "_validate_unique_keys",
         unexpected_global_scan,
     )
+    with pytest.raises(ValueError, match="partition_uncompressed_size_limit_exceeded"):
+        validate_factor_factory_result_bundle(
+            result_root,
+            manifest=manifest,
+            receipt=receipt,
+            task=task,
+            snapshot=snapshot,
+            worker_public_key=worker_key.public_key(),
+            expected_worker_key_id=WORKER_KEY_ID,
+            max_result_bytes=2 * 1024**3,
+            max_value_partition_uncompressed_bytes=1,
+        )
     with pytest.raises(ValueError, match="uncompressed_size_limit_exceeded"):
         validate_factor_factory_result_bundle(
             result_root,
@@ -470,6 +507,30 @@ def test_factor_factory_nas_round_trip_matches_legacy_full_fixture(
             check_exact=False,
             rel_tol=1e-12,
             abs_tol=1e-12,
+        )
+
+
+def test_factor_factory_importer_detects_duplicate_keys_across_partitions(
+    tmp_path: Path,
+) -> None:
+    partitions = tmp_path / "factor-value"
+    partitions.mkdir()
+    row = {
+        "factor_id": "factor-one",
+        "factor_version": "v0.1",
+        "symbol": "BTC-USDT",
+        "timeframe": "1H",
+        "ts": datetime(2026, 5, 20, tzinfo=UTC),
+    }
+    pl.DataFrame([row]).write_parquet(partitions / "part-000.parquet")
+    pl.DataFrame([row]).write_parquet(partitions / "part-001.parquet")
+
+    lazy = pl.scan_parquet(str(partitions / "*.parquet"))
+    with pytest.raises(ValueError, match="factor_factory_result_duplicate_key:factor_value"):
+        factor_factory_result_module._validate_unique_keys(
+            lazy,
+            list(FACTOR_FACTORY_PRIMARY_KEYS["factor_value"]),
+            "factor_value",
         )
 
 
@@ -654,6 +715,61 @@ def test_factor_factory_snapshot_identity_is_content_addressed_before_materializ
     assert source_change.source_input_digest != cost_change.source_input_digest
     assert source_change.snapshot_id != cost_change.snapshot_id
 
+    commit_change = preflight_factor_factory_snapshot(
+        lake,
+        queue,
+        as_of_date=date(2026, 5, 21),
+        quant_lab_commit="b" * 40,
+    )
+    assert commit_change.snapshot_id != source_change.snapshot_id
+
+
+def test_factor_factory_fingerprint_ignores_unrelated_feature_scopes(tmp_path: Path) -> None:
+    lake = tmp_path / "lake"
+    queue = tmp_path / "queue"
+    _write_bars(lake, count=24)
+    _write_costs(lake)
+    publish_features(lake)
+    original = preflight_factor_factory_snapshot(
+        lake,
+        queue,
+        as_of_date=date(2026, 5, 20),
+        quant_lab_commit=COMMIT,
+    )
+    feature_root = lake / "gold" / "feature_value"
+    relevant = pl.read_parquet(feature_root / "data.parquet")
+    relevant.head(8).with_columns(pl.lit("4H").alias("timeframe")).write_parquet(
+        feature_root / "unrelated-timeframe.parquet"
+    )
+    relevant.head(8).with_columns(pl.lit("experimental").alias("feature_set")).write_parquet(
+        feature_root / "unrelated-feature-set.parquet"
+    )
+    with_unrelated = preflight_factor_factory_snapshot(
+        lake,
+        queue,
+        as_of_date=date(2026, 5, 20),
+        quant_lab_commit=COMMIT,
+    )
+    assert with_unrelated.input_fingerprint.combined_input_digest == (
+        original.input_fingerprint.combined_input_digest
+    )
+    assert with_unrelated.snapshot_id == original.snapshot_id
+
+    unrelated = pl.read_parquet(feature_root / "unrelated-timeframe.parquet")
+    unrelated.with_columns((pl.col("value") + 123.0).alias("value")).write_parquet(
+        feature_root / "unrelated-timeframe.parquet"
+    )
+    changed_unrelated = preflight_factor_factory_snapshot(
+        lake,
+        queue,
+        as_of_date=date(2026, 5, 20),
+        quant_lab_commit=COMMIT,
+    )
+    assert changed_unrelated.input_fingerprint == with_unrelated.input_fingerprint.model_copy(
+        update={"observed_at": changed_unrelated.input_fingerprint.observed_at}
+    )
+    assert changed_unrelated.snapshot_id == original.snapshot_id
+
 
 def test_previous_generation_changes_task_not_snapshot_identity(tmp_path: Path) -> None:
     lake = tmp_path / "lake"
@@ -723,6 +839,7 @@ def test_factor_factory_no_change_fast_path_precedes_all_materialization(
     monkeypatch.setattr(factor_factory_snapshot_module, "_materialize_feature_files", unexpected)
     monkeypatch.setattr(factor_factory_snapshot_module, "_materialize_market_files", unexpected)
     monkeypatch.setattr(factor_factory_snapshot_module, "_materialize_cost_selection", unexpected)
+    monkeypatch.setattr(pl.LazyFrame, "sink_parquet", unexpected)
     result = create_factor_factory_task(
         lake,
         queue,
@@ -735,6 +852,11 @@ def test_factor_factory_no_change_fast_path_precedes_all_materialization(
     assert result.task_created is False
     assert result.snapshot_materialized is False
     assert not list((queue / "snapshots").iterdir())
+    status = research_plane_status(queue)["tasks"]["factor_factory"]
+    assert status["request_outcome"] == "already_current"
+    assert status["fingerprint_matches_generation"] is True
+    assert status["snapshot_materialized"] is False
+    assert status["already_current_at"] is not None
 
     pointer["source_input_digest"] = "f" * 64
     pointer["published_at"] = datetime.now(UTC).isoformat()
@@ -751,6 +873,22 @@ def test_factor_factory_no_change_fast_path_precedes_all_materialization(
     assert deferred.state == "recompute_deferred"
     assert deferred.task_created is False
     assert deferred.snapshot_materialized is False
+
+
+def test_factor_factory_status_reports_snapshot_transient_states(tmp_path: Path) -> None:
+    queue = tmp_path / "queue"
+    sealing = queue / "snapshots" / ".sealing.snapshot-one.test.partial"
+    sealing.mkdir(parents=True)
+    sealing_status = research_plane_status(queue)["tasks"]["factor_factory"]
+    assert sealing_status["state"] == "snapshot_sealing"
+    assert sealing_status["snapshot_payload_state"] == "sealing"
+
+    sealing.rmdir()
+    rehydrating = queue / "snapshots" / ".rehydrate.snapshot-one.test.partial"
+    rehydrating.mkdir()
+    rehydrate_status = research_plane_status(queue)["tasks"]["factor_factory"]
+    assert rehydrate_status["state"] == "snapshot_rehydrating"
+    assert rehydrate_status["snapshot_payload_state"] == "rehydrating"
 
 
 def test_factor_factory_cli_treats_no_change_as_success(
@@ -866,6 +1004,9 @@ def test_released_factor_factory_snapshot_rehydrates_once_and_preserves_identity
         final_root=snapshot_root,
         public_key=key.public_key(),
     )
+    audit = (queue / "audit" / "factor_factory_snapshot.jsonl").read_text("utf-8")
+    assert "snapshot_rehydrate_started" in audit
+    assert "snapshot_rehydrate_completed" in audit
 
     assert release_snapshot_payload(queue, created.snapshot_id, reason="concurrent_rehydrate_test")
     original_materialize = factor_factory_snapshot_module._materialize_preflight
@@ -948,6 +1089,8 @@ def test_rehydrate_rejects_changed_source_and_stale_partial_cleanup(tmp_path: Pa
             signing_key=key,
             signature_key_id=TASK_KEY_ID,
         )
+    audit_path = queue / "audit" / "factor_factory_snapshot.jsonl"
+    assert "snapshot_rehydrate_failed" in audit_path.read_text("utf-8")
 
     stale = queue / "snapshots" / f".rehydrate.{created.snapshot_id}.stale.partial"
     stale.mkdir()
@@ -960,6 +1103,9 @@ def test_rehydrate_rejects_changed_source_and_stale_partial_cleanup(tmp_path: Pa
     )
     assert stale.name in removed
     assert not stale.exists()
+    assert "snapshot_rehydrate_partial_cleaned" in (
+        queue / "audit" / "factor_factory_snapshot.jsonl"
+    ).read_text("utf-8")
 
 
 def test_worker_rejects_uncompressed_input_before_read(

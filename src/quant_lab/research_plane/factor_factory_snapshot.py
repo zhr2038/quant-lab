@@ -27,7 +27,9 @@ from quant_lab.research_plane.contracts import (
     DEFAULT_FACTOR_FACTORY_MAX_SNAPSHOT_BYTES,
     FACTOR_FACTORY_SNAPSHOT_SCHEMA,
     FACTOR_FACTORY_SNAPSHOT_SCHEMA_V1,
+    FACTOR_FACTORY_SNAPSHOT_SCHEMA_V2,
     FactorFactoryCostSnapshotRecord,
+    FactorFactoryInputFingerprint,
     FactorFactoryPreviousGeneration,
     FactorFactorySnapshotManifest,
     FactorFactorySourceFileIdentity,
@@ -113,8 +115,12 @@ class FactorFactorySnapshotPreflight:
     feature_min_ts: datetime | None
     feature_max_ts: datetime | None
     market_before: datetime | None
-    cost_frame: pl.DataFrame
+    cost_frame: pl.DataFrame | None
     cost_snapshot: tuple[FactorFactoryCostSnapshotRecord, ...]
+    input_fingerprint: FactorFactoryInputFingerprint
+    feature_input_digest: str
+    market_input_digest: str
+    combined_input_digest: str
     source_input_digest: str
     cost_input_digest: str
     identity_payload: dict[str, Any]
@@ -208,17 +214,25 @@ def preflight_factor_factory_snapshot(
     if decision_delay_bars < 1:
         raise ValueError("factor_factory_decision_delay_invalid")
     indexed = _load_factor_factory_file_index(root)
-    feature_identities = _indexed_source_identities(root, indexed, FEATURE_VALUE_DATASET)
-    market_identities = _indexed_source_identities(root, indexed, MARKET_BAR_DATASET)
-    cost_identities = _indexed_source_identities(root, indexed, COST_BUCKET_DAILY_DATASET)
-    feature_sources = tuple(root / item.relative_path for item in feature_identities)
-    cost_sources = tuple(root / item.relative_path for item in cost_identities)
-    feature_names, feature_min_ts, feature_max_ts = _feature_identity(
-        list(feature_sources),
+    (
+        feature_paths,
+        feature_names,
+        feature_min_ts,
+        feature_max_ts,
+        feature_row_count,
+    ) = _feature_scope_from_index(
+        indexed,
         feature_set=feature_set,
         feature_version=feature_version,
         timeframe=timeframe,
     )
+    feature_identities = _indexed_source_identities(
+        root,
+        indexed,
+        FEATURE_VALUE_DATASET,
+        selected_paths=feature_paths,
+    )
+    feature_sources = tuple(root / item.relative_path for item in feature_identities)
     plan = build_effective_factor_plan(
         feature_names,
         feature_set=feature_set,
@@ -230,7 +244,7 @@ def preflight_factor_factory_snapshot(
         created_at=datetime.combine(as_of_date, time.min, tzinfo=UTC),
     )
     market_before: datetime | None = None
-    cost_frame = pl.DataFrame()
+    cost_frame: pl.DataFrame | None = None
     cost_snapshot: tuple[FactorFactoryCostSnapshotRecord, ...] = ()
     selected_market_identities: tuple[FactorFactorySourceFileIdentity, ...] = ()
     selected_cost_identities: tuple[FactorFactorySourceFileIdentity, ...] = ()
@@ -240,37 +254,109 @@ def preflight_factor_factory_snapshot(
         market_before = feature_max_ts + _timeframe_delta(timeframe) * (
             decision_delay_bars + max(horizons) + 1
         )
-        selected_market_identities = market_identities
-        selected_cost_identities = cost_identities
-        cost_frame, cost_snapshot = _select_cost_frame(
-            list(cost_sources), cost_quantile=cost_quantile
+        market_paths, market_min_ts, market_max_ts, market_row_count = (
+            _market_scope_from_index(
+                indexed,
+                timeframe=timeframe,
+                since=feature_min_ts,
+                before=market_before,
+            )
         )
+        selected_market_identities = _indexed_source_identities(
+            root,
+            indexed,
+            MARKET_BAR_DATASET,
+            selected_paths=market_paths,
+        )
+        selected_cost_identities = _indexed_source_identities(
+            root,
+            indexed,
+            COST_BUCKET_DAILY_DATASET,
+        )
+    else:
+        market_min_ts = None
+        market_max_ts = None
+        market_row_count = 0
     source_files = tuple(
         sorted(
             (*feature_identities, *selected_market_identities, *selected_cost_identities),
             key=lambda item: (item.dataset_name, item.relative_path),
         )
     )
-    source_digest = _projected_source_digest(
-        source_files,
+    feature_digest = _projected_feature_digest(
+        feature_identities,
+        quant_lab_commit=commit,
         feature_set=feature_set,
         feature_version=feature_version,
         timeframe=timeframe,
         feature_min_ts=feature_min_ts,
         feature_max_ts=feature_max_ts,
+    )
+    market_digest = _projected_market_digest(
+        selected_market_identities,
+        quant_lab_commit=commit,
+        timeframe=timeframe,
+        market_since=feature_min_ts,
         market_before=market_before,
     )
     cost_digest = _projected_cost_digest(
-        source_files,
+        selected_cost_identities,
+        quant_lab_commit=commit,
         cost_quantile=cost_quantile,
-        cost_snapshot=cost_snapshot,
+    )
+    source_digest = model_content_sha256(
+        {
+            "schema_version": "quant_lab_factor_factory_source_identity.v3",
+            "feature_input_digest": feature_digest,
+            "market_input_digest": market_digest,
+        }
+    )
+    combined_digest = model_content_sha256(
+        {
+            "schema_version": "quant_lab_factor_factory_combined_input.v1",
+            "feature_input_digest": feature_digest,
+            "market_input_digest": market_digest,
+            "cost_input_digest": cost_digest,
+        }
+    )
+    fingerprint = FactorFactoryInputFingerprint(
+        quant_lab_commit=commit,
+        factor_plan_digest=plan.plan_digest,
+        feature_set=feature_set,
+        feature_version=feature_version,
+        factor_version=factor_version,
+        timeframe=timeframe,
+        horizon_bars=horizons,
+        decision_delay_bars=decision_delay_bars,
+        max_factors=max_factors,
+        min_samples=min_samples,
+        top_quantile=top_quantile,
+        cost_quantile=cost_quantile,
+        feature_input_digest=feature_digest,
+        market_input_digest=market_digest,
+        cost_input_digest=cost_digest,
+        combined_input_digest=combined_digest,
+        feature_file_count=len(feature_identities),
+        market_file_count=len(selected_market_identities),
+        cost_file_count=len(selected_cost_identities),
+        feature_row_count=feature_row_count,
+        market_row_count=market_row_count,
+        cost_row_count=sum(item.row_count for item in selected_cost_identities),
+        feature_min_ts=feature_min_ts,
+        feature_max_ts=feature_max_ts,
+        market_min_ts=market_min_ts,
+        market_max_ts=market_max_ts,
+        observed_at=datetime.now(UTC),
     )
     identity_payload = {
-        "schema_version": "quant_lab_factor_factory_snapshot_identity.v2",
+        "schema_version": "quant_lab_factor_factory_snapshot_identity.v3",
         "quant_lab_commit": commit,
         "factor_plan_digest": plan.plan_digest,
+        "feature_input_digest": feature_digest,
+        "market_input_digest": market_digest,
         "source_input_digest": source_digest,
         "cost_input_digest": cost_digest,
+        "combined_input_digest": combined_digest,
         "feature_set": feature_set,
         "feature_version": feature_version,
         "factor_version": factor_version,
@@ -317,6 +403,10 @@ def preflight_factor_factory_snapshot(
         market_before=market_before,
         cost_frame=cost_frame,
         cost_snapshot=cost_snapshot,
+        input_fingerprint=fingerprint,
+        feature_input_digest=feature_digest,
+        market_input_digest=market_digest,
+        combined_input_digest=combined_digest,
         source_input_digest=source_digest,
         cost_input_digest=cost_digest,
         identity_payload=identity_payload,
@@ -377,9 +467,25 @@ def materialize_factor_factory_snapshot(
         temporary.mkdir(parents=True, exist_ok=False)
         (temporary / "files").mkdir()
         try:
-            references, market_min_ts, market_max_ts = _materialize_preflight(preflight, temporary)
+            references, market_min_ts, market_max_ts, cost_snapshot = _materialize_preflight(
+                preflight, temporary
+            )
             total_bytes = sum(item.size_bytes for item in references)
             total_rows = sum(item.row_count for item in references)
+            dataset_names = [_dataset_name(path) for path in FACTOR_FACTORY_INPUT_DATASETS]
+            compressed_by_dataset = {
+                dataset: sum(item.size_bytes for item in references if item.dataset_name == dataset)
+                for dataset in dataset_names
+            }
+            uncompressed_by_dataset = {
+                dataset: sum(
+                    int(item.uncompressed_bytes or 0)
+                    for item in references
+                    if item.dataset_name == dataset
+                )
+                for dataset in dataset_names
+            }
+            total_uncompressed = sum(uncompressed_by_dataset.values())
             if total_bytes > max_input_bytes:
                 raise RuntimeError("factor_factory_snapshot_input_size_limit_exceeded")
             if total_rows > max_input_rows:
@@ -403,19 +509,39 @@ def materialize_factor_factory_snapshot(
                 factor_plan_digest=preflight.factor_plan.plan_digest,
                 source_input_digest=preflight.source_input_digest,
                 cost_input_digest=preflight.cost_input_digest,
-                cost_snapshot=preflight.cost_snapshot,
+                feature_input_digest=preflight.feature_input_digest,
+                market_input_digest=preflight.market_input_digest,
+                combined_input_digest=preflight.combined_input_digest,
+                input_fingerprint=preflight.input_fingerprint,
+                cost_snapshot=cost_snapshot,
                 feature_min_ts=preflight.feature_min_ts,
                 feature_max_ts=preflight.feature_max_ts,
                 market_min_ts=market_min_ts,
                 market_max_ts=market_max_ts,
                 source_files=preflight.source_files,
-                feature_estimated_uncompressed_bytes=(
-                    preflight.feature_estimated_uncompressed_bytes
+                feature_estimated_uncompressed_bytes=uncompressed_by_dataset.get(
+                    "gold/feature_value", 0
                 ),
-                market_estimated_uncompressed_bytes=(preflight.market_estimated_uncompressed_bytes),
-                cost_estimated_uncompressed_bytes=(preflight.cost_estimated_uncompressed_bytes),
-                estimated_uncompressed_bytes=preflight.estimated_uncompressed_bytes,
-                datasets=[_dataset_name(path) for path in FACTOR_FACTORY_INPUT_DATASETS],
+                market_estimated_uncompressed_bytes=uncompressed_by_dataset.get(
+                    "silver/market_bar", 0
+                ),
+                cost_estimated_uncompressed_bytes=uncompressed_by_dataset.get(
+                    "gold/cost_bucket_daily", 0
+                ),
+                estimated_uncompressed_bytes=total_uncompressed,
+                compressed_input_bytes=total_bytes,
+                estimated_uncompressed_input_bytes=total_uncompressed,
+                feature_compressed_bytes=compressed_by_dataset.get("gold/feature_value", 0),
+                feature_uncompressed_bytes=uncompressed_by_dataset.get(
+                    "gold/feature_value", 0
+                ),
+                market_compressed_bytes=compressed_by_dataset.get("silver/market_bar", 0),
+                market_uncompressed_bytes=uncompressed_by_dataset.get("silver/market_bar", 0),
+                cost_compressed_bytes=compressed_by_dataset.get("gold/cost_bucket_daily", 0),
+                cost_uncompressed_bytes=uncompressed_by_dataset.get(
+                    "gold/cost_bucket_daily", 0
+                ),
+                datasets=dataset_names,
                 files=references,
                 total_input_bytes=total_bytes,
                 total_input_rows=total_rows,
@@ -438,7 +564,7 @@ def materialize_factor_factory_snapshot(
             raise
 
 
-def rehydrate_factor_factory_snapshot_payload(
+def rehydrate_factor_factory_snapshot(
     lake_root: str | Path,
     queue_root: str | Path,
     snapshot_id: str,
@@ -451,50 +577,104 @@ def rehydrate_factor_factory_snapshot_payload(
     """Strictly restore one released v2 Snapshot without changing its manifest."""
 
     queue = ensure_research_queue_layout(queue_root)
-    final_root = queue / "snapshots" / snapshot_id
-    manifest = FactorFactorySnapshotManifest.model_validate_json(
-        (final_root / "manifest.json").read_text(encoding="utf-8")
+    _append_snapshot_audit(
+        queue,
+        {
+            "action": "snapshot_rehydrate_started",
+            "snapshot_id": snapshot_id,
+        },
     )
-    _require_snapshot_capacity(
-        manifest,
+    manifest: FactorFactorySnapshotManifest | None = None
+    try:
+        final_root = queue / "snapshots" / snapshot_id
+        already_materialized = False
+        with snapshot_payload_lock(queue, snapshot_id, timeout_seconds=120):
+            manifest = FactorFactorySnapshotManifest.model_validate_json(
+                (final_root / "manifest.json").read_text(encoding="utf-8")
+            )
+            _require_snapshot_capacity(
+                manifest,
+                max_input_bytes=max_input_bytes,
+                max_input_rows=max_input_rows,
+            )
+            if (final_root / "files").is_dir():
+                verify_factor_factory_snapshot_manifest(
+                    manifest,
+                    final_root=final_root,
+                    public_key=signing_key.public_key(),
+                )
+                _clear_stale_release_marker(final_root)
+                _make_read_only(final_root)
+                already_materialized = True
+            else:
+                preflight = preflight_factor_factory_snapshot(
+                    lake_root,
+                    queue,
+                    as_of_date=manifest.as_of_date,
+                    feature_set=manifest.feature_set,
+                    feature_version=manifest.feature_version,
+                    factor_version=manifest.factor_version,
+                    timeframe=manifest.timeframe,
+                    horizon_bars=manifest.horizon_bars,
+                    decision_delay_bars=manifest.decision_delay_bars,
+                    max_factors=manifest.max_factors,
+                    min_samples=manifest.min_samples,
+                    top_quantile=manifest.top_quantile,
+                    cost_quantile=manifest.cost_quantile,
+                    quant_lab_commit=manifest.quant_lab_commit,
+                )
+                _require_preflight_manifest_identity(preflight, manifest)
+                _rehydrate_snapshot_payload_locked(
+                    preflight,
+                    manifest,
+                    final_root=final_root,
+                    public_key=signing_key.public_key(),
+                    signature_key_id=signature_key_id,
+                    audit_lifecycle=False,
+                )
+        _append_snapshot_audit(
+            queue,
+            {
+                "action": "snapshot_rehydrate_completed",
+                "snapshot_id": manifest.snapshot_id,
+                "manifest_sha256": manifest.manifest_sha256,
+                "already_materialized": already_materialized,
+            },
+        )
+        return manifest
+    except Exception as exc:
+        failure = {
+            "action": "snapshot_rehydrate_failed",
+            "snapshot_id": snapshot_id,
+            "error_type": type(exc).__name__,
+        }
+        if manifest is not None:
+            failure["manifest_sha256"] = manifest.manifest_sha256
+        _append_snapshot_audit(queue, failure)
+        raise
+
+
+def rehydrate_factor_factory_snapshot_payload(
+    lake_root: str | Path,
+    queue_root: str | Path,
+    snapshot_id: str,
+    *,
+    signing_key: Ed25519PrivateKey,
+    signature_key_id: str,
+    max_input_bytes: int = DEFAULT_FACTOR_FACTORY_MAX_SNAPSHOT_BYTES,
+    max_input_rows: int = 150_000_000,
+) -> FactorFactorySnapshotManifest:
+    """Backward-compatible alias for the explicit rehydrate state-machine entrypoint."""
+
+    return rehydrate_factor_factory_snapshot(
+        lake_root,
+        queue_root,
+        snapshot_id,
+        signing_key=signing_key,
+        signature_key_id=signature_key_id,
         max_input_bytes=max_input_bytes,
         max_input_rows=max_input_rows,
     )
-    preflight = preflight_factor_factory_snapshot(
-        lake_root,
-        queue,
-        as_of_date=manifest.as_of_date,
-        feature_set=manifest.feature_set,
-        feature_version=manifest.feature_version,
-        factor_version=manifest.factor_version,
-        timeframe=manifest.timeframe,
-        horizon_bars=manifest.horizon_bars,
-        decision_delay_bars=manifest.decision_delay_bars,
-        max_factors=manifest.max_factors,
-        min_samples=manifest.min_samples,
-        top_quantile=manifest.top_quantile,
-        cost_quantile=manifest.cost_quantile,
-        quant_lab_commit=manifest.quant_lab_commit,
-    )
-    with snapshot_payload_lock(queue, snapshot_id, timeout_seconds=120):
-        if (final_root / "files").is_dir():
-            verify_factor_factory_snapshot_manifest(
-                manifest,
-                final_root=final_root,
-                public_key=signing_key.public_key(),
-            )
-            _clear_stale_release_marker(final_root)
-            _make_read_only(final_root)
-            return manifest
-        _require_preflight_manifest_identity(preflight, manifest)
-        _rehydrate_snapshot_payload_locked(
-            preflight,
-            manifest,
-            final_root=final_root,
-            public_key=signing_key.public_key(),
-            signature_key_id=signature_key_id,
-        )
-    return manifest
 
 
 def cleanup_stale_factor_factory_rehydrate_partials(
@@ -524,13 +704,26 @@ def cleanup_stale_factor_factory_rehydrate_partials(
         except (TimeoutError, OSError):
             continue
         removed.append(partial.name)
+        _append_snapshot_audit(
+            queue,
+            {
+                "action": "snapshot_rehydrate_partial_cleaned",
+                "snapshot_id": snapshot_id,
+                "partial_name": partial.name,
+            },
+        )
     return tuple(removed)
 
 
 def _materialize_preflight(
     preflight: FactorFactorySnapshotPreflight,
     temporary: Path,
-) -> tuple[list[ResearchDatasetReference], datetime | None, datetime | None]:
+) -> tuple[
+    list[ResearchDatasetReference],
+    datetime | None,
+    datetime | None,
+    tuple[FactorFactoryCostSnapshotRecord, ...],
+]:
     source_sha_by_path = {item.relative_path: item.sha256 for item in preflight.source_files}
     references = _materialize_feature_files(
         preflight.lake_root,
@@ -561,17 +754,72 @@ def _materialize_preflight(
             cost_quantile=preflight.cost_quantile,
             selected_frame=preflight.cost_frame,
         )
-        if observed_cost != preflight.cost_snapshot:
+        if preflight.cost_snapshot and observed_cost != preflight.cost_snapshot:
             raise RuntimeError("snapshot_source_changed_while_sealing")
         references.extend(market_references)
         references.extend(cost_references)
     _assert_source_identities(preflight.lake_root, preflight.source_files)
     references.sort(key=lambda item: (item.dataset_name, item.relative_path))
     market_min_ts, market_max_ts = _reference_bounds(market_references)
-    return references, market_min_ts, market_max_ts
+    return (
+        references,
+        market_min_ts,
+        market_max_ts,
+        observed_cost if preflight.feature_min_ts else (),
+    )
 
 
 def _rehydrate_snapshot_payload_locked(
+    preflight: FactorFactorySnapshotPreflight,
+    manifest: FactorFactorySnapshotManifest,
+    *,
+    final_root: Path,
+    public_key: Ed25519PublicKey,
+    signature_key_id: str,
+    audit_lifecycle: bool = True,
+) -> None:
+    if audit_lifecycle:
+        _append_snapshot_audit(
+            preflight.queue_root,
+            {
+                "action": "snapshot_rehydrate_started",
+                "snapshot_id": manifest.snapshot_id,
+                "manifest_sha256": manifest.manifest_sha256,
+            },
+        )
+    try:
+        _rehydrate_snapshot_payload_once_locked(
+            preflight,
+            manifest,
+            final_root=final_root,
+            public_key=public_key,
+            signature_key_id=signature_key_id,
+        )
+    except Exception as exc:
+        if audit_lifecycle:
+            _append_snapshot_audit(
+                preflight.queue_root,
+                {
+                    "action": "snapshot_rehydrate_failed",
+                    "snapshot_id": manifest.snapshot_id,
+                    "manifest_sha256": manifest.manifest_sha256,
+                    "error_type": type(exc).__name__,
+                },
+            )
+        raise
+    if audit_lifecycle:
+        _append_snapshot_audit(
+            preflight.queue_root,
+            {
+                "action": "snapshot_rehydrate_completed",
+                "snapshot_id": manifest.snapshot_id,
+                "manifest_sha256": manifest.manifest_sha256,
+                "already_materialized": False,
+            },
+        )
+
+
+def _rehydrate_snapshot_payload_once_locked(
     preflight: FactorFactorySnapshotPreflight,
     manifest: FactorFactorySnapshotManifest,
     *,
@@ -594,6 +842,14 @@ def _rehydrate_snapshot_payload_locked(
         f".rehydrate.{manifest.snapshot_id}.*.partial"
     ):
         shutil.rmtree(abandoned, ignore_errors=True)
+        _append_snapshot_audit(
+            preflight.queue_root,
+            {
+                "action": "snapshot_rehydrate_partial_cleaned",
+                "snapshot_id": manifest.snapshot_id,
+                "partial_name": abandoned.name,
+            },
+        )
     partial = (
         preflight.queue_root
         / "snapshots"
@@ -611,12 +867,16 @@ def _rehydrate_snapshot_payload_locked(
     )
     (partial / "files").mkdir()
     try:
-        references, market_min_ts, market_max_ts = _materialize_preflight(preflight, partial)
+        references, market_min_ts, market_max_ts, cost_snapshot = _materialize_preflight(
+            preflight, partial
+        )
         if [item.model_dump(mode="json") for item in references] != [
             item.model_dump(mode="json") for item in manifest.files
         ]:
             raise RuntimeError("snapshot_rehydrate_identity_mismatch")
         if (market_min_ts, market_max_ts) != (manifest.market_min_ts, manifest.market_max_ts):
+            raise RuntimeError("snapshot_rehydrate_identity_mismatch")
+        if cost_snapshot != manifest.cost_snapshot:
             raise RuntimeError("snapshot_rehydrate_identity_mismatch")
         _make_tree_writable(final_root)
         os.replace(partial / "files", final_root / "files")
@@ -637,20 +897,22 @@ def _rehydrate_snapshot_payload_locked(
             public_key=public_key,
         )
         _make_read_only(final_root)
-        _append_snapshot_audit(
-            preflight.queue_root,
-            {
-                "action": "snapshot_rehydrated",
-                "snapshot_id": manifest.snapshot_id,
-                "manifest_sha256": manifest.manifest_sha256,
-            },
-        )
     except Exception as exc:
         if isinstance(exc, RuntimeError) and str(exc) == "snapshot_rehydrate_identity_mismatch":
             raise
         raise RuntimeError("snapshot_rehydrate_identity_mismatch") from exc
     finally:
+        partial_existed = partial.exists()
         shutil.rmtree(partial, ignore_errors=True)
+        if partial_existed:
+            _append_snapshot_audit(
+                preflight.queue_root,
+                {
+                    "action": "snapshot_rehydrate_partial_cleaned",
+                    "snapshot_id": manifest.snapshot_id,
+                    "partial_name": partial.name,
+                },
+            )
 
 
 def _clear_stale_release_marker(final_root: Path) -> None:
@@ -680,35 +942,83 @@ def _require_preflight_manifest_identity(
     preflight: FactorFactorySnapshotPreflight,
     manifest: FactorFactorySnapshotManifest,
 ) -> None:
-    observed = {
-        "schema_version": "quant_lab_factor_factory_snapshot_identity.v2",
-        "quant_lab_commit": manifest.quant_lab_commit,
-        "factor_plan_digest": manifest.factor_plan_digest,
-        "source_input_digest": manifest.source_input_digest,
-        "cost_input_digest": manifest.cost_input_digest,
-        "feature_set": manifest.feature_set,
-        "feature_version": manifest.feature_version,
-        "factor_version": manifest.factor_version,
-        "timeframe": manifest.timeframe,
-        "horizon_bars": list(manifest.horizon_bars),
-        "decision_delay_bars": manifest.decision_delay_bars,
-        "max_factors": manifest.max_factors,
-        "min_samples": manifest.min_samples,
-        "top_quantile": manifest.top_quantile,
-        "cost_quantile": manifest.cost_quantile,
-        "result_mode": manifest.result_mode,
-        "history_mode": manifest.history_mode,
-    }
-    if (
-        manifest.schema_version != FACTOR_FACTORY_SNAPSHOT_SCHEMA
-        or manifest.snapshot_id != preflight.snapshot_id
-        or observed != preflight.identity_payload
-        or [_identity_payload(item) for item in manifest.source_files]
-        != [_identity_payload(item) for item in preflight.source_files]
-        or manifest.cost_snapshot != preflight.cost_snapshot
-        or manifest.estimated_uncompressed_bytes != preflight.estimated_uncompressed_bytes
-    ):
-        raise RuntimeError("snapshot_rehydrate_identity_mismatch")
+    source_files_match = [_identity_payload(item) for item in manifest.source_files] == [
+        _identity_payload(item) for item in preflight.source_files
+    ]
+    if manifest.schema_version == FACTOR_FACTORY_SNAPSHOT_SCHEMA:
+        observed = {
+            "schema_version": "quant_lab_factor_factory_snapshot_identity.v3",
+            "quant_lab_commit": manifest.quant_lab_commit,
+            "factor_plan_digest": manifest.factor_plan_digest,
+            "feature_input_digest": manifest.feature_input_digest,
+            "market_input_digest": manifest.market_input_digest,
+            "source_input_digest": manifest.source_input_digest,
+            "cost_input_digest": manifest.cost_input_digest,
+            "combined_input_digest": manifest.combined_input_digest,
+            "feature_set": manifest.feature_set,
+            "feature_version": manifest.feature_version,
+            "factor_version": manifest.factor_version,
+            "timeframe": manifest.timeframe,
+            "horizon_bars": list(manifest.horizon_bars),
+            "decision_delay_bars": manifest.decision_delay_bars,
+            "max_factors": manifest.max_factors,
+            "min_samples": manifest.min_samples,
+            "top_quantile": manifest.top_quantile,
+            "cost_quantile": manifest.cost_quantile,
+            "result_mode": manifest.result_mode,
+            "history_mode": manifest.history_mode,
+        }
+        if (
+            manifest.snapshot_id != preflight.snapshot_id
+            or observed != preflight.identity_payload
+            or not source_files_match
+        ):
+            raise RuntimeError("snapshot_rehydrate_identity_mismatch")
+        return
+    if manifest.schema_version == FACTOR_FACTORY_SNAPSHOT_SCHEMA_V2:
+        legacy_source = _legacy_projected_source_digest(
+            preflight.source_files,
+            feature_set=preflight.feature_set,
+            feature_version=preflight.feature_version,
+            timeframe=preflight.timeframe,
+            feature_min_ts=preflight.feature_min_ts,
+            feature_max_ts=preflight.feature_max_ts,
+            market_before=preflight.market_before,
+        )
+        legacy_cost = _legacy_projected_cost_digest(
+            preflight.source_files,
+            cost_quantile=preflight.cost_quantile,
+            cost_snapshot=manifest.cost_snapshot,
+        )
+        identity = {
+            "schema_version": "quant_lab_factor_factory_snapshot_identity.v2",
+            "quant_lab_commit": preflight.quant_lab_commit,
+            "factor_plan_digest": preflight.factor_plan.plan_digest,
+            "source_input_digest": legacy_source,
+            "cost_input_digest": legacy_cost,
+            "feature_set": preflight.feature_set,
+            "feature_version": preflight.feature_version,
+            "factor_version": preflight.factor_version,
+            "timeframe": preflight.timeframe,
+            "horizon_bars": list(preflight.horizon_bars),
+            "decision_delay_bars": preflight.decision_delay_bars,
+            "max_factors": preflight.max_factors,
+            "min_samples": preflight.min_samples,
+            "top_quantile": preflight.top_quantile,
+            "cost_quantile": preflight.cost_quantile,
+            "result_mode": "PARITY_FULL",
+            "history_mode": "bootstrap_full",
+        }
+        legacy_snapshot_id = f"factor-factory-{model_content_sha256(identity)[:24]}"
+        if (
+            manifest.snapshot_id != legacy_snapshot_id
+            or manifest.source_input_digest != legacy_source
+            or manifest.cost_input_digest != legacy_cost
+            or not source_files_match
+        ):
+            raise RuntimeError("snapshot_rehydrate_identity_mismatch")
+        return
+    raise RuntimeError("snapshot_rehydrate_identity_mismatch")
 
 
 def _append_snapshot_audit(queue: Path, payload: dict[str, Any]) -> None:
@@ -742,6 +1052,12 @@ def verify_factor_factory_snapshot_manifest(
                 manifest.signature,
                 public_key,
             )
+        elif manifest.schema_version == FACTOR_FACTORY_SNAPSHOT_SCHEMA_V2:
+            verify_payload(
+                _legacy_v2_factor_factory_manifest_payload(manifest),
+                manifest.signature,
+                public_key,
+            )
         else:
             verify_payload(manifest, manifest.signature, public_key)
     expected_datasets = {_dataset_name(path) for path in FACTOR_FACTORY_INPUT_DATASETS}
@@ -757,6 +1073,14 @@ def verify_factor_factory_snapshot_manifest(
         if not require_payload and (root / "FILES_RELEASED.json").is_file():
             return
         raise FileNotFoundError(f"factor factory snapshot payload missing: {manifest.snapshot_id}")
+    expected_files = {item.relative_path for item in manifest.files}
+    actual_files = {
+        str(path.relative_to(files_root)).replace("\\", "/")
+        for path in files_root.rglob("*")
+        if path.is_file()
+    }
+    if actual_files != expected_files:
+        raise ValueError("factor_factory_snapshot_file_set_mismatch")
     for reference in manifest.files:
         unresolved = files_root / reference.relative_path
         if _path_has_symlink(root, unresolved):
@@ -790,13 +1114,18 @@ def _factor_factory_manifest_content_sha256(
             _legacy_factor_factory_manifest_payload(manifest),
             blank_fields=("manifest_sha256",),
         )
+    if manifest.schema_version == FACTOR_FACTORY_SNAPSHOT_SCHEMA_V2:
+        return model_content_sha256(
+            _legacy_v2_factor_factory_manifest_payload(manifest),
+            blank_fields=("manifest_sha256",),
+        )
     return model_content_sha256(manifest, blank_fields=("manifest_sha256",))
 
 
 def _legacy_factor_factory_manifest_payload(
     manifest: FactorFactorySnapshotManifest,
 ) -> dict[str, Any]:
-    payload = manifest.model_dump(mode="json")
+    payload = _legacy_v2_factor_factory_manifest_payload(manifest)
     for name in (
         "source_files",
         "feature_estimated_uncompressed_bytes",
@@ -808,6 +1137,28 @@ def _legacy_factor_factory_manifest_payload(
     for item in payload.get("files", []):
         item.pop("schema_fingerprint", None)
         item.pop("uncompressed_bytes", None)
+    return payload
+
+
+def _legacy_v2_factor_factory_manifest_payload(
+    manifest: FactorFactorySnapshotManifest,
+) -> dict[str, Any]:
+    payload = manifest.model_dump(mode="json")
+    for name in (
+        "feature_input_digest",
+        "market_input_digest",
+        "combined_input_digest",
+        "input_fingerprint",
+        "compressed_input_bytes",
+        "estimated_uncompressed_input_bytes",
+        "feature_compressed_bytes",
+        "feature_uncompressed_bytes",
+        "market_compressed_bytes",
+        "market_uncompressed_bytes",
+        "cost_compressed_bytes",
+        "cost_uncompressed_bytes",
+    ):
+        payload.pop(name, None)
     return payload
 
 
@@ -873,6 +1224,7 @@ def _load_factor_factory_file_index(root: Path) -> pl.DataFrame:
         "sha256",
         "schema_fingerprint",
         "uncompressed_bytes",
+        "scope_metadata_json",
     }
     if index.is_empty():
         return pl.DataFrame(schema={name: pl.Utf8 for name in sorted(required)})
@@ -885,6 +1237,8 @@ def _indexed_source_identities(
     root: Path,
     index: pl.DataFrame,
     dataset: Path,
+    *,
+    selected_paths: set[str] | None = None,
 ) -> tuple[FactorFactorySourceFileIdentity, ...]:
     name = _dataset_name(dataset)
     if index.is_empty():
@@ -896,6 +1250,8 @@ def _indexed_source_identities(
     resolved_dataset_root = dataset_root.resolve(strict=True)
     for row in index.filter(pl.col("dataset") == name).sort("path").to_dicts():
         relative = str(row.get("path") or "")
+        if selected_paths is not None and relative not in selected_paths:
+            continue
         unresolved = root / relative
         if not relative or _path_has_symlink(root, unresolved):
             raise ValueError("lake_file_index_path_escape")
@@ -925,6 +1281,99 @@ def _indexed_source_identities(
     return tuple(identities)
 
 
+def _scope_metadata(row: dict[str, Any]) -> list[dict[str, Any]]:
+    try:
+        payload = json.loads(str(row.get("scope_metadata_json") or ""))
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise RuntimeError("lake_file_index_scope_metadata_invalid") from exc
+    scopes = payload.get("scopes") if isinstance(payload, dict) else None
+    if not isinstance(scopes, list) or any(not isinstance(item, dict) for item in scopes):
+        raise RuntimeError("lake_file_index_scope_metadata_invalid")
+    return scopes
+
+
+def _feature_scope_from_index(
+    index: pl.DataFrame,
+    *,
+    feature_set: str,
+    feature_version: str,
+    timeframe: str,
+) -> tuple[set[str], list[str], datetime | None, datetime | None, int]:
+    if index.is_empty():
+        return set(), [], None, None, 0
+    dataset = _dataset_name(FEATURE_VALUE_DATASET)
+    paths: set[str] = set()
+    names: set[str] = set()
+    minima: list[datetime] = []
+    maxima: list[datetime] = []
+    row_count = 0
+    for row in index.filter(pl.col("dataset") == dataset).sort("path").to_dicts():
+        for scope in _scope_metadata(row):
+            if (
+                str(scope.get("feature_set") or "") != feature_set
+                or str(scope.get("feature_version") or "") != feature_version
+                or str(scope.get("timeframe") or "") != timeframe
+            ):
+                continue
+            count = int(scope.get("row_count") or 0)
+            if count <= 0:
+                continue
+            paths.add(str(row["path"]))
+            row_count += count
+            names.update(str(value) for value in scope.get("feature_names") or [])
+            lower = _as_utc(scope.get("min_ts"))
+            upper = _as_utc(scope.get("max_ts"))
+            if lower is not None:
+                minima.append(lower)
+            if upper is not None:
+                maxima.append(upper)
+    if row_count and (not minima or not maxima):
+        raise RuntimeError("lake_file_index_feature_scope_bounds_missing")
+    return (
+        paths,
+        sorted(names),
+        min(minima) if minima else None,
+        max(maxima) if maxima else None,
+        row_count,
+    )
+
+
+def _market_scope_from_index(
+    index: pl.DataFrame,
+    *,
+    timeframe: str,
+    since: datetime,
+    before: datetime,
+) -> tuple[set[str], datetime | None, datetime | None, int]:
+    if index.is_empty():
+        return set(), None, None, 0
+    dataset = _dataset_name(MARKET_BAR_DATASET)
+    paths: set[str] = set()
+    minima: list[datetime] = []
+    maxima: list[datetime] = []
+    row_count = 0
+    for row in index.filter(pl.col("dataset") == dataset).sort("path").to_dicts():
+        for scope in _scope_metadata(row):
+            if str(scope.get("timeframe") or "") != timeframe:
+                continue
+            lower = _as_utc(scope.get("min_ts"))
+            upper = _as_utc(scope.get("max_ts"))
+            if lower is None or upper is None:
+                raise RuntimeError("lake_file_index_market_scope_bounds_missing")
+            if upper < since or lower >= before:
+                continue
+            paths.add(str(row["path"]))
+            row_count += int(scope.get("row_count") or 0)
+            minima.append(max(lower, since))
+            maxima.append(min(upper, before))
+    return (
+        paths,
+        min(minima) if minima else None,
+        max(maxima) if maxima else None,
+        row_count,
+    )
+
+
 def _identity_payload(item: FactorFactorySourceFileIdentity) -> dict[str, Any]:
     return item.model_dump(
         mode="json",
@@ -932,7 +1381,82 @@ def _identity_payload(item: FactorFactorySourceFileIdentity) -> dict[str, Any]:
     )
 
 
-def _projected_source_digest(
+def _projected_feature_digest(
+    source_files: tuple[FactorFactorySourceFileIdentity, ...],
+    *,
+    quant_lab_commit: str,
+    feature_set: str,
+    feature_version: str,
+    timeframe: str,
+    feature_min_ts: datetime | None,
+    feature_max_ts: datetime | None,
+) -> str:
+    return model_content_sha256(
+        {
+            "schema_version": "quant_lab_factor_factory_projected_feature_identity.v3",
+            "projection_version": FACTOR_FACTORY_PROJECTION_VERSION,
+            "quant_lab_commit": quant_lab_commit,
+            "filters": {
+                "feature_set": feature_set,
+                "feature_version": feature_version,
+                "timeframe": timeframe,
+                "feature_is_valid": True,
+                "feature_min_ts": feature_min_ts,
+                "feature_max_ts": feature_max_ts,
+            },
+            "projected_columns": list(FEATURE_VALUE_COLUMNS),
+            "source_files": [_identity_payload(item) for item in source_files],
+        }
+    )
+
+
+def _projected_market_digest(
+    source_files: tuple[FactorFactorySourceFileIdentity, ...],
+    *,
+    quant_lab_commit: str,
+    timeframe: str,
+    market_since: datetime | None,
+    market_before: datetime | None,
+) -> str:
+    return model_content_sha256(
+        {
+            "schema_version": "quant_lab_factor_factory_projected_market_identity.v3",
+            "projection_version": FACTOR_FACTORY_PROJECTION_VERSION,
+            "quant_lab_commit": quant_lab_commit,
+            "filters": {
+                "timeframe": timeframe,
+                "market_is_closed": True,
+                "market_since": market_since,
+                "market_before": market_before,
+            },
+            "projected_columns": list(MARKET_BAR_COLUMNS),
+            "source_files": [_identity_payload(item) for item in source_files],
+        }
+    )
+
+
+def _projected_cost_digest(
+    source_files: tuple[FactorFactorySourceFileIdentity, ...],
+    *,
+    quant_lab_commit: str,
+    cost_quantile: str,
+) -> str:
+    return model_content_sha256(
+        {
+            "schema_version": "quant_lab_factor_factory_projected_cost_identity.v3",
+            "projection_version": FACTOR_FACTORY_PROJECTION_VERSION,
+            "quant_lab_commit": quant_lab_commit,
+            "filter": {
+                "cost_quantile": cost_quantile,
+                "selection": "latest_per_symbol",
+            },
+            "projected_columns": list(COST_COLUMNS),
+            "source_files": [_identity_payload(item) for item in source_files],
+        }
+    )
+
+
+def _legacy_projected_source_digest(
     source_files: tuple[FactorFactorySourceFileIdentity, ...],
     *,
     feature_set: str,
@@ -968,7 +1492,7 @@ def _projected_source_digest(
     )
 
 
-def _projected_cost_digest(
+def _legacy_projected_cost_digest(
     source_files: tuple[FactorFactorySourceFileIdentity, ...],
     *,
     cost_quantile: str,

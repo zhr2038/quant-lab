@@ -162,7 +162,7 @@ def _release_snapshot_payload_locked(
     _make_tree_read_only(snapshot_root)
     _append_gc_audit(
         queue,
-        {"action": "payload_released", **marker, "state": "released"},
+        {"action": "snapshot_payload_released", **marker, "state": "released"},
         observed_at,
     )
     return True

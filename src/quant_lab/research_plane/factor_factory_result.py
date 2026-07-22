@@ -17,8 +17,10 @@ from quant_lab.factors.factory import (
 from quant_lab.research_plane.contracts import (
     DEFAULT_FACTOR_FACTORY_MAX_UNCOMPRESSED_BYTES,
     DEFAULT_FACTOR_FACTORY_MAX_VALUE_PARTITION_BYTES,
+    DEFAULT_FACTOR_FACTORY_MAX_VALUE_PARTITION_UNCOMPRESSED_BYTES,
     FACTOR_FACTORY_RECEIPT_SCHEMA,
     FACTOR_FACTORY_RESULT_SCHEMA,
+    FACTOR_FACTORY_RESULT_SCHEMA_V1,
     FactorFactoryPartitionReference,
     FactorFactoryResultManifest,
     FactorFactorySnapshotManifest,
@@ -26,7 +28,7 @@ from quant_lab.research_plane.contracts import (
     FactorFactoryWorkerReceipt,
 )
 from quant_lab.research_plane.result import schema_fingerprint
-from quant_lab.research_plane.signatures import sha256_file, verify_payload
+from quant_lab.research_plane.signatures import model_content_sha256, sha256_file, verify_payload
 from quant_lab.research_worker.factor_factory import (
     FACTOR_FACTORY_ALLOWED_DECISIONS,
     FACTOR_FACTORY_ANTI_LEAKAGE_CHECKS,
@@ -70,11 +72,17 @@ def validate_factor_factory_result_bundle(
     expected_worker_key_id: str,
     max_result_bytes: int,
     max_value_partition_bytes: int = DEFAULT_FACTOR_FACTORY_MAX_VALUE_PARTITION_BYTES,
+    max_value_partition_uncompressed_bytes: int = (
+        DEFAULT_FACTOR_FACTORY_MAX_VALUE_PARTITION_UNCOMPRESSED_BYTES
+    ),
     max_file_count: int = 20_000,
     max_uncompressed_bytes: int = DEFAULT_FACTOR_FACTORY_MAX_UNCOMPRESSED_BYTES,
 ) -> ValidatedFactorFactoryResult:
     root = Path(bundle_root).resolve(strict=True)
-    if manifest.schema_version != FACTOR_FACTORY_RESULT_SCHEMA:
+    if manifest.schema_version not in {
+        FACTOR_FACTORY_RESULT_SCHEMA_V1,
+        FACTOR_FACTORY_RESULT_SCHEMA,
+    }:
         raise ValueError("factor_factory_result_schema_version_mismatch")
     if receipt.schema_version != FACTOR_FACTORY_RECEIPT_SCHEMA:
         raise ValueError("factor_factory_receipt_schema_version_mismatch")
@@ -82,19 +90,26 @@ def validate_factor_factory_result_bundle(
         raise ValueError("factor_factory_result_unknown_worker_key")
     if receipt.worker_key_id != expected_worker_key_id:
         raise ValueError("factor_factory_receipt_unknown_worker_key")
-    verify_payload(manifest, manifest.signature, worker_public_key)
+    if manifest.schema_version == FACTOR_FACTORY_RESULT_SCHEMA_V1:
+        verify_payload(
+            _legacy_v1_factor_factory_result_payload(manifest),
+            manifest.signature,
+            worker_public_key,
+        )
+    else:
+        verify_payload(manifest, manifest.signature, worker_public_key)
     verify_payload(receipt, receipt.signature, worker_public_key)
     _validate_binding(manifest, receipt, task, snapshot)
     manifest_path = _safe_bundle_path(root, "manifest.json")
     if receipt.result_manifest_sha256 != sha256_file(manifest_path):
         raise ValueError("factor_factory_receipt_manifest_sha256_mismatch")
-    if manifest.output_bytes > max_result_bytes:
-        raise ValueError("factor_factory_result_size_limit_exceeded")
     declared_file_count = (
         2 + len(manifest.outputs) + len(manifest.value_partitions) + len(manifest.reports)
     )
     if declared_file_count > max_file_count:
         raise ValueError("factor_factory_result_file_count_limit_exceeded")
+    if manifest.output_bytes > max_result_bytes:
+        raise ValueError("factor_factory_result_size_limit_exceeded")
     report_paths = {item.relative_path for item in manifest.reports}
     if report_paths != FACTOR_FACTORY_REQUIRED_REPORTS or len(manifest.reports) != len(
         FACTOR_FACTORY_REQUIRED_REPORTS
@@ -119,9 +134,25 @@ def validate_factor_factory_result_bundle(
         declared_paths.append(path)
     receipt_path = _safe_bundle_path(root, "receipt.json")
     _validate_declared_file_set(root, manifest)
-    uncompressed_bytes = sum(
-        _file_uncompressed_bytes(path) for path in (manifest_path, receipt_path, *declared_paths)
-    )
+    uncompressed_by_path = {
+        path: _file_uncompressed_bytes(path)
+        for path in (manifest_path, receipt_path, *declared_paths)
+    }
+    for partition in manifest.value_partitions:
+        path = _safe_bundle_path(root, partition.relative_path)
+        actual_uncompressed = uncompressed_by_path[path]
+        if (
+            partition.uncompressed_bytes is not None
+            and partition.uncompressed_bytes != actual_uncompressed
+        ):
+            raise ValueError("factor_factory_value_partition_uncompressed_size_mismatch")
+        if actual_uncompressed > max_value_partition_uncompressed_bytes:
+            raise ValueError("factor_factory_value_partition_uncompressed_size_limit_exceeded")
+        if partition.partition_identity is not None and partition.partition_identity != (
+            _partition_identity(partition)
+        ):
+            raise ValueError("factor_factory_value_partition_identity_mismatch")
+    uncompressed_bytes = sum(uncompressed_by_path.values())
     if uncompressed_bytes > max_uncompressed_bytes:
         raise ValueError("factor_factory_result_uncompressed_size_limit_exceeded")
 
@@ -189,6 +220,33 @@ def validate_factor_factory_result_bundle(
         output_paths=output_paths,
         value_partition_paths=tuple(value_paths),
         reports=reports,
+    )
+
+
+def _legacy_v1_factor_factory_result_payload(
+    manifest: FactorFactoryResultManifest,
+) -> dict[str, object]:
+    payload = manifest.model_dump(mode="json")
+    for partition in payload.get("value_partitions", []):
+        partition.pop("uncompressed_bytes", None)
+        partition.pop("partition_identity", None)
+    return payload
+
+
+def _partition_identity(partition: FactorFactoryPartitionReference) -> str:
+    return model_content_sha256(
+        {
+            "schema_version": "quant_lab_factor_factory_partition_identity.v1",
+            "factor_version": partition.factor_version,
+            "timeframe": partition.timeframe,
+            "partition_date": partition.partition_date.isoformat(),
+            "part_number": partition.part_number,
+            "sha256": partition.sha256,
+            "row_count": partition.row_count,
+            "schema_fingerprint": partition.schema_fingerprint,
+            "min_ts": partition.min_ts,
+            "max_ts": partition.max_ts,
+        }
     )
 
 

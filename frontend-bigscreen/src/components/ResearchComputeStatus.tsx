@@ -38,7 +38,7 @@ function durationValue(value: unknown): string {
 
 function stateTone(state: string): string {
   const normalized = state.toLowerCase();
-  if (normalized === "completed") return "ok";
+  if (["completed", "up_to_date", "already_current", "already_current_no_update"].includes(normalized)) return "ok";
   if (["rejected", "failed", "expired"].includes(normalized)) return "critical";
   if (["idle", "not_observable"].includes(normalized)) return "info";
   return "warning";
@@ -52,7 +52,17 @@ function TaskStatus({ label, status }: { label: string; status: Record<string, u
   const cacheHitBytes = Number(task.cache_hit_bytes ?? 0);
   const cacheRate = inputBytes > 0 ? `${((cacheHitBytes / inputBytes) * 100).toFixed(1)}%` : "—";
   const error = stringValue(task.last_error ?? status.last_error, "");
-  const isFactorFactory = stringValue(task.task_type) === "factor_factory";
+  const isFactorFactory = stringValue(task.task_type) === "factor_factory"
+    || status.request_outcome !== undefined;
+  const request = objectValue(status.request);
+  const inputFingerprint = objectValue(status.input_fingerprint ?? request.input_fingerprint);
+  const requestOutcome = stringValue(status.request_outcome ?? request.request_outcome, "—");
+  const fingerprintDigest = stringValue(inputFingerprint.combined_input_digest, "");
+  const fingerprintMatches = Boolean(status.fingerprint_matches_generation);
+  const payloadState = stringValue(status.snapshot_payload_state, "—");
+  const snapshotMaterialized = Boolean(status.snapshot_materialized);
+  const snapshotRehydrated = Boolean(status.snapshot_rehydrated);
+  const noUpdateReason = stringValue(status.no_update_reason, "");
 
   return (
     <div className="research-compute-task">
@@ -78,6 +88,11 @@ function TaskStatus({ label, status }: { label: string; status: Record<string, u
           <div><span>Horizon / Factors</span><b>{Array.isArray(task.horizon_bars) ? task.horizon_bars.join(",") : "—"} · {stringValue(task.factor_count, "0")}</b></div>
           <div><span>Value / Evidence / Corr</span><b>{stringValue(task.value_rows, "0")} / {stringValue(task.evidence_rows, "0")} / {stringValue(task.correlation_rows, "0")}</b></div>
           <div><span>Generation age</span><b>{durationValue(task.generation_age_seconds)}</b></div>
+          <div><span>Request / Fingerprint</span><b>{requestOutcome} · {fingerprintMatches ? "match" : "not matched"}</b></div>
+          <div><span>Input fingerprint</span><b title={fingerprintDigest}>{fingerprintDigest ? fingerprintDigest.slice(0, 16) : "—"}</b></div>
+          <div><span>Snapshot payload</span><b>{payloadState} · materialized={String(snapshotMaterialized)} · rehydrated={String(snapshotRehydrated)}</b></div>
+          <div><span>压缩 / 估算未压缩输入</span><b>{bytes(status.compressed_input_bytes)} / {bytes(status.estimated_uncompressed_input_bytes)}</b></div>
+          <div><span>Already current</span><b>{timeValue(status.already_current_at)}{noUpdateReason ? ` · ${noUpdateReason}` : ""}</b></div>
         </> : null}
       </div>
       {error ? <div className="research-compute-error">{error}</div> : null}

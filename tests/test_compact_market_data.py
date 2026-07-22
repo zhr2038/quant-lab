@@ -456,6 +456,27 @@ def test_lake_file_index_reuses_unchanged_rows_and_scans_only_new_files(
     assert reused_flags.count(False) == 1
 
 
+def test_lake_file_index_rejects_dataset_path_escape_and_symlink(tmp_path: Path) -> None:
+    lake = tmp_path / "lake"
+    lake.mkdir()
+    with pytest.raises(ValueError, match="lake_file_index_dataset_path_escape"):
+        build_lake_file_index(lake, ["../outside"])
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    pl.DataFrame({"ts": [datetime(2026, 5, 31, tzinfo=UTC)]}).write_parquet(
+        outside / "part.parquet"
+    )
+    link = lake / "silver" / "linked"
+    link.parent.mkdir(parents=True)
+    try:
+        link.symlink_to(outside, target_is_directory=True)
+    except OSError:
+        pytest.skip("directory symlink creation is unavailable")
+    with pytest.raises(ValueError, match="lake_file_index_dataset_symlink"):
+        build_lake_file_index(lake, ["silver/linked"])
+
+
 def test_lake_file_index_fails_closed_when_source_changes_during_index(
     tmp_path,
     monkeypatch,

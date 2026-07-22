@@ -23,6 +23,19 @@ MARKET_BAR_DATASET = Path("silver") / "market_bar"
 ORDERBOOK_SNAPSHOT_DATASET = Path("silver") / "orderbook_snapshot"
 SPOT_UNIVERSE_CANDIDATES_DATASET = Path("bronze") / "okx_public_rest" / "spot_universe_candidates"
 STRATEGY_EVIDENCE_DATASET = Path("gold") / "strategy_evidence"
+V5_CANDIDATE_EVIDENCE_GENERATION_SIDECAR = (
+    "_v5_candidate_evidence_generation.json"
+)
+STRATEGY_EVIDENCE_UPSERT_KEYS = (
+    "source",
+    "strategy",
+    "evidence_version",
+    "as_of_date",
+    "strategy_candidate",
+    "symbol",
+    "regime_state",
+    "horizon_hours",
+)
 COST_BUCKET_DAILY_DATASET = Path("gold") / "cost_bucket_daily"
 PULLBACK_BY_SYMBOL_DATASET = Path("gold") / "v5_entry_quality_history_pullback_by_symbol"
 LATE_ENTRY_BY_SYMBOL_DATASET = Path("gold") / "v5_late_entry_chase_threshold_by_symbol"
@@ -498,15 +511,8 @@ def build_and_publish_expanded_crypto_universe_shadow(
         upsert_parquet_dataset(
             expanded_evidence,
             root / STRATEGY_EVIDENCE_DATASET,
-            key_columns=[
-                "as_of_date",
-                "strategy_candidate",
-                "symbol",
-                "regime_state",
-                "horizon_hours",
-                "source_type",
-                "universe_type",
-            ],
+            key_columns=STRATEGY_EVIDENCE_UPSERT_KEYS,
+            preserve_files=(V5_CANDIDATE_EVIDENCE_GENERATION_SIDECAR,),
         )
     write_parquet_dataset(outcomes, root / EXPANDED_CANDIDATE_OUTCOMES_DATASET)
     write_parquet_dataset(shadow, root / EXPANDED_UNIVERSE_SHADOW_DATASET)

@@ -370,6 +370,39 @@ def test_streaming_upsert_applies_changed_payload_without_full_read(
     ]
 
 
+@pytest.mark.parametrize("streaming_upsert", [False, True])
+def test_upsert_preserves_selected_dataset_sidecar(
+    tmp_path,
+    streaming_upsert,
+):
+    dataset = tmp_path / "lake" / "gold" / "shared_evidence"
+    write_parquet_dataset(
+        pl.DataFrame([{"id": 1, "value": "managed"}]),
+        dataset,
+    )
+    sidecar = dataset / "_managed_generation.json"
+    sidecar_bytes = b'{"generation_id":"managed-v1"}\n'
+    sidecar.write_bytes(sidecar_bytes)
+    stale_metadata = dataset / "_snapshot_meta.json"
+    stale_metadata.write_text('{"row_count":1}\n', encoding="utf-8")
+
+    rows = upsert_parquet_dataset(
+        pl.DataFrame([{"id": 2, "value": "outside"}]),
+        dataset,
+        key_columns=["id"],
+        streaming_upsert=streaming_upsert,
+        preserve_files=(sidecar.name,),
+    )
+
+    assert rows == 2
+    assert sidecar.read_bytes() == sidecar_bytes
+    assert not stale_metadata.exists()
+    assert read_parquet_dataset(dataset).sort("id").to_dicts() == [
+        {"id": 1, "value": "managed"},
+        {"id": 2, "value": "outside"},
+    ]
+
+
 def test_concurrent_writes_do_not_create_invalid_parquet(tmp_path):
     dataset = tmp_path / "lake" / "silver" / "concurrent_replace"
 

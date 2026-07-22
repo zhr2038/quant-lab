@@ -4,9 +4,14 @@ from pathlib import Path
 
 import polars as pl
 
-from quant_lab.data.lake import read_parquet_dataset, write_parquet_dataset
+from quant_lab.data.lake import (
+    read_parquet_dataset,
+    upsert_parquet_dataset,
+    write_parquet_dataset,
+)
 from quant_lab.research.alpha_discovery import build_and_publish_alpha_discovery_board
 from quant_lab.research.expanded_universe import (
+    STRATEGY_EVIDENCE_UPSERT_KEYS,
     build_and_publish_expanded_crypto_universe_shadow,
     build_expanded_universe_candidate_maturity,
     build_expanded_universe_watchlist,
@@ -157,6 +162,13 @@ def test_expanded_universe_automation_builds_events_labels_and_promotion(tmp_pat
         _orderbook_frame({symbol: 5.0 for symbol in ["BTC-USDT", *seed_symbols]}),
         lake_root / "silver" / "orderbook_snapshot",
     )
+    strategy_evidence_root = lake_root / "gold" / "strategy_evidence"
+    strategy_evidence_root.mkdir(parents=True)
+    candidate_generation_sidecar = (
+        strategy_evidence_root / "_v5_candidate_evidence_generation.json"
+    )
+    sidecar_bytes = b'{"generation_id":"v5-candidate-generation"}\n'
+    candidate_generation_sidecar.write_bytes(sidecar_bytes)
 
     result = build_and_publish_expanded_crypto_universe_shadow(
         lake_root,
@@ -182,6 +194,7 @@ def test_expanded_universe_automation_builds_events_labels_and_promotion(tmp_pat
     evidence = read_parquet_dataset(lake_root / "gold" / "strategy_evidence")
     expanded = evidence.filter(pl.col("universe_type") == "expanded_paper")
     assert not expanded.is_empty()
+    assert candidate_generation_sidecar.read_bytes() == sidecar_bytes
 
     queue = read_parquet_dataset(lake_root / "gold" / "expanded_universe_promotion_queue")
     assert not queue.is_empty()
@@ -199,6 +212,49 @@ def test_expanded_universe_automation_builds_events_labels_and_promotion(tmp_pat
     build_and_publish_alpha_discovery_board(lake_root, as_of_date="2026-05-24")
     board = read_parquet_dataset(lake_root / "gold" / "alpha_discovery_board")
     assert "expanded_paper" in set(board["universe_type"].drop_nulls().to_list())
+
+
+def test_expanded_evidence_upsert_keeps_candidate_managed_scope(tmp_path):
+    dataset = tmp_path / "lake" / "gold" / "strategy_evidence"
+    shared_identity = {
+        "strategy": "v5",
+        "as_of_date": "2026-05-24",
+        "strategy_candidate": "Alpha6Factor",
+        "symbol": "BTC-USDT",
+        "regime_state": "expanded_universe",
+        "horizon_hours": 4,
+    }
+    managed = {
+        **shared_identity,
+        "source": "research.strategy_evidence.v0.1",
+        "evidence_version": "strategy-evidence-v0.1",
+        "decision": "PAPER_READY",
+    }
+    expanded = {
+        **shared_identity,
+        "source": "expanded_crypto_universe.v1",
+        "evidence_version": "expanded-crypto-universe-v1",
+        "decision": "KEEP_SHADOW",
+    }
+    write_parquet_dataset(pl.DataFrame([managed]), dataset)
+    sidecar = dataset / "_v5_candidate_evidence_generation.json"
+    sidecar_bytes = b'{"generation_id":"v5-candidate-generation"}\n'
+    sidecar.write_bytes(sidecar_bytes)
+
+    rows = upsert_parquet_dataset(
+        pl.DataFrame([expanded]),
+        dataset,
+        key_columns=STRATEGY_EVIDENCE_UPSERT_KEYS,
+        preserve_files=(sidecar.name,),
+    )
+
+    assert rows == 2
+    assert sidecar.read_bytes() == sidecar_bytes
+    evidence = read_parquet_dataset(dataset)
+    assert set(evidence["source"].to_list()) == {
+        "research.strategy_evidence.v0.1",
+        "expanded_crypto_universe.v1",
+    }
 
 
 def test_expanded_universe_maturity_rules_and_watchlist():

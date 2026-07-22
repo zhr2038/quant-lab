@@ -279,10 +279,9 @@ def test_candidate_research_refresh_is_separate_from_alpha_evidence():
     assert "OnUnitActiveSec=6h" not in alpha_factory_timer
     assert "OnActiveSec=45min" not in alpha_factory_timer
 
-    assert "build-v5-candidate-labels" in refresh_unit
-    assert "--mode incremental --lookback-days 8" in refresh_unit
-    assert "build-strategy-evidence" in refresh_unit
-    assert "--skip-historical-outcomes" in refresh_unit
+    assert "build-v5-candidate-labels" not in refresh_unit
+    assert "build-strategy-evidence" not in refresh_unit
+    assert "QUANT_LAB_LOCAL_V5_CANDIDATE_EVIDENCE_ENABLED=1" not in refresh_unit
     assert "build-factor-factory" not in refresh_unit
     assert "build-alpha-factory" not in refresh_unit
     assert "build-alpha-discovery-board" in refresh_unit
@@ -418,7 +417,9 @@ def test_v5_candidate_evidence_uses_bounded_hourly_nas_request_plane():
     assert "request-v5-candidate-evidence" in request_service
     assert "build-v5-candidate-labels" not in request_service
     assert "build-strategy-evidence" not in request_service
-    assert "QUANT_LAB_LOCAL_V5_CANDIDATE_EVIDENCE_ENABLED=1" in refresh_service
+    assert "QUANT_LAB_LOCAL_V5_CANDIDATE_EVIDENCE_ENABLED=1" not in refresh_service
+    assert "build-v5-candidate-labels" not in refresh_service
+    assert "build-strategy-evidence" not in refresh_service
     assert "QUANT_LAB_NAS_V5_CANDIDATE_EVIDENCE_ENABLED" in request_service
     assert "POLARS_MAX_THREADS=1" in request_service
     assert "CPUQuota=30%" in request_service

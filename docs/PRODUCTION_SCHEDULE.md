@@ -46,15 +46,16 @@ split:
   gold tables without touching candidate labels, strategy evidence, or the
   alpha discovery board. It should skip rather than overlap when a heavy
   research refresh is already running.
-- Hourly `quant-lab-v5-research-refresh.service` runs incremental
-  candidate research only:
-  `qlab build-v5-candidate-labels --mode incremental --lookback-days 8`,
-  `qlab build-strategy-evidence --mode incremental --lookback-days 8 --skip-historical-outcomes`,
-  and
-  `qlab build-alpha-discovery-board --skip-legacy-outcome-counts`.
-  It consumes recently ingested raw inputs and previously computed
-  `gold/strategy_evidence_sample` state. It must not rescan all historical
-  shadow/blocked outcome files on every run.
+- Hourly `quant-lab-v5-candidate-evidence-request.timer` fingerprints the
+  bounded production inputs and enqueues a signed NAS Candidate Evidence task
+  only when that identity changed. The NAS worker computes labels and samples;
+  the cloud importer validates the signed result and atomically publishes the
+  six Candidate Evidence Gold tables.
+- Hourly `quant-lab-v5-research-refresh.service` starts at
+  `qlab build-alpha-discovery-board --skip-legacy-outcome-counts` and refreshes
+  the downstream paper, judgment, portfolio, diagnostics, entry-quality, and
+  Web snapshots. It no longer runs either legacy Candidate Evidence writer or
+  enables the local fallback gate.
 - Lower-frequency `quant-lab-alpha-factory.service` runs
   `qlab build-alpha-factory --lookback-days 30 --max-candidates 200` on its own
   timer so hourly research refresh can finish trade-level judgment and Web

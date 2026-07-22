@@ -803,7 +803,7 @@ def test_v5_candidate_evidence_worker_is_symbol_staged_and_decision_free(
     }
     shared_sample = pl.read_parquet(lake / "gold" / "strategy_evidence_sample" / "data.parquet")
     shared_summary = pl.read_parquet(lake / "gold" / "strategy_evidence" / "data.parquet")
-    assert shared_sample.filter(pl.col("source") == "research.alpha_factory.test").height == 1
+    assert shared_sample.filter(pl.col("source") == "research.alpha_factory.test").height == 2
     assert shared_summary.filter(pl.col("source") == "research.alpha_factory.test").height == 1
     assert shared_summary.filter(
         pl.col("source") == "research.strategy_evidence.v0.1"
@@ -1362,7 +1362,7 @@ def _seed_other_strategy_evidence_source(lake: Path, samples: pl.DataFrame) -> N
     ).select(list(SAMPLE_SCHEMA)).cast(SAMPLE_SCHEMA, strict=True)
     sample_path = lake / "gold" / "strategy_evidence_sample" / "data.parquet"
     sample_path.parent.mkdir(parents=True, exist_ok=True)
-    sample.write_parquet(sample_path)
+    pl.concat([sample, sample]).write_parquet(sample_path)
 
     row = {column: None for column in SUMMARY_SCHEMA}
     row.update(

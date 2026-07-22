@@ -243,6 +243,7 @@ def publish_v5_candidate_evidence_generation(
                 staged,
                 dataset_name=dataset_name,
                 key_columns=V5_CANDIDATE_EVIDENCE_PRIMARY_KEYS[dataset_name],
+                managed_scope=V5_CANDIDATE_EVIDENCE_MANAGED_SCOPES[dataset_name],
             )
             items.append(AtomicPublishItem(target=target, staged=staged.relative_to(root)))
 
@@ -414,6 +415,7 @@ def verify_v5_candidate_evidence_generation_fast(
             dataset_root,
             dataset_name=dataset_name,
             key_columns=V5_CANDIDATE_EVIDENCE_PRIMARY_KEYS[dataset_name],
+            managed_scope=V5_CANDIDATE_EVIDENCE_MANAGED_SCOPES[dataset_name],
         )
         if _managed_row_count(dataset_root, dataset_name) != row_counts[dataset_name]:
             raise RuntimeError(
@@ -566,6 +568,7 @@ def _validate_staged_dataset(
     *,
     dataset_name: str,
     key_columns: tuple[str, ...],
+    managed_scope: dict[str, object],
 ) -> None:
     files = _parquet_files(dataset_root)
     if not files:
@@ -585,9 +588,13 @@ def _validate_staged_dataset(
                 f"v5_candidate_evidence_publish_primary_key_missing:{dataset_name}:"
                 + ",".join(missing)
             )
+        managed_source = (
+            f"SELECT * FROM ({source}) WHERE {_scope_sql(managed_scope)}"
+        )
         key_sql = ",".join(_identifier(column) for column in key_columns)
         duplicate = connection.execute(
-            f"SELECT 1 FROM ({source}) GROUP BY {key_sql} HAVING COUNT(*) > 1 LIMIT 1"
+            f"SELECT 1 FROM ({managed_source}) "
+            f"GROUP BY {key_sql} HAVING COUNT(*) > 1 LIMIT 1"
         ).fetchone()
         if duplicate is not None:
             raise ValueError(f"v5_candidate_evidence_publish_duplicate_key:{dataset_name}")
@@ -595,7 +602,7 @@ def _validate_staged_dataset(
             f"{_identifier(column)} IS NULL" for column in key_columns
         )
         if connection.execute(
-            f"SELECT 1 FROM ({source}) WHERE {null_predicate} LIMIT 1"
+            f"SELECT 1 FROM ({managed_source}) WHERE {null_predicate} LIMIT 1"
         ).fetchone():
             raise ValueError(f"v5_candidate_evidence_publish_null_key:{dataset_name}")
     finally:

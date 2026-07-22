@@ -344,6 +344,12 @@ def compute_v5_candidate_evidence_samples(
     return normalize_strategy_evidence_samples(_formal_samples_frame(rows)), warnings
 
 
+def canonical_v5_strategy_candidate(value: Any) -> str:
+    """Return the canonical Candidate Evidence identity used by V5 samples."""
+
+    return _canonical_candidate_name(value, dataset_name="v5_candidate_label")
+
+
 def summarize_strategy_evidence(
     samples: pl.DataFrame,
     *,
@@ -914,10 +920,7 @@ def _sample_from_candidate_label(
     event_context: dict[str, dict[str, Any]],
 ) -> dict[str, Any] | None:
     candidate_id = str(label.get("candidate_id") or "").strip()
-    strategy_candidate = _canonical_candidate_name(
-        label.get("strategy_candidate"),
-        dataset_name="v5_candidate_label",
-    )
+    strategy_candidate = canonical_v5_strategy_candidate(label.get("strategy_candidate"))
     ts_utc = _parse_timestamp(label.get("ts_utc"))
     horizon_hours = _int_or_none(label.get("horizon_hours"))
     if not candidate_id or not strategy_candidate or ts_utc is None or horizon_hours is None:

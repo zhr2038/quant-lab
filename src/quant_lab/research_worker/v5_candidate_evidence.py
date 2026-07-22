@@ -20,7 +20,10 @@ from quant_lab.research.candidate_labels import (
     candidate_label_bars_by_symbol,
     compute_v5_candidate_labels,
 )
-from quant_lab.research.strategy_evidence import compute_v5_candidate_evidence_samples
+from quant_lab.research.strategy_evidence import (
+    canonical_v5_strategy_candidate,
+    compute_v5_candidate_evidence_samples,
+)
 from quant_lab.research_plane.v5_candidate_evidence_contracts import (
     DEFAULT_V5_CANDIDATE_EVIDENCE_MAX_INPUT_UNCOMPRESSED_BYTES,
     DEFAULT_V5_CANDIDATE_EVIDENCE_MAX_SNAPSHOT_BYTES,
@@ -527,8 +530,8 @@ def _accumulate_symbol_sample_checks(
         if event is None:
             violations["evidence_sample_events_exist"] += 1
             continue
-        expected_candidate = str(
-            label.get("strategy_candidate") or event.get("strategy_candidate") or ""
+        expected_candidate = canonical_v5_strategy_candidate(
+            label.get("strategy_candidate") or event.get("strategy_candidate")
         )
         if sample.get("strategy_candidate") != expected_candidate:
             violations["strategy_candidate_matches_event"] += 1

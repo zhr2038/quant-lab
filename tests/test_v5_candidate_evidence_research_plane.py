@@ -617,6 +617,10 @@ def test_v5_candidate_evidence_worker_is_symbol_staged_and_decision_free(
     lake = tmp_path / "lake"
     queue = tmp_path / "queue"
     _seed_snapshot_sources(lake)
+    event_path = lake / "silver" / "v5_candidate_event" / "events.parquet"
+    pl.read_parquet(event_path).with_columns(
+        pl.lit("alt_impulse_shadow").alias("strategy_candidate")
+    ).write_parquet(event_path)
     private_key = Ed25519PrivateKey.generate()
     preflight = preflight_v5_candidate_evidence_snapshot(
         lake,
@@ -662,6 +666,12 @@ def test_v5_candidate_evidence_worker_is_symbol_staged_and_decision_free(
     assert labels.get_column("horizon_hours").sort().to_list() == list(
         V5_CANDIDATE_EVIDENCE_HORIZONS
     )
+    assert labels.get_column("strategy_candidate").unique().to_list() == [
+        "alt_impulse_shadow"
+    ]
+    assert samples.get_column("strategy_candidate").unique().to_list() == [
+        "v5.alt_impulse_shadow"
+    ]
     assert "decision" not in samples.columns
     assert compute.anti_leakage["status"] == "PASS"
     assert len(compute.anti_leakage["checks"]) == len(

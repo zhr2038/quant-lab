@@ -51,6 +51,7 @@ from quant_lab.research_plane.contracts import (
     FACTOR_FACTORY_TASK_TYPE,
     FACTOR_RESEARCH_TASK_TYPE,
     RESEARCH_TASK_SCHEMA,
+    V5_CANDIDATE_EVIDENCE_TASK_TYPE,
     AlphaFactoryTask,
     AlphaFactoryTaskParameters,
     EntryQualityHistoryTaskParameters,
@@ -59,6 +60,10 @@ from quant_lab.research_plane.contracts import (
     ResearchTask,
     ResearchTaskState,
     ResearchTaskStatus,
+    V5CandidateEvidenceTask,
+)
+from quant_lab.research_plane.factor_factory_publish import (
+    verify_factor_factory_generation_fast,
 )
 from quant_lab.research_plane.factor_factory_snapshot import (
     FactorFactorySnapshotPreflight,
@@ -80,6 +85,15 @@ from quant_lab.research_plane.status import (
     ensure_research_queue_layout,
     find_research_task_directory,
     write_research_status,
+)
+from quant_lab.research_plane.v5_candidate_evidence_publish import (
+    V5_CANDIDATE_EVIDENCE_GENERATION_POINTER,
+    verify_v5_candidate_evidence_generation_fast,
+)
+from quant_lab.research_plane.v5_candidate_evidence_snapshot import (
+    load_v5_candidate_evidence_generation_binding,
+    materialize_v5_candidate_evidence_snapshot,
+    preflight_v5_candidate_evidence_snapshot,
 )
 
 FACTOR_FACTORY_GENERATION_POINTER = Path("gold") / "factor_factory_generation.json"
@@ -124,6 +138,280 @@ class FactorFactoryTaskRequestResult:
             "task": self.task.model_dump(mode="json") if self.task is not None else None,
             "status": self.status.model_dump(mode="json") if self.status is not None else None,
         }
+
+
+@dataclass(frozen=True)
+class V5CandidateEvidenceTaskRequestResult:
+    state: str
+    task_created: bool
+    snapshot_materialized: bool
+    current_generation_id: str | None
+    reason: str
+    snapshot_id: str
+    current_generation_published_at: str | None = None
+    task: V5CandidateEvidenceTask | None = None
+    status: ResearchTaskStatus | None = None
+    snapshot_rehydrated: bool = False
+    input_fingerprint: dict[str, Any] | None = None
+    fingerprint_matches_generation: bool = False
+    compressed_input_bytes: int | None = None
+    estimated_uncompressed_input_bytes: int | None = None
+
+    def __iter__(self) -> Iterator[V5CandidateEvidenceTask | ResearchTaskStatus]:
+        if self.task is None or self.status is None:
+            raise TypeError(f"v5 candidate evidence request {self.state} did not create a task")
+        yield self.task
+        yield self.status
+
+    def model_dump(self) -> dict[str, Any]:
+        return {
+            "state": self.state,
+            "task_created": self.task_created,
+            "snapshot_materialized": self.snapshot_materialized,
+            "snapshot_rehydrated": self.snapshot_rehydrated,
+            "input_fingerprint": self.input_fingerprint,
+            "fingerprint_matches_generation": self.fingerprint_matches_generation,
+            "compressed_input_bytes": self.compressed_input_bytes,
+            "estimated_uncompressed_input_bytes": self.estimated_uncompressed_input_bytes,
+            "current_generation_id": self.current_generation_id,
+            "current_generation_published_at": self.current_generation_published_at,
+            "reason": self.reason,
+            "snapshot_id": self.snapshot_id,
+            "task": self.task.model_dump(mode="json") if self.task is not None else None,
+            "status": self.status.model_dump(mode="json") if self.status is not None else None,
+        }
+
+
+def create_v5_candidate_evidence_task(
+    lake_root: str | Path,
+    queue_root: str | Path,
+    *,
+    as_of_date: date,
+    signing_key: Ed25519PrivateKey,
+    signature_key_id: str,
+    quant_lab_commit: str,
+    mode: str = "incremental",
+    lookback_days: int = 8,
+    horizon_hours: tuple[int, ...] = (4, 8, 12, 24, 48, 72, 120),
+    include_historical_outcomes: bool = False,
+    lease_seconds: int = 7200,
+    max_attempts: int = 3,
+    max_input_bytes: int = 512 * 1024**2,
+    max_input_uncompressed_bytes: int = 1024**3,
+    max_input_rows: int = 5_000_000,
+) -> V5CandidateEvidenceTaskRequestResult:
+    """Create one coalesced incremental Candidate Evidence task after fast verification."""
+
+    queue = ensure_research_queue_layout(queue_root)
+    lake = Path(lake_root).resolve(strict=True)
+    preflight = preflight_v5_candidate_evidence_snapshot(
+        lake,
+        queue,
+        as_of_date=as_of_date,
+        quant_lab_commit=quant_lab_commit,
+        mode=mode,
+        lookback_days=lookback_days,
+        horizon_hours=horizon_hours,
+        include_historical_outcomes=include_historical_outcomes,
+    )
+    fingerprint = preflight.input_fingerprint.model_dump(mode="json")
+    source_bytes = sum(item.size_bytes for item in preflight.source_files)
+    pointer = _read_json_pointer(lake / V5_CANDIDATE_EVIDENCE_GENERATION_POINTER)
+    current_generation_id = str(pointer.get("generation_id") or "") or None
+    current_generation_published_at = str(pointer.get("published_at") or "") or None
+    if _v5_candidate_evidence_pointer_matches_preflight(pointer, preflight):
+        try:
+            if current_generation_id is None:
+                raise RuntimeError("v5_candidate_evidence_generation_id_missing")
+            verify_v5_candidate_evidence_generation_fast(
+                lake,
+                current_generation_id,
+                expected_input_fingerprint=(
+                    preflight.input_fingerprint.input_fingerprint_digest
+                ),
+            )
+        except Exception as exc:
+            result = V5CandidateEvidenceTaskRequestResult(
+                state="generation_integrity_failed",
+                task_created=False,
+                snapshot_materialized=False,
+                current_generation_id=current_generation_id,
+                current_generation_published_at=current_generation_published_at,
+                reason=f"v5_candidate_evidence_generation_integrity_failed:{exc}",
+                snapshot_id=preflight.snapshot_id,
+                input_fingerprint=fingerprint,
+                fingerprint_matches_generation=True,
+                compressed_input_bytes=source_bytes,
+                estimated_uncompressed_input_bytes=(
+                    preflight.input_fingerprint.estimated_uncompressed_bytes
+                ),
+            )
+            _write_v5_candidate_evidence_request_result(queue, result)
+            return result
+        result = V5CandidateEvidenceTaskRequestResult(
+            state="already_current",
+            task_created=False,
+            snapshot_materialized=False,
+            current_generation_id=current_generation_id,
+            current_generation_published_at=current_generation_published_at,
+            reason="v5_candidate_evidence_inputs_unchanged",
+            snapshot_id=preflight.snapshot_id,
+            input_fingerprint=fingerprint,
+            fingerprint_matches_generation=True,
+            compressed_input_bytes=source_bytes,
+            estimated_uncompressed_input_bytes=(
+                preflight.input_fingerprint.estimated_uncompressed_bytes
+            ),
+        )
+        _write_v5_candidate_evidence_request_result(queue, result)
+        return result
+
+    previous_id, previous_digest, _ = load_v5_candidate_evidence_generation_binding(lake)
+    task_id = _v5_candidate_evidence_task_id(
+        snapshot_id=preflight.snapshot_id,
+        previous_generation_id=previous_id,
+        previous_generation_digest=previous_digest,
+        as_of_date=as_of_date,
+        mode=mode,
+        lookback_days=lookback_days,
+        horizon_hours=horizon_hours,
+        include_historical_outcomes=include_historical_outcomes,
+        quant_lab_commit=quant_lab_commit,
+        signature_key_id=signature_key_id,
+    )
+    coalesced = _matching_v5_candidate_evidence_active_task(
+        queue,
+        input_fingerprint_digest=preflight.input_fingerprint.input_fingerprint_digest,
+        previous_generation_id=previous_id,
+        previous_generation_digest=previous_digest,
+    )
+    if coalesced is not None:
+        task, status = coalesced
+        result = V5CandidateEvidenceTaskRequestResult(
+            state="coalesced",
+            task_created=False,
+            snapshot_materialized=False,
+            current_generation_id=previous_id,
+            current_generation_published_at=current_generation_published_at,
+            reason=f"v5_candidate_evidence_{status.state.value}_task_matches_fingerprint",
+            snapshot_id=preflight.snapshot_id,
+            task=task,
+            status=status,
+            input_fingerprint=fingerprint,
+            compressed_input_bytes=source_bytes,
+            estimated_uncompressed_input_bytes=(
+                preflight.input_fingerprint.estimated_uncompressed_bytes
+            ),
+        )
+        _write_v5_candidate_evidence_request_result(queue, result)
+        return result
+    existing = find_research_task_directory(queue, task_id)
+    if existing is not None:
+        task = V5CandidateEvidenceTask.model_validate_json(
+            (existing / "task.json").read_text("utf-8")
+        )
+        status = ResearchTaskStatus.model_validate_json(
+            (queue / "status" / f"{task_id}.json").read_text("utf-8")
+        )
+        result = V5CandidateEvidenceTaskRequestResult(
+            state="coalesced",
+            task_created=False,
+            snapshot_materialized=False,
+            current_generation_id=previous_id,
+            current_generation_published_at=current_generation_published_at,
+            reason="v5_candidate_evidence_task_already_exists",
+            snapshot_id=preflight.snapshot_id,
+            task=task,
+            status=status,
+            input_fingerprint=fingerprint,
+            compressed_input_bytes=source_bytes,
+            estimated_uncompressed_input_bytes=(
+                preflight.input_fingerprint.estimated_uncompressed_bytes
+            ),
+        )
+        _write_v5_candidate_evidence_request_result(queue, result)
+        return result
+
+    materialization = materialize_v5_candidate_evidence_snapshot(
+        preflight,
+        signing_key=signing_key,
+        signature_key_id=signature_key_id,
+        max_input_bytes=max_input_bytes,
+        max_input_uncompressed_bytes=max_input_uncompressed_bytes,
+        max_input_rows=max_input_rows,
+    )
+    snapshot = materialization.manifest
+    superseded = _coalesce_v5_candidate_evidence_pending(queue, successor_task_id=task_id)
+    requested_at = datetime.now(UTC)
+    provisional = V5CandidateEvidenceTask(
+        task_id=task_id,
+        snapshot_id=snapshot.snapshot_id,
+        input_fingerprint_digest=snapshot.input_fingerprint_digest,
+        quant_lab_commit=quant_lab_commit,
+        snapshot_manifest_sha256=snapshot.manifest_sha256,
+        previous_generation_id=previous_id,
+        previous_generation_digest=previous_digest,
+        as_of_date=as_of_date,
+        mode=mode,
+        lookback_days=lookback_days,
+        horizon_hours=horizon_hours,
+        include_historical_outcomes=include_historical_outcomes,
+        requested_at=requested_at,
+        lease_seconds=lease_seconds,
+        max_attempts=max_attempts,
+        signature_key_id=signature_key_id,
+        signature="pending",
+    )
+    task = provisional.model_copy(update={"signature": sign_model(provisional, signing_key)})
+    temporary = queue / "pending" / f".{task_id}.{uuid.uuid4().hex}.partial"
+    final = queue / "pending" / task_id
+    temporary.mkdir(parents=True, exist_ok=False)
+    try:
+        (temporary / "task.json").write_text(task.model_dump_json(indent=2), encoding="utf-8")
+        (temporary / "snapshot_id").write_text(snapshot.snapshot_id + "\n", encoding="ascii")
+        for path in (temporary / "task.json", temporary / "snapshot_id"):
+            path.chmod(0o660)
+        temporary.chmod(0o2770)
+        os.replace(temporary, final)
+    except Exception:
+        shutil.rmtree(temporary, ignore_errors=True)
+        raise
+    status = ResearchTaskStatus(
+        task_id=task_id,
+        snapshot_id=snapshot.snapshot_id,
+        task_type=V5_CANDIDATE_EVIDENCE_TASK_TYPE,
+        start_date=snapshot.event_window_start.date(),
+        end_date=snapshot.as_of_date,
+        mode="incremental/lookback_8/skip_historical_outcomes",
+        cost_mode="signed_candidate_event",
+        state=ResearchTaskState.PENDING,
+        requested_at=requested_at,
+        max_attempts=max_attempts,
+        input_bytes=snapshot.total_input_bytes,
+        import_status="waiting_for_nas",
+    )
+    write_research_status(queue, status)
+    result = V5CandidateEvidenceTaskRequestResult(
+        state="task_created",
+        task_created=True,
+        snapshot_materialized=materialization.snapshot_materialized,
+        snapshot_rehydrated=materialization.snapshot_rehydrated,
+        current_generation_id=previous_id,
+        current_generation_published_at=current_generation_published_at,
+        reason=(
+            "v5_candidate_evidence_pending_superseded_and_task_enqueued"
+            if superseded
+            else "v5_candidate_evidence_task_enqueued"
+        ),
+        snapshot_id=snapshot.snapshot_id,
+        task=task,
+        status=status,
+        input_fingerprint=fingerprint,
+        compressed_input_bytes=snapshot.total_input_bytes,
+        estimated_uncompressed_input_bytes=snapshot.estimated_uncompressed_bytes,
+    )
+    _write_v5_candidate_evidence_request_result(queue, result)
+    return result
 
 
 def create_factor_factory_task(
@@ -177,11 +465,31 @@ def create_factor_factory_task(
     lake = Path(lake_root).resolve(strict=True)
     current = _read_factor_factory_pointer(lake / FACTOR_FACTORY_GENERATION_POINTER)
     if _factor_factory_pointer_matches_preflight(current, preflight):
+        current_generation_id = str(current.get("generation_id") or "") or None
+        try:
+            if current_generation_id is None:
+                raise RuntimeError("factor_factory_generation_id_missing")
+            verify_factor_factory_generation_fast(lake, current_generation_id)
+        except Exception as exc:
+            result = FactorFactoryTaskRequestResult(
+                state="generation_integrity_failed",
+                task_created=False,
+                snapshot_materialized=False,
+                current_generation_id=current_generation_id,
+                reason=f"factor_factory_generation_integrity_failed:{exc}",
+                snapshot_id=preflight.snapshot_id,
+                input_fingerprint=preflight.input_fingerprint.model_dump(mode="json"),
+                fingerprint_matches_generation=True,
+                compressed_input_bytes=sum(item.size_bytes for item in preflight.source_files),
+                estimated_uncompressed_input_bytes=preflight.estimated_uncompressed_bytes,
+            )
+            _write_factor_factory_request_result(queue, result)
+            return result
         result = FactorFactoryTaskRequestResult(
             state="already_current",
             task_created=False,
             snapshot_materialized=False,
-            current_generation_id=str(current.get("generation_id") or "") or None,
+            current_generation_id=current_generation_id,
             reason="factor_factory_inputs_unchanged",
             snapshot_id=preflight.snapshot_id,
             input_fingerprint=preflight.input_fingerprint.model_dump(mode="json"),
@@ -482,6 +790,196 @@ def _factor_factory_snapshot_payload_state(
     if (snapshot_root / "FILES_RELEASED.json").is_file():
         return "released"
     if result.snapshot_rehydrated or (snapshot_root / "FILES_REHYDRATED.json").is_file():
+        return "rehydrated"
+    if (snapshot_root / "files").is_dir():
+        return "materialized"
+    return "not_materialized"
+
+
+def _read_json_pointer(path: Path) -> dict[str, Any]:
+    if not path.is_file():
+        return {}
+    try:
+        payload = json.loads(path.read_text("utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"research_generation_pointer_invalid:{path.name}") from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"research_generation_pointer_invalid:{path.name}")
+    return payload
+
+
+def _v5_candidate_evidence_pointer_matches_preflight(
+    pointer: dict[str, Any],
+    preflight: Any,
+) -> bool:
+    fingerprint = preflight.input_fingerprint
+    return bool(pointer) and (
+        pointer.get("snapshot_id") == preflight.snapshot_id
+        and pointer.get("quant_lab_commit") == fingerprint.quant_lab_commit
+        and pointer.get("input_fingerprint_digest")
+        == fingerprint.input_fingerprint_digest
+        and pointer.get("candidate_event_digest") == fingerprint.candidate_event_digest
+        and pointer.get("market_bar_digest") == fingerprint.market_bar_digest
+        and pointer.get("run_summary_digest") == fingerprint.run_summary_digest
+        and pointer.get("as_of_date") == fingerprint.as_of_date.isoformat()
+        and pointer.get("mode") == fingerprint.mode
+        and pointer.get("lookback_days") == fingerprint.lookback_days
+        and tuple(pointer.get("horizon_hours") or ()) == fingerprint.horizon_hours
+        and pointer.get("candidate_label_schema_version")
+        == fingerprint.candidate_label_schema_version
+        and pointer.get("strategy_evidence_version") == fingerprint.strategy_evidence_version
+    )
+
+
+def _v5_candidate_evidence_task_id(
+    *,
+    snapshot_id: str,
+    previous_generation_id: str | None,
+    previous_generation_digest: str | None,
+    as_of_date: date,
+    mode: str,
+    lookback_days: int,
+    horizon_hours: tuple[int, ...],
+    include_historical_outcomes: bool,
+    quant_lab_commit: str,
+    signature_key_id: str,
+) -> str:
+    seed = model_content_sha256(
+        {
+            "schema_version": "quant_lab_v5_candidate_evidence_task_identity.v1",
+            "task_type": V5_CANDIDATE_EVIDENCE_TASK_TYPE,
+            "snapshot_id": snapshot_id,
+            "previous_generation_id": previous_generation_id,
+            "previous_generation_digest": previous_generation_digest,
+            "parameters": {
+                "as_of_date": as_of_date,
+                "mode": mode,
+                "lookback_days": lookback_days,
+                "horizon_hours": horizon_hours,
+                "include_historical_outcomes": include_historical_outcomes,
+                "candidate_label_schema_version": "v5.candidate_label.v1",
+                "strategy_evidence_version": "strategy-evidence-v0.1",
+            },
+            "quant_lab_commit": quant_lab_commit,
+            "signature_key_id": signature_key_id,
+        }
+    )[:24]
+    return f"v5-candidate-evidence-{seed}"
+
+
+def _matching_v5_candidate_evidence_active_task(
+    queue: Path,
+    *,
+    input_fingerprint_digest: str,
+    previous_generation_id: str | None,
+    previous_generation_digest: str | None,
+) -> tuple[V5CandidateEvidenceTask, ResearchTaskStatus] | None:
+    for state in ("running", "pending"):
+        for task_path in sorted((queue / state).glob("*/task.json")):
+            try:
+                task = V5CandidateEvidenceTask.model_validate_json(
+                    task_path.read_text("utf-8")
+                )
+                status = ResearchTaskStatus.model_validate_json(
+                    (queue / "status" / f"{task.task_id}.json").read_text("utf-8")
+                )
+            except (OSError, ValueError):
+                continue
+            if (
+                task.input_fingerprint_digest == input_fingerprint_digest
+                and task.previous_generation_id == previous_generation_id
+                and task.previous_generation_digest == previous_generation_digest
+                and status.state in {ResearchTaskState.PENDING, ResearchTaskState.CLAIMED,
+                    ResearchTaskState.SYNCING, ResearchTaskState.COMPUTING,
+                    ResearchTaskState.COMPUTING_LABELS,
+                    ResearchTaskState.COMPUTING_SAMPLES,
+                    ResearchTaskState.VALIDATING_ON_NAS, ResearchTaskState.UPLOADING,
+                    ResearchTaskState.VALIDATING_ON_CLOUD, ResearchTaskState.PUBLISHING}
+            ):
+                return task, status
+    return None
+
+
+def _coalesce_v5_candidate_evidence_pending(
+    queue: Path,
+    *,
+    successor_task_id: str,
+) -> bool:
+    superseded = False
+    for task_path in sorted((queue / "pending").glob("*/task.json")):
+        try:
+            task = V5CandidateEvidenceTask.model_validate_json(task_path.read_text("utf-8"))
+            status = ResearchTaskStatus.model_validate_json(
+                (queue / "status" / f"{task.task_id}.json").read_text("utf-8")
+            )
+        except (OSError, ValueError):
+            continue
+        if task.task_id == successor_task_id or status.state is not ResearchTaskState.PENDING:
+            continue
+        pending = queue / "pending" / task.task_id
+        cancelled = queue / "cancelled" / task.task_id
+        if cancelled.exists():
+            raise RuntimeError("v5_candidate_evidence_cancelled_destination_exists")
+        os.replace(pending, cancelled)
+        now = datetime.now(UTC)
+        write_research_status(
+            queue,
+            status.model_copy(
+                update={
+                    "state": ResearchTaskState.CANCELLED,
+                    "completed_at": now,
+                    "import_status": "superseded_before_claim",
+                    "last_error": f"superseded_by:{successor_task_id}",
+                }
+            ),
+        )
+        superseded = True
+    return superseded
+
+
+def _write_v5_candidate_evidence_request_result(
+    queue: Path,
+    result: V5CandidateEvidenceTaskRequestResult,
+) -> None:
+    active_state = result.status.state.value if result.status is not None else None
+    atomic_write_json(
+        queue / "status" / "v5_candidate_evidence_request.json",
+        {
+            "schema_version": "quant_lab_v5_candidate_evidence_request_status.v1",
+            **{
+                key: value
+                for key, value in result.model_dump().items()
+                if key not in {"task", "status"}
+            },
+            "health_state": (
+                "up_to_date" if result.state == "already_current" else result.state
+            ),
+            "request_outcome": result.state,
+            "pending_running_state": active_state,
+            "snapshot_payload_state": _v5_candidate_evidence_snapshot_payload_state(
+                queue,
+                result,
+            ),
+            "already_current_at": (
+                datetime.now(UTC).isoformat()
+                if result.state == "already_current"
+                else None
+            ),
+            "observed_at": datetime.now(UTC).isoformat(),
+        },
+    )
+
+
+def _v5_candidate_evidence_snapshot_payload_state(
+    queue: Path,
+    result: V5CandidateEvidenceTaskRequestResult,
+) -> str:
+    snapshot_root = queue / "snapshots" / result.snapshot_id
+    if list((queue / "snapshots").glob(f".rehydrate.{result.snapshot_id}.*.partial")):
+        return "rehydrating"
+    if (snapshot_root / "FILES_RELEASED.json").is_file():
+        return "released"
+    if result.snapshot_rehydrated:
         return "rehydrated"
     if (snapshot_root / "files").is_dir():
         return "materialized"

@@ -34,6 +34,7 @@ from quant_lab.research_plane.factor_factory_publish import (
     FACTOR_FACTORY_NO_UPDATE_POINTER,
     FACTOR_FACTORY_PRIMARY_KEYS,
     _configure_duckdb_for_bounded_scan,
+    _dataset_digest,
     _require_writable_spill_directory,
     _validate_published_candidates,
     publish_factor_factory_generation,
@@ -824,14 +825,13 @@ def test_factor_factory_no_change_fast_path_precedes_all_materialization(
         as_of_date=date(2026, 5, 20),
         quant_lab_commit=COMMIT,
     )
-    pointer = {
-        **preflight.identity_payload,
-        "snapshot_id": preflight.snapshot_id,
-        "generation_id": "already-current-generation",
-    }
+    _write_verified_factor_factory_generation(
+        lake,
+        identity_payload=preflight.identity_payload,
+        snapshot_id=preflight.snapshot_id,
+        generation_id="already-current-generation",
+    )
     pointer_path = lake / FACTOR_FACTORY_GENERATION_POINTER
-    pointer_path.parent.mkdir(parents=True, exist_ok=True)
-    pointer_path.write_text(json.dumps(pointer), encoding="utf-8")
 
     def unexpected(*_args: object, **_kwargs: object) -> object:
         raise AssertionError("No-Change must return before Snapshot materialization")
@@ -858,6 +858,7 @@ def test_factor_factory_no_change_fast_path_precedes_all_materialization(
     assert status["snapshot_materialized"] is False
     assert status["already_current_at"] is not None
 
+    pointer = json.loads(pointer_path.read_text("utf-8"))
     pointer["source_input_digest"] = "f" * 64
     pointer["published_at"] = datetime.now(UTC).isoformat()
     pointer_path.write_text(json.dumps(pointer), encoding="utf-8")
@@ -873,6 +874,58 @@ def test_factor_factory_no_change_fast_path_precedes_all_materialization(
     assert deferred.state == "recompute_deferred"
     assert deferred.task_created is False
     assert deferred.snapshot_materialized is False
+
+
+def test_factor_factory_no_change_rejects_damaged_generation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    lake = tmp_path / "lake"
+    queue = tmp_path / "queue"
+    _write_bars(lake, count=24)
+    _write_costs(lake)
+    publish_features(lake)
+    preflight = preflight_factor_factory_snapshot(
+        lake,
+        queue,
+        as_of_date=date(2026, 5, 20),
+        quant_lab_commit=COMMIT,
+    )
+    _write_verified_factor_factory_generation(
+        lake,
+        identity_payload=preflight.identity_payload,
+        snapshot_id=preflight.snapshot_id,
+        generation_id="damaged-generation",
+    )
+    (lake / FACTOR_FACTORY_DATASETS["factor_evidence"] / "data.parquet").unlink()
+
+    def unexpected(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("integrity failure must not materialize a Snapshot")
+
+    monkeypatch.setattr(factor_factory_snapshot_module, "_materialize_feature_files", unexpected)
+    monkeypatch.setattr(factor_factory_snapshot_module, "_materialize_market_files", unexpected)
+    monkeypatch.setattr(factor_factory_snapshot_module, "_materialize_cost_selection", unexpected)
+    monkeypatch.setattr(pl.LazyFrame, "sink_parquet", unexpected)
+    result = create_factor_factory_task(
+        lake,
+        queue,
+        as_of_date=date(2026, 5, 21),
+        signing_key=Ed25519PrivateKey.generate(),
+        signature_key_id=TASK_KEY_ID,
+        quant_lab_commit=COMMIT,
+    )
+
+    assert result.state == "generation_integrity_failed"
+    assert result.task_created is False
+    assert result.snapshot_materialized is False
+    assert result.fingerprint_matches_generation is True
+    assert "factor_factory_dataset_row_count_mismatch:factor_evidence" in result.reason
+    assert not list((queue / "snapshots").iterdir())
+    status = research_plane_status(queue)["tasks"]["factor_factory"]
+    assert status["state"] == "generation_integrity_failed"
+    assert status["health_state"] == "generation_integrity_failed"
+    assert status["request_outcome"] == "generation_integrity_failed"
+    assert status["already_current_at"] is None
 
 
 def test_factor_factory_status_reports_snapshot_transient_states(tmp_path: Path) -> None:
@@ -904,17 +957,11 @@ def test_factor_factory_cli_treats_no_change_as_success(
         as_of_date=date(2026, 5, 20),
         quant_lab_commit=COMMIT,
     )
-    pointer_path = lake / FACTOR_FACTORY_GENERATION_POINTER
-    pointer_path.parent.mkdir(parents=True, exist_ok=True)
-    pointer_path.write_text(
-        json.dumps(
-            {
-                **preflight.identity_payload,
-                "snapshot_id": preflight.snapshot_id,
-                "generation_id": "cli-current-generation",
-            }
-        ),
-        encoding="utf-8",
+    _write_verified_factor_factory_generation(
+        lake,
+        identity_payload=preflight.identity_payload,
+        snapshot_id=preflight.snapshot_id,
+        generation_id="cli-current-generation",
     )
     key = Ed25519PrivateKey.generate()
     key_path = tmp_path / "task-key.pem"
@@ -948,6 +995,29 @@ def test_factor_factory_cli_treats_no_change_as_success(
     assert result.exit_code == 0, result.output
     assert "FACTOR_FACTORY_ALREADY_CURRENT" in result.output
     assert '"state": "already_current"' in result.output
+
+    (lake / FACTOR_FACTORY_DATASETS["factor_value"] / "data.parquet").unlink()
+    damaged = CLI_RUNNER.invoke(
+        app,
+        [
+            "request-factor-factory",
+            "--lake-root",
+            str(lake),
+            "--queue-root",
+            str(queue),
+            "--signing-key-path",
+            str(key_path),
+            "--key-id",
+            TASK_KEY_ID,
+            "--quant-lab-commit",
+            COMMIT,
+            "--date",
+            "2026-05-21",
+        ],
+    )
+    assert damaged.exit_code == 0, damaged.output
+    assert "FACTOR_FACTORY_GENERATION_INTEGRITY_FAILED" in damaged.output
+    assert '"state": "generation_integrity_failed"' in damaged.output
 
 
 def test_released_factor_factory_snapshot_rehydrates_once_and_preserves_identity(
@@ -1263,6 +1333,89 @@ def _write_factor_factory_binding(
     path = lake / FACTOR_FACTORY_GENERATION_POINTER
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(pointer), encoding="utf-8")
+
+
+def _write_verified_factor_factory_generation(
+    lake: Path,
+    *,
+    identity_payload: dict[str, object],
+    snapshot_id: str,
+    generation_id: str,
+) -> None:
+    rows_by_dataset = {
+        "factor_definition": {"factor_id": "factor-one", "factor_version": "v0.1"},
+        "factor_value": {
+            "factor_id": "factor-one",
+            "factor_version": "v0.1",
+            "symbol": "BTC-USDT",
+            "timeframe": "1H",
+            "ts": "2026-05-20T00:00:00+00:00",
+        },
+        "factor_evidence": {
+            "as_of_date": "2026-05-20",
+            "factor_id": "factor-one",
+            "factor_version": "v0.1",
+            "timeframe": "1H",
+            "horizon_bars": 4,
+            "decision_delay_bars": 1,
+        },
+        "factor_candidate": {
+            "as_of_date": "2026-05-20",
+            "factor_id": "factor-one",
+            "factor_version": "v0.1",
+            "timeframe": "1H",
+            "candidate_state": "KEEP_SHADOW",
+            "manual_review_required": True,
+            "source": "factors.factory.v0.1",
+        },
+        "factor_correlation_daily": {
+            "as_of_date": "2026-05-20",
+            "factor_id_left": "factor-one",
+            "factor_id_right": "factor-one",
+            "factor_version": "v0.1",
+            "timeframe": "1H",
+        },
+    }
+    for dataset_name, target in FACTOR_FACTORY_DATASETS.items():
+        dataset_root = lake / target
+        dataset_root.mkdir(parents=True, exist_ok=True)
+        pl.DataFrame([rows_by_dataset[dataset_name]]).write_parquet(
+            dataset_root / "data.parquet"
+        )
+
+    generation_digest = "e" * 64
+    pointer = {
+        **identity_payload,
+        "schema_version": "factor_factory_generation.v1",
+        "generation_id": generation_id,
+        "generation_digest": generation_digest,
+        "snapshot_id": snapshot_id,
+        "as_of_date": "2026-05-20",
+        "row_counts": {name: 1 for name in FACTOR_FACTORY_DATASETS},
+        "dataset_hashes": {
+            name: _dataset_digest(lake / target)
+            for name, target in FACTOR_FACTORY_DATASETS.items()
+        },
+        "diagnostic_only": True,
+        "research_only": True,
+        "live_order_effect": "none_read_only_research",
+        "automatic_promotion": False,
+        "max_live_notional_usdt": 0,
+        "manual_review_required": True,
+        "published_at": datetime.now(UTC).isoformat(),
+    }
+    pointer_path = lake / FACTOR_FACTORY_GENERATION_POINTER
+    pointer_path.parent.mkdir(parents=True, exist_ok=True)
+    pointer_path.write_text(json.dumps(pointer), encoding="utf-8")
+    sidecar = {
+        "generation_id": generation_id,
+        "generation_digest": generation_digest,
+    }
+    for target in FACTOR_FACTORY_DATASETS.values():
+        (lake / target / "_factor_factory_generation.json").write_text(
+            json.dumps(sidecar),
+            encoding="utf-8",
+        )
 
 
 def _write_costs(lake: Path, *, days: tuple[str, ...] = ("2026-05-10",)) -> None:

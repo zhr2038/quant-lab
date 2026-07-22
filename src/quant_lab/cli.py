@@ -112,6 +112,13 @@ from quant_lab.research_plane.contracts import (
     DEFAULT_FACTOR_FACTORY_MAX_VALUE_PARTITION_BYTES,
     DEFAULT_FACTOR_FACTORY_MAX_VALUE_PARTITION_UNCOMPRESSED_BYTES,
     DEFAULT_RESEARCH_MAX_RESULT_BYTES,
+    DEFAULT_V5_CANDIDATE_EVIDENCE_MAX_FILE_COUNT,
+    DEFAULT_V5_CANDIDATE_EVIDENCE_MAX_INPUT_UNCOMPRESSED_BYTES,
+    DEFAULT_V5_CANDIDATE_EVIDENCE_MAX_PARTITION_BYTES,
+    DEFAULT_V5_CANDIDATE_EVIDENCE_MAX_PARTITION_UNCOMPRESSED_BYTES,
+    DEFAULT_V5_CANDIDATE_EVIDENCE_MAX_RESULT_BYTES,
+    DEFAULT_V5_CANDIDATE_EVIDENCE_MAX_RESULT_UNCOMPRESSED_BYTES,
+    DEFAULT_V5_CANDIDATE_EVIDENCE_MAX_SNAPSHOT_BYTES,
 )
 from quant_lab.research_plane.importer import (
     import_pending_entry_quality_history_results,
@@ -122,6 +129,7 @@ from quant_lab.research_plane.queue import (
     create_entry_quality_history_task,
     create_factor_factory_task,
     create_factor_research_task,
+    create_v5_candidate_evidence_task,
 )
 from quant_lab.research_plane.signatures import load_public_key, load_signing_key
 from quant_lab.research_plane.snapshot_gc import (
@@ -1825,6 +1833,12 @@ def build_strategy_evidence_command(
         typer.Option("--include-historical-outcomes/--skip-historical-outcomes"),
     ] = False,
 ) -> None:
+    if not _enabled_environment("QUANT_LAB_LOCAL_V5_CANDIDATE_EVIDENCE_ENABLED"):
+        raise typer.BadParameter(
+            "local fallback disabled; set "
+            "QUANT_LAB_LOCAL_V5_CANDIDATE_EVIDENCE_ENABLED=1 only during an approved "
+            "maintenance window"
+        )
     result = run_with_job_metrics(
         lake_root=lake_root,
         job_name="build-strategy-evidence",
@@ -2062,6 +2076,7 @@ def request_factor_factory_command(
         "already_current": "FACTOR_FACTORY_ALREADY_CURRENT",
         "already_current_no_update": "FACTOR_FACTORY_ALREADY_CURRENT_NO_UPDATE",
         "recompute_deferred": "FACTOR_FACTORY_RECOMPUTE_DEFERRED",
+        "generation_integrity_failed": "FACTOR_FACTORY_GENERATION_INTEGRITY_FAILED",
     }
     events = [event_by_state[result.state]]
     if result.snapshot_rehydrated:
@@ -2079,6 +2094,76 @@ def request_factor_factory_command(
     )
 
 
+@app.command("request-v5-candidate-evidence")
+def request_v5_candidate_evidence_command(
+    lake_root: Annotated[Path, typer.Option("--lake-root", file_okay=False, dir_okay=True)],
+    queue_root: Annotated[Path, typer.Option("--queue-root", file_okay=False, dir_okay=True)],
+    signing_key_path: Annotated[
+        Path,
+        typer.Option(
+            "--signing-key-path",
+            envvar="QUANT_LAB_RESEARCH_TASK_PRIVATE_KEY_PATH",
+            exists=True,
+            dir_okay=False,
+        ),
+    ],
+    key_id: Annotated[str, typer.Option("--key-id")],
+    quant_lab_commit: Annotated[str, typer.Option("--quant-lab-commit")],
+    as_of_date: Annotated[str, typer.Option("--date")] = "auto",
+    max_input_bytes: Annotated[
+        int, typer.Option("--max-input-bytes", min=1)
+    ] = DEFAULT_V5_CANDIDATE_EVIDENCE_MAX_SNAPSHOT_BYTES,
+    max_input_uncompressed_bytes: Annotated[
+        int, typer.Option("--max-input-uncompressed-bytes", min=1)
+    ] = DEFAULT_V5_CANDIDATE_EVIDENCE_MAX_INPUT_UNCOMPRESSED_BYTES,
+    max_input_rows: Annotated[int, typer.Option("--max-input-rows", min=1)] = 5_000_000,
+) -> None:
+    if not _enabled_environment("QUANT_LAB_NAS_RESEARCH_ENABLED"):
+        raise typer.BadParameter("QUANT_LAB_NAS_RESEARCH_ENABLED must be 1")
+    if not _enabled_environment("QUANT_LAB_NAS_V5_CANDIDATE_EVIDENCE_ENABLED"):
+        raise typer.BadParameter(
+            "QUANT_LAB_NAS_V5_CANDIDATE_EVIDENCE_ENABLED must be 1"
+        )
+    day = datetime.now(UTC).date() if as_of_date == "auto" else date.fromisoformat(as_of_date)
+    result = create_v5_candidate_evidence_task(
+        lake_root,
+        queue_root,
+        as_of_date=day,
+        signing_key=load_signing_key(signing_key_path),
+        signature_key_id=key_id,
+        quant_lab_commit=quant_lab_commit,
+        mode="incremental",
+        lookback_days=8,
+        horizon_hours=(4, 8, 12, 24, 48, 72, 120),
+        include_historical_outcomes=False,
+        max_input_bytes=max_input_bytes,
+        max_input_uncompressed_bytes=max_input_uncompressed_bytes,
+        max_input_rows=max_input_rows,
+    )
+    event_by_state = {
+        "task_created": "V5_CANDIDATE_EVIDENCE_TASK_CREATED",
+        "already_current": "V5_CANDIDATE_EVIDENCE_ALREADY_CURRENT",
+        "coalesced": "V5_CANDIDATE_EVIDENCE_TASK_COALESCED",
+        "generation_integrity_failed": "V5_CANDIDATE_EVIDENCE_GENERATION_INTEGRITY_FAILED",
+    }
+    events = [event_by_state.get(result.state, f"V5_CANDIDATE_EVIDENCE_{result.state.upper()}")]
+    if result.snapshot_rehydrated:
+        events.insert(0, "V5_CANDIDATE_EVIDENCE_SNAPSHOT_REHYDRATED")
+    typer.echo(
+        json.dumps(
+            {
+                "events": events,
+                **result.model_dump(),
+            },
+            ensure_ascii=True,
+            sort_keys=True,
+            indent=2,
+        )
+    )
+    if result.state == "generation_integrity_failed":
+        raise typer.Exit(1)
+
+
 @app.command("build-v5-candidate-labels")
 def build_v5_candidate_labels_command(
     lake_root: Annotated[Path, typer.Option("--lake-root", file_okay=False, dir_okay=True)],
@@ -2089,6 +2174,12 @@ def build_v5_candidate_labels_command(
     mode: Annotated[str, typer.Option("--mode", help="full or incremental.")] = "incremental",
     lookback_days: Annotated[int, typer.Option("--lookback-days", min=1)] = 8,
 ) -> None:
+    if not _enabled_environment("QUANT_LAB_LOCAL_V5_CANDIDATE_EVIDENCE_ENABLED"):
+        raise typer.BadParameter(
+            "local fallback disabled; set "
+            "QUANT_LAB_LOCAL_V5_CANDIDATE_EVIDENCE_ENABLED=1 only during an approved "
+            "maintenance window"
+        )
     result = run_with_job_metrics(
         lake_root=lake_root,
         job_name="build-v5-candidate-labels",
@@ -2383,6 +2474,48 @@ def import_entry_quality_history_results_command(
     factor_factory_max_uncompressed_bytes: Annotated[
         int, typer.Option("--factor-factory-max-uncompressed-bytes", min=1)
     ] = DEFAULT_FACTOR_FACTORY_MAX_UNCOMPRESSED_BYTES,
+    v5_candidate_evidence_max_result_bytes: Annotated[
+        int,
+        typer.Option(
+            "--v5-candidate-evidence-max-result-bytes",
+            envvar="QUANT_LAB_V5_CANDIDATE_EVIDENCE_MAX_RESULT_BYTES",
+            min=1,
+        ),
+    ] = DEFAULT_V5_CANDIDATE_EVIDENCE_MAX_RESULT_BYTES,
+    v5_candidate_evidence_max_result_uncompressed_bytes: Annotated[
+        int,
+        typer.Option(
+            "--v5-candidate-evidence-max-result-uncompressed-bytes",
+            envvar="QUANT_LAB_V5_CANDIDATE_EVIDENCE_MAX_RESULT_UNCOMPRESSED_BYTES",
+            min=1,
+        ),
+    ] = DEFAULT_V5_CANDIDATE_EVIDENCE_MAX_RESULT_UNCOMPRESSED_BYTES,
+    v5_candidate_evidence_max_partition_bytes: Annotated[
+        int,
+        typer.Option(
+            "--v5-candidate-evidence-max-partition-bytes",
+            envvar="QUANT_LAB_V5_CANDIDATE_EVIDENCE_MAX_PARTITION_BYTES",
+            min=1,
+        ),
+    ] = DEFAULT_V5_CANDIDATE_EVIDENCE_MAX_PARTITION_BYTES,
+    v5_candidate_evidence_max_partition_uncompressed_bytes: Annotated[
+        int,
+        typer.Option(
+            "--v5-candidate-evidence-max-partition-uncompressed-bytes",
+            envvar=(
+                "QUANT_LAB_V5_CANDIDATE_EVIDENCE_MAX_PARTITION_UNCOMPRESSED_BYTES"
+            ),
+            min=1,
+        ),
+    ] = DEFAULT_V5_CANDIDATE_EVIDENCE_MAX_PARTITION_UNCOMPRESSED_BYTES,
+    v5_candidate_evidence_max_file_count: Annotated[
+        int,
+        typer.Option(
+            "--v5-candidate-evidence-max-file-count",
+            envvar="QUANT_LAB_V5_CANDIDATE_EVIDENCE_MAX_FILE_COUNT",
+            min=1,
+        ),
+    ] = DEFAULT_V5_CANDIDATE_EVIDENCE_MAX_FILE_COUNT,
     validate_only: Annotated[
         bool,
         typer.Option(
@@ -2407,6 +2540,19 @@ def import_entry_quality_history_results_command(
         ),
         "factor_factory_max_file_count": factor_factory_max_file_count,
         "factor_factory_max_uncompressed_bytes": factor_factory_max_uncompressed_bytes,
+        "v5_candidate_evidence_max_result_bytes": (
+            v5_candidate_evidence_max_result_bytes
+        ),
+        "v5_candidate_evidence_max_result_uncompressed_bytes": (
+            v5_candidate_evidence_max_result_uncompressed_bytes
+        ),
+        "v5_candidate_evidence_max_partition_bytes": (
+            v5_candidate_evidence_max_partition_bytes
+        ),
+        "v5_candidate_evidence_max_partition_uncompressed_bytes": (
+            v5_candidate_evidence_max_partition_uncompressed_bytes
+        ),
+        "v5_candidate_evidence_max_file_count": v5_candidate_evidence_max_file_count,
     }
     if validate_only:
         results = validate_pending_entry_quality_history_results(queue_root, **common)

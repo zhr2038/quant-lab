@@ -17,6 +17,7 @@ from quant_lab.data.lake import (
     count_parquet_rows,
     read_parquet_dataset,
     read_parquet_lazy,
+    upsert_parquet_dataset,
     write_parquet_dataset,
 )
 from quant_lab.research.evidence import DEFAULT_RESEARCH_COST_BPS
@@ -278,16 +279,17 @@ def build_strategy_evidence_samples(
     else:
         labels = read_parquet_dataset(root / LABEL_DATASET)
         events = read_parquet_dataset(root / EVENT_DATASET)
-    cost_context = _CostContext(root)
-    if labels.is_empty():
-        warnings.append("v5_candidate_label_empty")
+    candidate_samples, candidate_warnings = compute_v5_candidate_evidence_samples(
+        labels,
+        events,
+        as_of_date=as_of_date,
+    )
+    warnings.extend(candidate_warnings)
+    if not include_historical_outcomes:
+        return candidate_samples, warnings
 
-    event_context = _event_context_by_candidate_id(events)
-    rows: list[dict[str, Any]] = []
-    for label in labels.to_dicts():
-        sample = _sample_from_candidate_label(label, event_context)
-        if sample is not None:
-            rows.append(sample)
+    cost_context = _CostContext(root)
+    rows = candidate_samples.to_dicts()
     for dataset_name, relative_path in (
         OUTCOME_DATASETS.items() if include_historical_outcomes else []
     ):
@@ -314,6 +316,39 @@ def build_strategy_evidence_samples(
     if not rows:
         return pl.DataFrame(schema=SAMPLE_SCHEMA), warnings
     return normalize_strategy_evidence_samples(_formal_samples_frame(rows)), warnings
+
+
+def compute_v5_candidate_evidence_samples(
+    labels: pl.DataFrame,
+    events: pl.DataFrame,
+    *,
+    as_of_date: str | None = None,
+) -> tuple[pl.DataFrame, list[str]]:
+    """Extract V5 Candidate Evidence Samples without Lake, network, or control I/O."""
+
+    warnings: list[str] = []
+    if labels.is_empty():
+        warnings.append("v5_candidate_label_empty")
+    event_context = _event_context_by_candidate_id(events)
+    rows: list[dict[str, Any]] = []
+    for label in labels.to_dicts():
+        sample = _sample_from_candidate_label(label, event_context)
+        if sample is not None:
+            rows.append(sample)
+    rows = _dedupe_formal_sample_rows(_filter_samples_as_of(rows, as_of_date))
+    skipped_unknown = _unknown_symbol_count(rows)
+    rows = _drop_unknown_symbol_samples(rows)
+    if skipped_unknown:
+        warnings.append(f"strategy_evidence_unknown_symbol_samples_skipped:{skipped_unknown}")
+    if not rows:
+        return pl.DataFrame(schema=SAMPLE_SCHEMA), warnings
+    return normalize_strategy_evidence_samples(_formal_samples_frame(rows)), warnings
+
+
+def canonical_v5_strategy_candidate(value: Any) -> str:
+    """Return the canonical Candidate Evidence identity used by V5 samples."""
+
+    return _canonical_candidate_name(value, dataset_name="v5_candidate_label")
 
 
 def summarize_strategy_evidence(
@@ -438,13 +473,24 @@ def publish_strategy_evidence_samples(
             lookback_days=lookback_days,
         )
     existing = read_parquet_dataset(dataset_path)
-    if _needs_formal_schema_replace(existing, ["strategy", "candidate_id", "horizon_hours"]):
+    if _needs_formal_schema_replace(
+        existing,
+        ["source", "strategy", "candidate_id", "horizon_hours"],
+    ):
         write_parquet_dataset(samples, dataset_path)
         return samples.height
-    combined = _replace_matching_as_of_dates(existing, samples)
-    normalized = _drop_unknown_symbol_rows(normalize_strategy_evidence_samples(combined))
-    write_parquet_dataset(normalized, dataset_path)
-    return normalized.height
+    existing = _drop_unknown_symbol_rows_in_scope(
+        existing,
+        scope={"strategy": "v5", "source": SOURCE_NAME},
+    )
+    incoming = _drop_unknown_symbol_rows(samples)
+    combined = _replace_matching_as_of_dates_in_scope(
+        existing,
+        incoming,
+        scope={"strategy": "v5", "source": SOURCE_NAME},
+    )
+    write_parquet_dataset(combined, dataset_path)
+    return combined.height
 
 
 def _append_incremental_strategy_evidence_samples(
@@ -468,10 +514,13 @@ def _append_incremental_strategy_evidence_samples(
         return samples.height
 
     day = as_of_date or _latest_sample_as_of_date(samples)
+    publish_keys = [
+        column
+        for column in ["source", *STRATEGY_EVIDENCE_SAMPLE_KEY_COLUMNS]
+        if column in samples.columns
+    ]
     samples = samples.unique(
-        subset=[
-            column for column in STRATEGY_EVIDENCE_SAMPLE_KEY_COLUMNS if column in samples.columns
-        ],
+        subset=publish_keys,
         keep="last",
         maintain_order=True,
     )
@@ -484,15 +533,56 @@ def _append_incremental_strategy_evidence_samples(
     if recent_existing.is_empty():
         new_samples = samples
     else:
-        existing_keys = _sample_key_set(normalize_strategy_evidence_samples(recent_existing))
-        new_rows = [
-            row
-            for row in samples.to_dicts()
-            if _sample_key(row) not in existing_keys
+        normalized_existing = normalize_strategy_evidence_samples(recent_existing)
+        existing_keys = normalized_existing.select(publish_keys).unique(
+            subset=publish_keys,
+            keep="last",
+            maintain_order=True,
+        )
+        new_samples = samples.join(existing_keys, on=publish_keys, how="anti")
+        compare_columns = [
+            column
+            for column in SAMPLE_SCHEMA
+            if column not in {*publish_keys, "created_at"}
         ]
-        if not new_rows:
+        existing_compare = normalized_existing.select(
+            [
+                *publish_keys,
+                *[
+                    pl.col(column).alias(f"__existing_{column}")
+                    for column in compare_columns
+                ],
+            ]
+        ).unique(
+            subset=publish_keys,
+            keep="last",
+            maintain_order=True,
+        )
+        overlap = samples.join(existing_compare, on=publish_keys, how="inner")
+        semantic_equal: list[pl.Expr] = []
+        for column in compare_columns:
+            incoming = pl.col(column)
+            existing = pl.col(f"__existing_{column}")
+            if SAMPLE_SCHEMA[column] in {pl.Float32, pl.Float64}:
+                incoming = incoming.fill_nan(None)
+                existing = existing.fill_nan(None)
+            semantic_equal.append(incoming.eq_missing(existing))
+        changed_samples = overlap.filter(
+            ~pl.all_horizontal(semantic_equal)
+        ).select(list(SAMPLE_SCHEMA))
+        if not changed_samples.is_empty():
+            upsert_rows = pl.concat(
+                [changed_samples, new_samples],
+                how="vertical",
+            )
+            return upsert_parquet_dataset(
+                upsert_rows,
+                dataset_path,
+                key_columns=["source", *STRATEGY_EVIDENCE_SAMPLE_KEY_COLUMNS],
+                streaming_upsert=True,
+            )
+        if new_samples.is_empty():
             return existing_total
-        new_samples = pl.DataFrame(new_rows, schema=SAMPLE_SCHEMA, orient="row")
     append_parquet_dataset(new_samples, dataset_path, target_rows_per_file=250_000)
     return existing_total + new_samples.height
 
@@ -503,13 +593,31 @@ def publish_strategy_evidence_quality(
     warnings: list[str],
 ) -> int:
     dataset_path = Path(lake_root) / STRATEGY_EVIDENCE_QUALITY_DATASET
-    created_at = datetime.now(UTC)
-    rows = _quality_rows_for_warnings(as_of_date, warnings, created_at)
-    frame = pl.DataFrame(rows, schema=QUALITY_SCHEMA, orient="row")
+    frame = derive_strategy_evidence_quality(as_of_date, warnings)
     existing = read_parquet_dataset(dataset_path)
-    combined = _replace_matching_as_of_dates(existing, frame)
+    combined = _replace_matching_as_of_dates_in_scope(
+        existing,
+        frame,
+        scope={"strategy": "v5", "source": SOURCE_NAME},
+    )
     write_parquet_dataset(combined, dataset_path)
     return combined.height
+
+
+def derive_strategy_evidence_quality(
+    as_of_date: date,
+    warnings: list[str],
+    *,
+    created_at: datetime | None = None,
+) -> pl.DataFrame:
+    """Derive cloud-owned Strategy Evidence Quality without Lake I/O."""
+
+    rows = _quality_rows_for_warnings(
+        as_of_date,
+        warnings,
+        created_at or datetime.now(UTC),
+    )
+    return pl.DataFrame(rows, schema=QUALITY_SCHEMA, orient="row")
 
 
 def _quality_rows_for_warnings(
@@ -558,18 +666,36 @@ def publish_strategy_evidence_summary(
     dataset_path = Path(lake_root) / STRATEGY_EVIDENCE_DATASET
     if not rows:
         return read_parquet_dataset(dataset_path).height
-    frame = pl.DataFrame(rows, schema=SUMMARY_SCHEMA, orient="row")
+    frame = _drop_unknown_symbol_rows(
+        normalize_strategy_evidence_decisions(
+            pl.DataFrame(rows, schema=SUMMARY_SCHEMA, orient="row")
+        )
+    )
     existing = read_parquet_dataset(dataset_path)
     if _needs_formal_schema_replace(
         existing,
-        ["strategy", "strategy_candidate", "symbol", "regime_state", "horizon_hours"],
+        [
+            "source",
+            "strategy",
+            "strategy_candidate",
+            "symbol",
+            "regime_state",
+            "horizon_hours",
+        ],
     ):
-        write_parquet_dataset(normalize_strategy_evidence_decisions(frame), dataset_path)
+        write_parquet_dataset(frame, dataset_path)
         return frame.height
-    combined = _replace_matching_as_of_dates(existing, normalize_strategy_evidence_decisions(frame))
-    normalized = _drop_unknown_symbol_rows(normalize_strategy_evidence_decisions(combined))
-    write_parquet_dataset(normalized, dataset_path)
-    return normalized.height
+    existing = _drop_unknown_symbol_rows_in_scope(
+        existing,
+        scope={"strategy": "v5", "source": SOURCE_NAME},
+    )
+    combined = _replace_matching_as_of_dates_in_scope(
+        existing,
+        frame,
+        scope={"strategy": "v5", "source": SOURCE_NAME},
+    )
+    write_parquet_dataset(combined, dataset_path)
+    return combined.height
 
 
 def _replace_matching_as_of_dates(existing: pl.DataFrame, incoming: pl.DataFrame) -> pl.DataFrame:
@@ -593,6 +719,38 @@ def _replace_matching_as_of_dates(existing: pl.DataFrame, incoming: pl.DataFrame
     return pl.concat([retained, incoming], how="diagonal_relaxed")
 
 
+def _replace_matching_as_of_dates_in_scope(
+    existing: pl.DataFrame,
+    incoming: pl.DataFrame,
+    *,
+    scope: dict[str, str],
+) -> pl.DataFrame:
+    """Replace incoming dates only inside an explicitly owned shared-table scope."""
+
+    if existing.is_empty():
+        return incoming
+    if incoming.is_empty():
+        return existing
+    required = {"as_of_date", *scope}
+    if not required.issubset(existing.columns) or "as_of_date" not in incoming.columns:
+        return _replace_matching_as_of_dates(existing, incoming)
+    dates = {
+        str(value)
+        for value in incoming["as_of_date"].drop_nulls().cast(pl.Utf8).unique().to_list()
+        if str(value).strip()
+    }
+    if not dates:
+        return pl.concat([existing, incoming], how="diagonal_relaxed")
+    owned = pl.lit(True)
+    for column, value in sorted(scope.items()):
+        owned &= pl.col(column).cast(pl.Utf8, strict=False).fill_null("") == value
+    matching_date = pl.col("as_of_date").cast(pl.Utf8, strict=False).is_in(sorted(dates))
+    retained = existing.filter(~(owned & matching_date))
+    if retained.is_empty():
+        return incoming
+    return pl.concat([retained, incoming], how="diagonal_relaxed")
+
+
 def _normalize_build_mode(mode: str) -> str:
     normalized = str(mode or "full").strip().lower()
     if normalized not in {"full", "incremental"}:
@@ -608,6 +766,7 @@ def _samples_for_summary(
     as_of_date: date,
     lookback_days: int,
 ) -> pl.DataFrame:
+    incoming_samples = _managed_v5_strategy_evidence_samples(incoming_samples)
     if mode == "full":
         return incoming_samples
     existing = _read_recent_dataset(
@@ -616,12 +775,14 @@ def _samples_for_summary(
         lookback_days=lookback_days,
         timestamp_columns=("ts_utc", "decision_ts", "label_ts"),
     )
+    existing = _managed_v5_strategy_evidence_samples(existing)
     frames = [frame for frame in [existing, incoming_samples] if not frame.is_empty()]
     if not frames:
         return pl.DataFrame(schema=SAMPLE_SCHEMA)
     combined = pl.concat(frames, how="diagonal_relaxed")
     return normalize_strategy_evidence_samples(combined).unique(
         subset=[
+            "source",
             "strategy",
             "source_type",
             "candidate_id",
@@ -632,6 +793,15 @@ def _samples_for_summary(
         ],
         keep="last",
         maintain_order=True,
+    )
+
+
+def _managed_v5_strategy_evidence_samples(samples: pl.DataFrame) -> pl.DataFrame:
+    normalized = normalize_strategy_evidence_samples(samples)
+    if normalized.is_empty():
+        return normalized
+    return normalized.filter(
+        (pl.col("strategy") == "v5") & (pl.col("source") == SOURCE_NAME)
     )
 
 
@@ -671,16 +841,6 @@ def _parse_date(value: Any) -> date | None:
         return date.fromisoformat(text[:10])
     except ValueError:
         return None
-
-
-def _sample_key_set(samples: pl.DataFrame) -> set[tuple[str, ...]]:
-    if samples.is_empty():
-        return set()
-    return {_sample_key(row) for row in samples.to_dicts()}
-
-
-def _sample_key(row: dict[str, Any]) -> tuple[str, ...]:
-    return tuple(str(row.get(column) or "") for column in STRATEGY_EVIDENCE_SAMPLE_KEY_COLUMNS)
 
 
 def _read_recent_dataset(
@@ -852,6 +1012,23 @@ def _drop_unknown_symbol_rows(frame: pl.DataFrame) -> pl.DataFrame:
     return frame.filter(symbol != "UNKNOWN")
 
 
+def _drop_unknown_symbol_rows_in_scope(
+    frame: pl.DataFrame,
+    *,
+    scope: dict[str, str],
+) -> pl.DataFrame:
+    if frame.is_empty() or not {"symbol", *scope}.issubset(frame.columns):
+        return frame
+    owned = pl.lit(True)
+    for column, value in sorted(scope.items()):
+        owned &= pl.col(column).cast(pl.Utf8, strict=False).fill_null("") == value
+    unknown = (
+        pl.col("symbol").fill_null("").cast(pl.Utf8, strict=False).str.to_uppercase()
+        == "UNKNOWN"
+    )
+    return frame.filter(~(owned & unknown))
+
+
 def _needs_formal_schema_replace(existing: pl.DataFrame, required_columns: list[str]) -> bool:
     return not existing.is_empty() and not set(required_columns).issubset(existing.columns)
 
@@ -872,10 +1049,7 @@ def _sample_from_candidate_label(
     event_context: dict[str, dict[str, Any]],
 ) -> dict[str, Any] | None:
     candidate_id = str(label.get("candidate_id") or "").strip()
-    strategy_candidate = _canonical_candidate_name(
-        label.get("strategy_candidate"),
-        dataset_name="v5_candidate_label",
-    )
+    strategy_candidate = canonical_v5_strategy_candidate(label.get("strategy_candidate"))
     ts_utc = _parse_timestamp(label.get("ts_utc"))
     horizon_hours = _int_or_none(label.get("horizon_hours"))
     if not candidate_id or not strategy_candidate or ts_utc is None or horizon_hours is None:

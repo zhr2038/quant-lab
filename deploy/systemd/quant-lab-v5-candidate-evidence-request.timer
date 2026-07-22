@@ -1,0 +1,11 @@
+[Unit]
+Description=Poll V5 Candidate Evidence identity hourly and enqueue bounded NAS research
+
+[Timer]
+OnCalendar=*-*-* *:20:00 UTC
+RandomizedDelaySec=2min
+Persistent=true
+Unit=quant-lab-v5-candidate-evidence-request.service
+
+[Install]
+WantedBy=timers.target

@@ -33,7 +33,7 @@ services:
         - CMD
         - python
         - -c
-        - "import os,pathlib; assert pathlib.Path('/data').is_dir(); assert len(os.environ['QUANT_RESEARCH_WORKER_COMMIT']) == 40; assert os.environ.get('QUANT_RESEARCH_FACTOR_FACTORY_ENABLED', '0') in {'0', '1'}"
+        - "import os,pathlib; assert pathlib.Path('/data').is_dir(); assert len(os.environ['QUANT_RESEARCH_WORKER_COMMIT']) == 40; assert os.environ.get('QUANT_RESEARCH_FACTOR_FACTORY_ENABLED', '0') in {'0', '1'}; assert os.environ.get('QUANT_RESEARCH_V5_CANDIDATE_EVIDENCE_ENABLED', '0') in {'0', '1'}"
       interval: 30s
       timeout: 5s
       retries: 3

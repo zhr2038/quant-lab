@@ -279,10 +279,9 @@ def test_candidate_research_refresh_is_separate_from_alpha_evidence():
     assert "OnUnitActiveSec=6h" not in alpha_factory_timer
     assert "OnActiveSec=45min" not in alpha_factory_timer
 
-    assert "build-v5-candidate-labels" in refresh_unit
-    assert "--mode incremental --lookback-days 8" in refresh_unit
-    assert "build-strategy-evidence" in refresh_unit
-    assert "--skip-historical-outcomes" in refresh_unit
+    assert "build-v5-candidate-labels" not in refresh_unit
+    assert "build-strategy-evidence" not in refresh_unit
+    assert "QUANT_LAB_LOCAL_V5_CANDIDATE_EVIDENCE_ENABLED=1" not in refresh_unit
     assert "build-factor-factory" not in refresh_unit
     assert "build-alpha-factory" not in refresh_unit
     assert "build-alpha-discovery-board" in refresh_unit
@@ -401,6 +400,52 @@ def test_factor_factory_uses_shared_worker_and_hourly_cloud_request_only():
     assert "FACTOR_FACTORY_MAX_INPUT_UNCOMPRESSED_BYTES=4294967296" in nas_env
     assert "FACTOR_FACTORY_MAX_SNAPSHOT_BYTES=2147483648" in nas_env
     assert "MAX_SNAPSHOT_BYTES=21474836480" in nas_env
+
+
+def test_v5_candidate_evidence_uses_bounded_hourly_nas_request_plane():
+    request_service = _unit("quant-lab-v5-candidate-evidence-request.service")
+    request_timer = _unit("quant-lab-v5-candidate-evidence-request.timer")
+    importer = _unit("quant-lab-research-result-import.service")
+    refresh_service = _unit("quant-lab-v5-research-refresh.service")
+    nas_compose = (ROOT / "deploy" / "nas_research_worker" / "docker-compose.yml").read_text(
+        encoding="utf-8"
+    )
+    nas_env = (ROOT / "deploy" / "nas_research_worker" / ".env.example").read_text(
+        encoding="utf-8"
+    )
+
+    assert "request-v5-candidate-evidence" in request_service
+    assert "build-v5-candidate-labels" not in request_service
+    assert "build-strategy-evidence" not in request_service
+    assert "QUANT_LAB_LOCAL_V5_CANDIDATE_EVIDENCE_ENABLED=1" not in refresh_service
+    assert "build-v5-candidate-labels" not in refresh_service
+    assert "build-strategy-evidence" not in refresh_service
+    assert "QUANT_LAB_NAS_V5_CANDIDATE_EVIDENCE_ENABLED" in request_service
+    assert "POLARS_MAX_THREADS=1" in request_service
+    assert "CPUQuota=30%" in request_service
+    assert "MemoryHigh=500M" in request_service
+    assert "MemoryMax=900M" in request_service
+    assert "OnCalendar=*-*-* *:20:00 UTC" in request_timer
+    assert "RandomizedDelaySec=2min" in request_timer
+    assert "--v5-candidate-evidence-max-result-bytes" in importer
+    assert "--v5-candidate-evidence-max-result-uncompressed-bytes" in importer
+    assert "--v5-candidate-evidence-max-partition-bytes" in importer
+    assert "--v5-candidate-evidence-max-partition-uncompressed-bytes" in importer
+    assert "--v5-candidate-evidence-max-file-count" in importer
+    assert "cpus: 3.0" in nas_compose
+    assert "mem_limit: ${NAS_RESEARCH_WORKER_MEMORY_LIMIT:-8g}" in nas_compose
+    assert "pids_limit: 256" in nas_compose
+    assert "QUANT_RESEARCH_V5_CANDIDATE_EVIDENCE_ENABLED=0" in nas_env
+    assert "QUANT_LAB_V5_CANDIDATE_EVIDENCE_MAX_SNAPSHOT_BYTES=536870912" in nas_env
+    assert "QUANT_LAB_V5_CANDIDATE_EVIDENCE_MAX_INPUT_UNCOMPRESSED_BYTES=1073741824" in nas_env
+    assert "QUANT_LAB_V5_CANDIDATE_EVIDENCE_MAX_RESULT_BYTES=268435456" in nas_env
+    assert "QUANT_LAB_V5_CANDIDATE_EVIDENCE_MAX_RESULT_UNCOMPRESSED_BYTES=536870912" in nas_env
+    assert "QUANT_LAB_V5_CANDIDATE_EVIDENCE_MAX_PARTITION_BYTES=67108864" in nas_env
+    assert (
+        "QUANT_LAB_V5_CANDIDATE_EVIDENCE_MAX_PARTITION_UNCOMPRESSED_BYTES=134217728"
+        in nas_env
+    )
+    assert "QUANT_LAB_V5_CANDIDATE_EVIDENCE_MAX_FILE_COUNT=5000" in nas_env
 
 
 def test_scheduled_compaction_covers_hot_ws_datasets():

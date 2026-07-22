@@ -189,6 +189,17 @@ def build_candidate_labels(
     *,
     created_at: datetime | None = None,
 ) -> pl.DataFrame:
+    return compute_v5_candidate_labels(events, market_bars, created_at=created_at)
+
+
+def compute_v5_candidate_labels(
+    events: pl.DataFrame,
+    market_bars: pl.DataFrame,
+    *,
+    created_at: datetime | None = None,
+) -> pl.DataFrame:
+    """Compute Candidate Label rows without reading or writing a Lake."""
+
     if events.is_empty():
         return pl.DataFrame(schema=LABEL_SCHEMA)
     created = created_at or datetime.now(UTC)
@@ -207,6 +218,25 @@ def build_candidate_quality(
     as_of_date: date,
     created_at: datetime | None = None,
 ) -> pl.DataFrame:
+    return derive_candidate_quality(
+        events,
+        labels,
+        run_summary,
+        as_of_date=as_of_date,
+        created_at=created_at,
+    )
+
+
+def derive_candidate_quality(
+    events: pl.DataFrame,
+    labels: pl.DataFrame,
+    run_summary: pl.DataFrame,
+    *,
+    as_of_date: date,
+    created_at: datetime | None = None,
+) -> pl.DataFrame:
+    """Derive the cloud-owned Candidate Quality row from accepted inputs."""
+
     created = created_at or datetime.now(UTC)
     event_rows = events.to_dicts() if not events.is_empty() else []
     label_rows = labels.to_dicts() if not labels.is_empty() else []
@@ -332,6 +362,21 @@ def build_candidate_outcome_summary(
     as_of_date: date,
     created_at: datetime | None = None,
 ) -> pl.DataFrame:
+    return derive_candidate_outcome_summary(
+        labels,
+        as_of_date=as_of_date,
+        created_at=created_at,
+    )
+
+
+def derive_candidate_outcome_summary(
+    labels: pl.DataFrame,
+    *,
+    as_of_date: date,
+    created_at: datetime | None = None,
+) -> pl.DataFrame:
+    """Derive the cloud-owned Candidate Outcome Summary without Lake I/O."""
+
     created = created_at or datetime.now(UTC)
     if labels.is_empty():
         return _summary_frame([])

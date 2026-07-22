@@ -174,6 +174,14 @@ def publish_alpha_factory_generation(
                 generated_at=manifest.generated_at,
             )
             atomic_write_json(staged / "_research_generation.json", generation_payload)
+            candidate_evidence_sidecar = (
+                root / target / "_v5_candidate_evidence_generation.json"
+            )
+            if candidate_evidence_sidecar.is_file():
+                shutil.copy2(
+                    candidate_evidence_sidecar,
+                    staged / candidate_evidence_sidecar.name,
+                )
             row_counts[name] = frame.height
             items.append(
                 AtomicPublishItem(

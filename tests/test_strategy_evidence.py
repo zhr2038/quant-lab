@@ -545,6 +545,143 @@ def test_strategy_evidence_incremental_updates_pending_sample_and_preserves_othe
     assert files_after == files_before
 
 
+def test_strategy_evidence_shared_tables_preserve_and_ignore_other_sources(tmp_path):
+    lake = tmp_path / "lake"
+    recent_ts = datetime(2026, 5, 10, tzinfo=UTC)
+    _write_single_candidate_label(lake, candidate_id="managed", ts=recent_ts)
+
+    sample_row = {column: None for column in strategy_evidence_module.SAMPLE_SCHEMA}
+    sample_row.update(
+        {
+            "strategy": "v5",
+            "evidence_version": "external-v1",
+            "as_of_date": "2026-05-10",
+            "candidate_id": "external-candidate",
+            "run_id": "external-run",
+            "ts_utc": recent_ts,
+            "symbol": "BTC-USDT",
+            "strategy_candidate": "external.alpha",
+            "candidate_name": "external.alpha",
+            "source_type": "external_research",
+            "sample_count": 1,
+            "complete_sample_count": 1,
+            "regime_state": "trend",
+            "horizon_hours": 4,
+            "net_bps_after_cost": 500.0,
+            "win": True,
+            "label_status": "complete",
+            "label_reason": "external",
+            "cost_source": "external",
+            "source_event_key": "external-candidate",
+            "created_at": recent_ts,
+            "source": "research.external.test",
+        }
+    )
+    other_samples = pl.DataFrame(
+        [sample_row, sample_row],
+        schema=strategy_evidence_module.SAMPLE_SCHEMA,
+        orient="row",
+    )
+    sample_path = lake / "gold" / "strategy_evidence_sample"
+    write_parquet_dataset(other_samples, sample_path)
+
+    summary_row = {
+        column: None for column in strategy_evidence_module.SUMMARY_SCHEMA
+    }
+    summary_row.update(
+        {
+            "strategy": "v5",
+            "evidence_version": "external-v1",
+            "as_of_date": "2026-05-10",
+            "strategy_candidate": "external.alpha",
+            "candidate_name": "external.alpha",
+            "symbol": "BTC-USDT",
+            "regime_state": "trend",
+            "horizon_hours": 4,
+            "sample_count": 1,
+            "complete_sample_count": 1,
+            "avg_net_bps": 500.0,
+            "median_net_bps": 500.0,
+            "p25_net_bps": 500.0,
+            "win_rate": 1.0,
+            "cost_source_mix": '{"external":1}',
+            "decision": "EXTERNAL_ONLY",
+            "decision_reasons": "[]",
+            "start_ts": recent_ts,
+            "end_ts": recent_ts,
+            "created_at": recent_ts,
+            "source": "research.external.test",
+        }
+    )
+    other_summaries = pl.DataFrame(
+        [summary_row, summary_row],
+        schema=strategy_evidence_module.SUMMARY_SCHEMA,
+        orient="row",
+    )
+    summary_path = lake / "gold" / "strategy_evidence"
+    write_parquet_dataset(other_summaries, summary_path)
+
+    quality_row = {
+        column: None for column in strategy_evidence_module.QUALITY_SCHEMA
+    }
+    quality_row.update(
+        {
+            "strategy": "v5",
+            "evidence_version": "external-v1",
+            "as_of_date": "2026-05-10",
+            "severity": "INFO",
+            "warning_type": "external",
+            "warning_count": 0,
+            "detail": "preserve exactly",
+            "created_at": recent_ts,
+            "source": "research.external.test",
+        }
+    )
+    other_quality = pl.DataFrame(
+        [quality_row, quality_row],
+        schema=strategy_evidence_module.QUALITY_SCHEMA,
+        orient="row",
+    )
+    quality_path = lake / "gold" / "strategy_evidence_quality"
+    write_parquet_dataset(other_quality, quality_path)
+
+    result = build_and_publish_strategy_evidence(
+        lake,
+        as_of_date="2026-05-10",
+        mode="incremental",
+        lookback_days=2,
+        include_historical_outcomes=False,
+    )
+    published_samples = read_parquet_dataset(sample_path)
+    published_summaries = read_parquet_dataset(summary_path)
+    published_quality = read_parquet_dataset(quality_path)
+
+    assert result.candidate_count == 1
+    assert published_summaries.filter(
+        pl.col("source") == strategy_evidence_module.SOURCE_NAME
+    )["strategy_candidate"].to_list() == ["v5.sol_protect_exception"]
+    assert published_summaries.filter(
+        pl.col("source") == "research.external.test"
+    ).to_dicts() == other_summaries.to_dicts()
+    assert published_quality.filter(
+        pl.col("source") == "research.external.test"
+    ).to_dicts() == other_quality.to_dicts()
+
+    managed_samples = published_samples.filter(
+        pl.col("source") == strategy_evidence_module.SOURCE_NAME
+    )
+    rows = strategy_evidence_module.publish_strategy_evidence_samples(
+        lake,
+        managed_samples,
+        replace_as_of_dates=True,
+    )
+    after_full_replace = read_parquet_dataset(sample_path)
+    assert rows == 3
+    assert after_full_replace.filter(
+        pl.col("source") == "research.external.test"
+    ).to_dicts() == other_samples.to_dicts()
+
+
 def test_strategy_evidence_incremental_mode_skips_historical_outcome_inputs(tmp_path):
     lake = tmp_path / "lake"
     now = datetime(2026, 5, 10, tzinfo=UTC)

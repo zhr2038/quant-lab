@@ -97,6 +97,10 @@ class FactorFactoryTaskRequestResult:
     task: FactorFactoryTask | None = None
     status: ResearchTaskStatus | None = None
     snapshot_rehydrated: bool = False
+    input_fingerprint: dict[str, Any] | None = None
+    fingerprint_matches_generation: bool = False
+    compressed_input_bytes: int | None = None
+    estimated_uncompressed_input_bytes: int | None = None
 
     def __iter__(self) -> Iterator[FactorFactoryTask | ResearchTaskStatus]:
         if self.task is None or self.status is None:
@@ -110,6 +114,10 @@ class FactorFactoryTaskRequestResult:
             "task_created": self.task_created,
             "snapshot_materialized": self.snapshot_materialized,
             "snapshot_rehydrated": self.snapshot_rehydrated,
+            "input_fingerprint": self.input_fingerprint,
+            "fingerprint_matches_generation": self.fingerprint_matches_generation,
+            "compressed_input_bytes": self.compressed_input_bytes,
+            "estimated_uncompressed_input_bytes": self.estimated_uncompressed_input_bytes,
             "current_generation_id": self.current_generation_id,
             "reason": self.reason,
             "snapshot_id": self.snapshot_id,
@@ -176,6 +184,10 @@ def create_factor_factory_task(
             current_generation_id=str(current.get("generation_id") or "") or None,
             reason="factor_factory_inputs_unchanged",
             snapshot_id=preflight.snapshot_id,
+            input_fingerprint=preflight.input_fingerprint.model_dump(mode="json"),
+            fingerprint_matches_generation=True,
+            compressed_input_bytes=sum(item.size_bytes for item in preflight.source_files),
+            estimated_uncompressed_input_bytes=preflight.estimated_uncompressed_bytes,
         )
         _write_factor_factory_request_result(queue, result)
         return result
@@ -186,8 +198,12 @@ def create_factor_factory_task(
             task_created=False,
             snapshot_materialized=False,
             current_generation_id=None,
-            reason=str(no_update.get("reason") or "factor_factory_empty_input_unchanged"),
+            reason=str(no_update.get("reason") or "factor_factory_input_still_empty"),
             snapshot_id=preflight.snapshot_id,
+            input_fingerprint=preflight.input_fingerprint.model_dump(mode="json"),
+            fingerprint_matches_generation=True,
+            compressed_input_bytes=sum(item.size_bytes for item in preflight.source_files),
+            estimated_uncompressed_input_bytes=preflight.estimated_uncompressed_bytes,
         )
         _write_factor_factory_request_result(queue, result)
         return result
@@ -207,6 +223,9 @@ def create_factor_factory_task(
             ),
             reason="factor_factory_minimum_recompute_interval_active",
             snapshot_id=preflight.snapshot_id,
+            input_fingerprint=preflight.input_fingerprint.model_dump(mode="json"),
+            compressed_input_bytes=sum(item.size_bytes for item in preflight.source_files),
+            estimated_uncompressed_input_bytes=preflight.estimated_uncompressed_bytes,
         )
         _write_factor_factory_request_result(queue, result)
         return result
@@ -226,8 +245,11 @@ def create_factor_factory_task(
             "task_type": FACTOR_FACTORY_TASK_TYPE,
             "snapshot_id": snapshot.snapshot_id,
             "factor_plan_digest": snapshot.factor_plan_digest,
+            "feature_input_digest": snapshot.feature_input_digest,
+            "market_input_digest": snapshot.market_input_digest,
             "source_input_digest": snapshot.source_input_digest,
             "cost_input_digest": snapshot.cost_input_digest,
+            "combined_input_digest": snapshot.combined_input_digest,
             "previous_generation_id": previous_id,
             "previous_generation_digest": previous_digest,
             "parameters": {
@@ -266,6 +288,9 @@ def create_factor_factory_task(
             snapshot_id=snapshot.snapshot_id,
             task=task,
             status=status,
+            input_fingerprint=preflight.input_fingerprint.model_dump(mode="json"),
+            compressed_input_bytes=sum(item.size_bytes for item in preflight.source_files),
+            estimated_uncompressed_input_bytes=preflight.estimated_uncompressed_bytes,
         )
         _write_factor_factory_request_result(queue, result)
         return result
@@ -337,6 +362,9 @@ def create_factor_factory_task(
         snapshot_id=snapshot.snapshot_id,
         task=task,
         status=status,
+        input_fingerprint=preflight.input_fingerprint.model_dump(mode="json"),
+        compressed_input_bytes=sum(item.size_bytes for item in preflight.source_files),
+        estimated_uncompressed_input_bytes=preflight.estimated_uncompressed_bytes,
     )
     _write_factor_factory_request_result(queue, result)
     return result
@@ -367,8 +395,11 @@ def _factor_factory_pointer_matches_preflight(
             for name in (
                 "quant_lab_commit",
                 "factor_plan_digest",
+                "feature_input_digest",
+                "market_input_digest",
                 "source_input_digest",
                 "cost_input_digest",
+                "combined_input_digest",
                 "feature_set",
                 "feature_version",
                 "factor_version",
@@ -415,7 +446,7 @@ def _write_factor_factory_request_result(
     atomic_write_json(
         queue / "status" / "factor_factory_request.json",
         {
-            "schema_version": "quant_lab_factor_factory_request_status.v1",
+            "schema_version": "quant_lab_factor_factory_request_status.v2",
             **{
                 key: value
                 for key, value in result.model_dump().items()
@@ -426,9 +457,35 @@ def _write_factor_factory_request_result(
                 if result.state in {"already_current", "already_current_no_update"}
                 else result.state
             ),
+            "request_outcome": result.state,
+            "snapshot_payload_state": _factor_factory_snapshot_payload_state(queue, result),
+            "already_current_at": (
+                datetime.now(UTC).isoformat()
+                if result.state in {"already_current", "already_current_no_update"}
+                else None
+            ),
+            "no_update_reason": (
+                result.reason if result.state == "already_current_no_update" else None
+            ),
             "observed_at": datetime.now(UTC).isoformat(),
         },
     )
+
+
+def _factor_factory_snapshot_payload_state(
+    queue: Path,
+    result: FactorFactoryTaskRequestResult,
+) -> str:
+    snapshot_root = queue / "snapshots" / result.snapshot_id
+    if list((queue / "snapshots").glob(f".rehydrate.{result.snapshot_id}.*.partial")):
+        return "rehydrating"
+    if (snapshot_root / "FILES_RELEASED.json").is_file():
+        return "released"
+    if result.snapshot_rehydrated or (snapshot_root / "FILES_REHYDRATED.json").is_file():
+        return "rehydrated"
+    if (snapshot_root / "files").is_dir():
+        return "materialized"
+    return "not_materialized"
 
 
 def create_factor_research_task(

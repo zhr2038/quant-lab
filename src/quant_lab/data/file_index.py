@@ -17,20 +17,32 @@ from quant_lab.export_plane.signatures import sha256_file
 
 LAKE_FILE_INDEX = Path("bronze") / "lake_file_index"
 TIMESTAMP_COLUMNS = ("ts", "timestamp", "received_at", "created_at", "minute_ts")
-INDEX_VERSION = "lake_file_index.v0.3"
+INDEX_VERSION = "lake_file_index.v0.4"
+SCOPE_METADATA_VERSION = "lake_file_scope_metadata.v1"
 
 
 def build_lake_file_index(
     lake_root: str | Path,
     dataset_paths: Iterable[str | Path],
 ) -> pl.DataFrame:
-    root = Path(lake_root)
+    # Read-only callers may inspect a Lake path before it has been initialized.
+    # ``strict=False`` still canonicalizes existing parents without creating state.
+    root = Path(lake_root).resolve(strict=False)
     existing = read_parquet_dataset(root / LAKE_FILE_INDEX)
     existing_by_key = _existing_rows_by_key(existing)
     rows: list[dict] = []
     indexed_datasets: list[str] = []
     for dataset_path in dataset_paths:
-        absolute = root / Path(dataset_path)
+        relative_dataset_path = Path(dataset_path)
+        if relative_dataset_path.is_absolute() or ".." in relative_dataset_path.parts:
+            raise ValueError("lake_file_index_dataset_path_escape")
+        absolute = root / relative_dataset_path
+        if _path_has_symlink(root, absolute):
+            raise ValueError("lake_file_index_dataset_symlink")
+        if absolute.exists():
+            resolved = absolute.resolve(strict=True)
+            if root not in resolved.parents:
+                raise ValueError("lake_file_index_dataset_path_escape")
         dataset = str(absolute.relative_to(root)).replace("\\", "/")
         indexed_datasets.append(dataset)
         rows.extend(_index_dataset(root, absolute, existing_by_key=existing_by_key))
@@ -159,6 +171,12 @@ def _index_dataset(
         if not file_path.is_file() or _is_internal_file(file_path):
             continue
         relative_path = str(file_path.relative_to(lake_root)).replace("\\", "/")
+        if _path_has_symlink(lake_root, file_path):
+            raise ValueError(f"lake_file_index_source_symlink:{relative_path}")
+        resolved = file_path.resolve(strict=True)
+        resolved_dataset = dataset_path.resolve(strict=True)
+        if lake_root not in resolved_dataset.parents or resolved_dataset not in resolved.parents:
+            raise ValueError(f"lake_file_index_source_path_escape:{relative_path}")
         try:
             stat = file_path.stat()
         except OSError as exc:
@@ -177,6 +195,7 @@ def _index_dataset(
             source_sha = sha256_file(file_path)
             schema_fingerprint = _parquet_schema_fingerprint(file_path)
             uncompressed_bytes = _parquet_uncompressed_bytes(file_path)
+            scope_metadata_json = _file_scope_metadata(file_path, dataset=dataset)
             after = file_path.stat()
         except Exception as exc:
             raise RuntimeError(f"lake_file_index_source_read_failed:{relative_path}") from exc
@@ -196,6 +215,7 @@ def _index_dataset(
                 "source_sha": source_sha,
                 "schema_fingerprint": schema_fingerprint,
                 "uncompressed_bytes": uncompressed_bytes,
+                "scope_metadata_json": scope_metadata_json,
                 "indexed_at": indexed_at,
                 "index_version": INDEX_VERSION,
                 "reused_from_previous_index": False,
@@ -219,6 +239,7 @@ def _reuse_index_row(row: dict[str, Any], *, stat, indexed_at: str) -> dict[str,
     reused["mtime_ns"] = stat.st_mtime_ns
     reused["sha256"] = str(reused["sha256"])
     reused["source_sha"] = str(reused["sha256"])
+    reused["scope_metadata_json"] = str(reused.get("scope_metadata_json") or "")
     reused["indexed_at"] = str(reused.get("indexed_at") or indexed_at)
     reused["index_version"] = INDEX_VERSION
     reused["reused_from_previous_index"] = True
@@ -274,6 +295,88 @@ def _stable_index_identity_present(row: dict[str, Any]) -> bool:
         and len(schema) == 64
         and all(character in "0123456789abcdef" for character in schema)
         and _int_value(row.get("uncompressed_bytes")) is not None
+        and _valid_scope_metadata(row.get("scope_metadata_json"))
+    )
+
+
+def _file_scope_metadata(file_path: Path, *, dataset: str) -> str:
+    schema = set(pl.read_parquet_schema(file_path))
+    scopes: list[dict[str, Any]] = []
+    if dataset == "gold/feature_value" and {
+        "feature_set",
+        "feature_version",
+        "timeframe",
+        "feature_name",
+        "ts",
+    }.issubset(schema):
+        lazy = pl.scan_parquet(file_path, hive_partitioning=False)
+        if "is_valid" in schema:
+            lazy = lazy.filter(pl.col("is_valid").cast(pl.Boolean, strict=False).fill_null(False))
+        grouped = (
+            lazy.group_by(["feature_set", "feature_version", "timeframe"])
+            .agg(
+                pl.len().alias("row_count"),
+                _timestamp_expr("ts").min().alias("min_ts"),
+                _timestamp_expr("ts").max().alias("max_ts"),
+                pl.col("feature_name").cast(pl.Utf8).drop_nulls().unique().sort().alias(
+                    "feature_names"
+                ),
+            )
+            .sort(["feature_set", "feature_version", "timeframe"])
+            .collect(engine="streaming")
+        )
+        for row in grouped.iter_rows(named=True):
+            scopes.append(
+                {
+                    "feature_set": str(row["feature_set"]),
+                    "feature_version": str(row["feature_version"]),
+                    "timeframe": str(row["timeframe"]),
+                    "row_count": int(row["row_count"]),
+                    "min_ts": _iso(_coerce_datetime(row.get("min_ts"))),
+                    "max_ts": _iso(_coerce_datetime(row.get("max_ts"))),
+                    "feature_names": [str(value) for value in row.get("feature_names") or []],
+                }
+            )
+    elif dataset == "silver/market_bar" and {"timeframe", "ts"}.issubset(schema):
+        lazy = pl.scan_parquet(file_path, hive_partitioning=False)
+        if "is_closed" in schema:
+            lazy = lazy.filter(pl.col("is_closed").cast(pl.Boolean, strict=False).fill_null(False))
+        grouped = (
+            lazy.group_by("timeframe")
+            .agg(
+                pl.len().alias("row_count"),
+                _timestamp_expr("ts").min().alias("min_ts"),
+                _timestamp_expr("ts").max().alias("max_ts"),
+            )
+            .sort("timeframe")
+            .collect(engine="streaming")
+        )
+        for row in grouped.iter_rows(named=True):
+            scopes.append(
+                {
+                    "timeframe": str(row["timeframe"]),
+                    "row_count": int(row["row_count"]),
+                    "min_ts": _iso(_coerce_datetime(row.get("min_ts"))),
+                    "max_ts": _iso(_coerce_datetime(row.get("max_ts"))),
+                }
+            )
+    return json.dumps(
+        {"schema_version": SCOPE_METADATA_VERSION, "scopes": scopes},
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def _valid_scope_metadata(value: Any) -> bool:
+    try:
+        payload = json.loads(str(value or ""))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return False
+    return (
+        isinstance(payload, dict)
+        and payload.get("schema_version") == SCOPE_METADATA_VERSION
+        and isinstance(payload.get("scopes"), list)
     )
 
 
@@ -306,7 +409,13 @@ def _frames_equal(left: pl.DataFrame, right: pl.DataFrame) -> bool:
     # This flag describes the current in-memory scan, not durable file identity.
     # Ignoring it prevents a second whole-index rewrite after every real change.
     columns = sorted(set(left.columns) - {"reused_from_previous_index"})
-    return left.select(columns).equals(right.select(columns))
+    sort_columns = [name for name in ("dataset", "path") if name in columns]
+    normalized_left = left.select(columns)
+    normalized_right = right.select(columns)
+    if sort_columns:
+        normalized_left = normalized_left.sort(sort_columns)
+        normalized_right = normalized_right.sort(sort_columns)
+    return normalized_left.equals(normalized_right)
 
 
 def _timestamp_expr(column: str) -> pl.Expr:
@@ -361,3 +470,16 @@ def _is_internal_file(path: Path) -> bool:
     return path.name.startswith(".") or any(
         part.startswith("__") or part.startswith(".") for part in path.parts
     )
+
+
+def _path_has_symlink(root: Path, path: Path) -> bool:
+    try:
+        relative = path.relative_to(root)
+    except ValueError:
+        return True
+    current = root
+    for part in relative.parts:
+        current = current / part
+        if current.is_symlink():
+            return True
+    return False

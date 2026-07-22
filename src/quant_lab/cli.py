@@ -110,6 +110,7 @@ from quant_lab.research_plane.contracts import (
     DEFAULT_FACTOR_FACTORY_MAX_SNAPSHOT_BYTES,
     DEFAULT_FACTOR_FACTORY_MAX_UNCOMPRESSED_BYTES,
     DEFAULT_FACTOR_FACTORY_MAX_VALUE_PARTITION_BYTES,
+    DEFAULT_FACTOR_FACTORY_MAX_VALUE_PARTITION_UNCOMPRESSED_BYTES,
     DEFAULT_RESEARCH_MAX_RESULT_BYTES,
 )
 from quant_lab.research_plane.importer import (
@@ -2029,28 +2030,33 @@ def request_factor_factory_command(
     horizons = tuple(
         sorted({int(value.strip()) for value in horizon_bars.split(",") if value.strip()})
     )
-    result = create_factor_factory_task(
-        lake_root,
-        queue_root,
-        as_of_date=day,
-        feature_set=feature_set,
-        feature_version=feature_version,
-        factor_version=factor_version,
-        timeframe=timeframe,
-        horizon_bars=horizons,
-        decision_delay_bars=decision_delay_bars,
-        max_factors=max_factors,
-        min_samples=min_samples,
-        top_quantile=top_quantile,
-        cost_quantile=cost_quantile,
-        signing_key=load_signing_key(signing_key_path),
-        signature_key_id=key_id,
-        quant_lab_commit=quant_lab_commit,
-        max_input_bytes=max_input_bytes,
-        max_input_rows=max_input_rows,
-        max_pending_tasks=max_pending_tasks,
-        min_recompute_interval_seconds=min_recompute_interval_seconds,
-    )
+    try:
+        result = create_factor_factory_task(
+            lake_root,
+            queue_root,
+            as_of_date=day,
+            feature_set=feature_set,
+            feature_version=feature_version,
+            factor_version=factor_version,
+            timeframe=timeframe,
+            horizon_bars=horizons,
+            decision_delay_bars=decision_delay_bars,
+            max_factors=max_factors,
+            min_samples=min_samples,
+            top_quantile=top_quantile,
+            cost_quantile=cost_quantile,
+            signing_key=load_signing_key(signing_key_path),
+            signature_key_id=key_id,
+            quant_lab_commit=quant_lab_commit,
+            max_input_bytes=max_input_bytes,
+            max_input_rows=max_input_rows,
+            max_pending_tasks=max_pending_tasks,
+            min_recompute_interval_seconds=min_recompute_interval_seconds,
+        )
+    except RuntimeError as exc:
+        if "snapshot_rehydrate" in str(exc):
+            typer.echo("FACTOR_FACTORY_SNAPSHOT_REHYDRATE_FAILED", err=True)
+        raise
     event_by_state = {
         "task_created": "FACTOR_FACTORY_TASK_CREATED",
         "already_current": "FACTOR_FACTORY_ALREADY_CURRENT",
@@ -2367,6 +2373,10 @@ def import_entry_quality_history_results_command(
     factor_factory_max_value_partition_bytes: Annotated[
         int, typer.Option("--factor-factory-max-value-partition-bytes", min=1)
     ] = DEFAULT_FACTOR_FACTORY_MAX_VALUE_PARTITION_BYTES,
+    factor_factory_max_value_partition_uncompressed_bytes: Annotated[
+        int,
+        typer.Option("--factor-factory-max-value-partition-uncompressed-bytes", min=1),
+    ] = DEFAULT_FACTOR_FACTORY_MAX_VALUE_PARTITION_UNCOMPRESSED_BYTES,
     factor_factory_max_file_count: Annotated[
         int, typer.Option("--factor-factory-max-file-count", min=1)
     ] = 20_000,
@@ -2392,6 +2402,9 @@ def import_entry_quality_history_results_command(
         "max_result_bytes": max_result_bytes,
         "factor_factory_max_result_bytes": factor_factory_max_result_bytes,
         "factor_factory_max_value_partition_bytes": (factor_factory_max_value_partition_bytes),
+        "factor_factory_max_value_partition_uncompressed_bytes": (
+            factor_factory_max_value_partition_uncompressed_bytes
+        ),
         "factor_factory_max_file_count": factor_factory_max_file_count,
         "factor_factory_max_uncompressed_bytes": factor_factory_max_uncompressed_bytes,
     }

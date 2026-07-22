@@ -5,6 +5,7 @@ import hashlib
 import logging
 import os
 import shlex
+import shutil
 import signal
 import subprocess
 import threading
@@ -486,6 +487,7 @@ def process_claimed_task(config: Config, task_id: str) -> None:
                     max_input_uncompressed_bytes=(
                         config.factor_factory_max_input_uncompressed_bytes
                     ),
+                    work_dir=work,
                 )
             elif isinstance(task, AlphaFactoryTask):
                 if not isinstance(snapshot, AlphaFactorySnapshotManifest):
@@ -625,6 +627,7 @@ def process_claimed_task(config: Config, task_id: str) -> None:
     finally:
         if heartbeat.is_alive():
             _stop_heartbeat(config, heartbeat_stop, heartbeat)
+        shutil.rmtree(work / "factor-factory-stage", ignore_errors=True)
 
 
 def _task_status_dimensions(task: ResearchTaskEnvelope) -> tuple[Any, Any, str, str]:

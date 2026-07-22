@@ -199,7 +199,18 @@ def _research_plane_status_for_type(
         if task_type == "factor_factory":
             selected_payload.update(_factor_factory_status_details(queue_root, selected))
     state = selected.state.value if selected else "idle"
-    if (
+    snapshot_root = queue_root / "snapshots"
+    snapshot_rehydrating = task_type == "factor_factory" and any(
+        snapshot_root.glob(".rehydrate.*.partial")
+    )
+    snapshot_sealing = task_type == "factor_factory" and any(
+        snapshot_root.glob(".sealing.*.partial")
+    )
+    if snapshot_rehydrating:
+        state = "snapshot_rehydrating"
+    elif snapshot_sealing:
+        state = "snapshot_sealing"
+    elif (
         active is None
         and request_status
         and request_status.get("state")
@@ -209,7 +220,7 @@ def _research_plane_status_for_type(
         }
     ):
         state = "up_to_date"
-    return {
+    payload = {
         "schema_version": schema_version,
         "task_type": task_type,
         "state": state,
@@ -220,6 +231,33 @@ def _research_plane_status_for_type(
         "research_only": True,
         "live_order_effect": "none",
     }
+    if task_type == "factor_factory":
+        request = request_status or {}
+        payload_state = request.get("snapshot_payload_state")
+        if snapshot_rehydrating:
+            payload_state = "rehydrating"
+        elif snapshot_sealing:
+            payload_state = "sealing"
+        payload.update(
+            {
+                "health_state": request.get("health_state") or state,
+                "request_outcome": request.get("request_outcome") or request.get("state"),
+                "input_fingerprint": request.get("input_fingerprint"),
+                "fingerprint_matches_generation": bool(
+                    request.get("fingerprint_matches_generation", False)
+                ),
+                "snapshot_materialized": bool(request.get("snapshot_materialized", False)),
+                "snapshot_rehydrated": bool(request.get("snapshot_rehydrated", False)),
+                "snapshot_payload_state": payload_state,
+                "compressed_input_bytes": request.get("compressed_input_bytes"),
+                "estimated_uncompressed_input_bytes": request.get(
+                    "estimated_uncompressed_input_bytes"
+                ),
+                "already_current_at": request.get("already_current_at"),
+                "no_update_reason": request.get("no_update_reason"),
+            }
+        )
+    return payload
 
 
 def _aggregate_state(statuses: list[dict[str, Any]]) -> str:
@@ -280,7 +318,38 @@ def _factor_factory_status_details(
             except (OSError, ValueError):
                 snapshot = None
             if isinstance(snapshot, FactorFactorySnapshotManifest):
-                details["factor_count"] = snapshot.factor_plan.factor_count
+                snapshot_root = queue_root / "snapshots" / task.snapshot_id
+                payload_state = "sealed"
+                rehydrate_partials = (queue_root / "snapshots").glob(
+                    f".rehydrate.{task.snapshot_id}.*.partial"
+                )
+                if any(rehydrate_partials):
+                    payload_state = "rehydrating"
+                elif (snapshot_root / "FILES_RELEASED.json").is_file():
+                    payload_state = "released"
+                elif (snapshot_root / "FILES_REHYDRATED.json").is_file():
+                    payload_state = "rehydrated"
+                elif (snapshot_root / "files").is_dir():
+                    payload_state = "materialized"
+                details.update(
+                    {
+                        "factor_count": snapshot.factor_plan.factor_count,
+                        "input_fingerprint": (
+                            snapshot.input_fingerprint.model_dump(mode="json")
+                            if snapshot.input_fingerprint is not None
+                            else None
+                        ),
+                        "snapshot_payload_state": payload_state,
+                        "compressed_input_bytes": (
+                            snapshot.compressed_input_bytes or snapshot.total_input_bytes
+                        ),
+                        "estimated_uncompressed_input_bytes": (
+                            snapshot.estimated_uncompressed_input_bytes
+                            if snapshot.estimated_uncompressed_input_bytes is not None
+                            else snapshot.estimated_uncompressed_bytes
+                        ),
+                    }
+                )
     for result_state in ("inbox", "imported"):
         manifest_path = queue_root / "results" / result_state / status.task_id / "manifest.json"
         if not manifest_path.is_file():

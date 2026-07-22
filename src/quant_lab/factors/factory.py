@@ -446,8 +446,20 @@ def build_factor_value_frame(
     specs: list[FactorSpec],
     *,
     created_at: datetime,
+    input_dataset_version: str | None = None,
+    input_hash: str | None = None,
+    code_version: str | None = None,
+    available_feature_names: tuple[str, ...] | None = None,
 ) -> pl.DataFrame:
-    return _build_factor_value_frame(features, specs, created_at=created_at)
+    return _build_factor_value_frame(
+        features,
+        specs,
+        created_at=created_at,
+        input_dataset_version=input_dataset_version,
+        input_hash=input_hash,
+        code_version=code_version,
+        available_feature_names=available_feature_names,
+    )
 
 
 def build_and_publish_factor_factory(
@@ -885,32 +897,107 @@ def build_factor_evidence_frame(
         if stage_callback is not None and not evidence_stage_reported:
             stage_callback("computing_evidence")
             evidence_stage_reported = True
-        evidence_dataset = values.rename({"ts": "feature_ts"}).join(
-            labels,
-            on=["symbol", "timeframe", "feature_ts"],
-            how="inner",
+        rows.extend(
+            _factor_evidence_rows_from_labels(
+                values,
+                labels,
+                cost_frame,
+                factor_keys=factor_keys,
+                as_of_date=as_of_date,
+                horizon_bars=horizon,
+                decision_delay_bars=decision_delay_bars,
+                min_samples=min_samples,
+                top_quantile=top_quantile,
+                created_at=created_at,
+                decision_policy=decision_policy,
+            )
         )
-        evidence_dataset = attach_symbol_cost_frame(evidence_dataset, cost_frame)
-        for factor_key, group in evidence_dataset.group_by(factor_keys, maintain_order=True):
-            factor_meta = dict(
-                zip(factor_keys, _as_tuple(factor_key, len(factor_keys)), strict=True)
-            )
-            rows.append(
-                _factor_evidence_row(
-                    group,
-                    factor_meta=factor_meta,
-                    as_of_date=as_of_date,
-                    horizon_bars=horizon,
-                    decision_delay_bars=decision_delay_bars,
-                    min_samples=min_samples,
-                    top_quantile=top_quantile,
-                    created_at=created_at,
-                    decision_policy=decision_policy,
-                )
-            )
     if decision_policy != LEGACY_MAIN_DECISION_POLICY:
         rows = _apply_multiple_testing(rows)
     return _schema_frame(rows, FACTOR_EVIDENCE_SCHEMA), _dedupe(warnings)
+
+
+def build_factor_evidence_from_labels(
+    values: pl.DataFrame,
+    labels: pl.DataFrame,
+    cost_frame: pl.DataFrame,
+    *,
+    as_of_date: date,
+    horizon_bars: int,
+    decision_delay_bars: int,
+    min_samples: int,
+    top_quantile: float,
+    created_at: datetime,
+    decision_policy: str = LEGACY_MAIN_DECISION_POLICY,
+) -> pl.DataFrame:
+    """Build one bounded evidence batch from precomputed immutable labels."""
+
+    factor_keys = [
+        "factor_id",
+        "factor_name",
+        "factor_family",
+        "factor_version",
+        "timeframe",
+        "factor_hash",
+        "canonical_factor_id",
+        "formula_hash",
+        "independence_weight",
+    ]
+    rows = _factor_evidence_rows_from_labels(
+        values,
+        labels,
+        cost_frame,
+        factor_keys=factor_keys,
+        as_of_date=as_of_date,
+        horizon_bars=horizon_bars,
+        decision_delay_bars=decision_delay_bars,
+        min_samples=min_samples,
+        top_quantile=top_quantile,
+        created_at=created_at,
+        decision_policy=decision_policy,
+    )
+    if decision_policy != LEGACY_MAIN_DECISION_POLICY:
+        raise ValueError("precomputed label batches require legacy main decision policy")
+    return _schema_frame(rows, FACTOR_EVIDENCE_SCHEMA)
+
+
+def _factor_evidence_rows_from_labels(
+    values: pl.DataFrame,
+    labels: pl.DataFrame,
+    cost_frame: pl.DataFrame,
+    *,
+    factor_keys: list[str],
+    as_of_date: date,
+    horizon_bars: int,
+    decision_delay_bars: int,
+    min_samples: int,
+    top_quantile: float,
+    created_at: datetime,
+    decision_policy: str,
+) -> list[dict[str, Any]]:
+    evidence_dataset = values.rename({"ts": "feature_ts"}).join(
+        labels,
+        on=["symbol", "timeframe", "feature_ts"],
+        how="inner",
+    )
+    evidence_dataset = attach_symbol_cost_frame(evidence_dataset, cost_frame)
+    rows: list[dict[str, Any]] = []
+    for factor_key, group in evidence_dataset.group_by(factor_keys, maintain_order=True):
+        factor_meta = dict(zip(factor_keys, _as_tuple(factor_key, len(factor_keys)), strict=True))
+        rows.append(
+            _factor_evidence_row(
+                group,
+                factor_meta=factor_meta,
+                as_of_date=as_of_date,
+                horizon_bars=horizon_bars,
+                decision_delay_bars=decision_delay_bars,
+                min_samples=min_samples,
+                top_quantile=top_quantile,
+                created_at=created_at,
+                decision_policy=decision_policy,
+            )
+        )
+    return rows
 
 
 def derive_factor_candidate_frame(
@@ -1089,14 +1176,26 @@ def _build_factor_value_frame(
     specs: list[FactorSpec],
     *,
     created_at: datetime,
+    input_dataset_version: str | None = None,
+    input_hash: str | None = None,
+    code_version: str | None = None,
+    available_feature_names: tuple[str, ...] | None = None,
 ) -> pl.DataFrame:
     if features.is_empty() or not specs:
         return pl.DataFrame(schema=FACTOR_VALUE_SCHEMA)
     specs = apply_factor_semantic_lineage(specs)
     wide = _pivot_feature_values(features)
-    input_dataset_version = _text_mode(features, "input_dataset_version", "feature_value:unknown")
-    input_hash = _text_mode(features, "input_hash", "sha256:unknown")
-    code_version = _code_version()
+    if available_feature_names is not None:
+        missing_columns = sorted(set(available_feature_names).difference(wide.columns))
+        if missing_columns:
+            wide = wide.with_columns(
+                [pl.lit(None, dtype=pl.Float64).alias(name) for name in missing_columns]
+            )
+    effective_input_dataset_version = input_dataset_version or _text_mode(
+        features, "input_dataset_version", "feature_value:unknown"
+    )
+    effective_input_hash = input_hash or _text_mode(features, "input_hash", "sha256:unknown")
+    effective_code_version = code_version or _code_version()
     frames: list[pl.DataFrame] = []
     for spec in specs:
         if not spec.causal:
@@ -1132,10 +1231,10 @@ def _build_factor_value_frame(
                 pl.lit(spec.effective_independence_weight).alias("effective_independence_weight"),
                 pl.lit(spec.effective_independence_weight).alias("independence_weight"),
                 pl.lit(safe_json_dumps(list(spec.input_features))).alias("input_features_json"),
-                pl.lit(input_dataset_version).alias("input_dataset_version"),
-                pl.lit(input_dataset_version).alias("data_version"),
-                pl.lit(input_hash).alias("input_hash"),
-                pl.lit(code_version).alias("code_version"),
+                pl.lit(effective_input_dataset_version).alias("input_dataset_version"),
+                pl.lit(effective_input_dataset_version).alias("data_version"),
+                pl.lit(effective_input_hash).alias("input_hash"),
+                pl.lit(effective_code_version).alias("code_version"),
                 pl.lit(created_at).alias("calculated_at"),
                 pl.lit(created_at).alias("created_at"),
                 pl.lit(SOURCE_NAME).alias("source"),

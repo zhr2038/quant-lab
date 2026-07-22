@@ -68,11 +68,15 @@ from quant_lab.research_plane.result import (
     validate_factor_research_result_bundle,
 )
 from quant_lab.research_plane.signatures import (
+    model_content_sha256,
     sha256_file,
     sign_model,
 )
 from quant_lab.research_worker.alpha_factory import AlphaFactoryWorkerComputeResult
-from quant_lab.research_worker.factor_factory import FactorFactoryComputeArtifacts
+from quant_lab.research_worker.factor_factory import (
+    FactorFactoryComputeArtifacts,
+    StagedFactorValueSet,
+)
 from quant_lab.research_worker.factor_research import FactorResearchComputeArtifacts
 
 FACTOR_FACTORY_CONTROL_OUTPUTS = (
@@ -313,11 +317,29 @@ def write_factor_factory_result_bundle(
 
 def _write_factor_value_partitions(
     outputs_root: Path,
-    values: pl.DataFrame,
+    values: pl.DataFrame | StagedFactorValueSet,
     *,
     max_partition_bytes: int,
     max_partition_rows: int,
 ) -> list[FactorFactoryPartitionReference]:
+    if isinstance(values, StagedFactorValueSet):
+        references: list[FactorFactoryPartitionReference] = []
+        observed_rows = 0
+        for staged_path in values.paths:
+            frame = pl.read_parquet(staged_path)
+            observed_rows += frame.height
+            references.extend(
+                _write_factor_value_partitions(
+                    outputs_root,
+                    frame,
+                    max_partition_bytes=max_partition_bytes,
+                    max_partition_rows=max_partition_rows,
+                )
+            )
+            del frame
+        if observed_rows != values.row_count:
+            raise RuntimeError("factor_factory_staged_value_row_count_mismatch")
+        return references
     if values.is_empty():
         return []
     if set(values.columns) != set(FACTOR_VALUE_SCHEMA):
@@ -402,6 +424,24 @@ def _write_bounded_factor_value_chunk(
         )
         return [*left, *right]
     relative = str(path.relative_to(outputs_root.parent)).replace("\\", "/")
+    file_sha256 = sha256_file(path)
+    uncompressed_bytes = _parquet_uncompressed_bytes(path)
+    min_ts = frame.get_column("ts").min()
+    max_ts = frame.get_column("ts").max()
+    partition_identity = model_content_sha256(
+        {
+            "schema_version": "quant_lab_factor_factory_partition_identity.v1",
+            "factor_version": factor_version,
+            "timeframe": timeframe,
+            "partition_date": partition_date.isoformat(),
+            "part_number": first_part_number,
+            "sha256": file_sha256,
+            "row_count": frame.height,
+            "schema_fingerprint": schema_fingerprint(frame.schema),
+            "min_ts": min_ts,
+            "max_ts": max_ts,
+        }
+    )
     return [
         FactorFactoryPartitionReference(
             factor_version=factor_version,
@@ -410,13 +450,26 @@ def _write_bounded_factor_value_chunk(
             part_number=first_part_number,
             relative_path=relative,
             schema_fingerprint=schema_fingerprint(frame.schema),
-            sha256=sha256_file(path),
+            sha256=file_sha256,
             row_count=frame.height,
             size_bytes=path.stat().st_size,
-            min_ts=frame.get_column("ts").min(),
-            max_ts=frame.get_column("ts").max(),
+            uncompressed_bytes=uncompressed_bytes,
+            partition_identity=partition_identity,
+            min_ts=min_ts,
+            max_ts=max_ts,
         )
     ]
+
+
+def _parquet_uncompressed_bytes(path: Path) -> int:
+    import pyarrow.parquet as pq  # noqa: PLC0415
+
+    metadata = pq.ParquetFile(path).metadata
+    return sum(
+        metadata.row_group(row_group).column(column).total_uncompressed_size
+        for row_group in range(metadata.num_row_groups)
+        for column in range(metadata.num_columns)
+    )
 
 
 def _require_safe_partition_segment(value: str) -> None:

@@ -29,15 +29,18 @@ FACTOR_RESEARCH_RESULT_SCHEMA = "quant_lab_factor_research_result.v1"
 FACTOR_RESEARCH_RECEIPT_SCHEMA = "quant_lab_factor_research_receipt.v1"
 FACTOR_FACTORY_TASK_TYPE = "factor_factory"
 FACTOR_FACTORY_SNAPSHOT_SCHEMA_V1 = "quant_lab_factor_factory_snapshot.v1"
-FACTOR_FACTORY_SNAPSHOT_SCHEMA = "quant_lab_factor_factory_snapshot.v2"
+FACTOR_FACTORY_SNAPSHOT_SCHEMA_V2 = "quant_lab_factor_factory_snapshot.v2"
+FACTOR_FACTORY_SNAPSHOT_SCHEMA = "quant_lab_factor_factory_snapshot.v3"
 FACTOR_FACTORY_TASK_SCHEMA = "quant_lab_factor_factory_task.v1"
-FACTOR_FACTORY_RESULT_SCHEMA = "quant_lab_factor_factory_result.v1"
+FACTOR_FACTORY_RESULT_SCHEMA_V1 = "quant_lab_factor_factory_result.v1"
+FACTOR_FACTORY_RESULT_SCHEMA = "quant_lab_factor_factory_result.v2"
 FACTOR_FACTORY_RECEIPT_SCHEMA = "quant_lab_factor_factory_receipt.v1"
 DEFAULT_RESEARCH_MAX_RESULT_BYTES = 256 * 1024**2
 DEFAULT_FACTOR_FACTORY_MAX_SNAPSHOT_BYTES = 2 * 1024**3
 DEFAULT_FACTOR_FACTORY_MAX_INPUT_UNCOMPRESSED_BYTES = 4 * 1024**3
 DEFAULT_FACTOR_FACTORY_MAX_RESULT_BYTES = 512 * 1024**2
 DEFAULT_FACTOR_FACTORY_MAX_VALUE_PARTITION_BYTES = 128 * 1024**2
+DEFAULT_FACTOR_FACTORY_MAX_VALUE_PARTITION_UNCOMPRESSED_BYTES = 256 * 1024**2
 DEFAULT_FACTOR_FACTORY_MAX_FILE_COUNT = 20_000
 DEFAULT_FACTOR_FACTORY_MAX_UNCOMPRESSED_BYTES = 1024**3
 
@@ -137,6 +140,68 @@ class FactorFactorySourceFileIdentity(StrictModel):
         if value is not None:
             _require_utc(value, "source file timestamp")
         return value
+
+
+class FactorFactoryInputFingerprint(StrictModel):
+    schema_version: Literal["factor_factory_input_fingerprint.v1"] = (
+        "factor_factory_input_fingerprint.v1"
+    )
+    quant_lab_commit: str = Field(min_length=40, max_length=40)
+    factor_plan_digest: str = Field(min_length=64, max_length=64)
+    feature_set: str = Field(min_length=1, max_length=80)
+    feature_version: str = Field(min_length=1, max_length=80)
+    factor_version: str = Field(min_length=1, max_length=80)
+    timeframe: str = Field(min_length=1, max_length=32)
+    horizon_bars: tuple[int, ...] = Field(min_length=1, max_length=32)
+    decision_delay_bars: int = Field(ge=1, le=1000)
+    max_factors: int = Field(ge=1, le=200)
+    min_samples: int = Field(ge=1)
+    top_quantile: float = Field(gt=0.0, le=0.5)
+    cost_quantile: Literal["p50", "p75", "p90"]
+    feature_input_digest: str = Field(min_length=64, max_length=64)
+    market_input_digest: str = Field(min_length=64, max_length=64)
+    cost_input_digest: str = Field(min_length=64, max_length=64)
+    combined_input_digest: str = Field(min_length=64, max_length=64)
+    feature_file_count: int = Field(ge=0)
+    market_file_count: int = Field(ge=0)
+    cost_file_count: int = Field(ge=0)
+    feature_row_count: int = Field(ge=0)
+    market_row_count: int = Field(ge=0)
+    cost_row_count: int = Field(ge=0)
+    feature_min_ts: datetime | None = None
+    feature_max_ts: datetime | None = None
+    market_min_ts: datetime | None = None
+    market_max_ts: datetime | None = None
+    observed_at: datetime
+
+    @model_validator(mode="after")
+    def validate_fingerprint(self) -> FactorFactoryInputFingerprint:
+        _require_commit(self.quant_lab_commit, "quant_lab_commit")
+        for value, name in (
+            (self.factor_plan_digest, "factor_plan_digest"),
+            (self.feature_input_digest, "feature_input_digest"),
+            (self.market_input_digest, "market_input_digest"),
+            (self.cost_input_digest, "cost_input_digest"),
+            (self.combined_input_digest, "combined_input_digest"),
+        ):
+            _require_sha(value, name)
+        _require_utc(self.observed_at, "observed_at")
+        if tuple(sorted(set(self.horizon_bars))) != self.horizon_bars:
+            raise ValueError("factor factory fingerprint horizons invalid")
+        for lower_name, upper_name in (
+            ("feature_min_ts", "feature_max_ts"),
+            ("market_min_ts", "market_max_ts"),
+        ):
+            lower = getattr(self, lower_name)
+            upper = getattr(self, upper_name)
+            if (lower is None) != (upper is None):
+                raise ValueError(f"factor factory fingerprint {lower_name} bounds incomplete")
+            if lower is not None:
+                _require_utc(lower, lower_name)
+                _require_utc(upper, upper_name)
+                if lower > upper:
+                    raise ValueError(f"factor factory fingerprint {lower_name} bounds invalid")
+        return self
 
 
 class ResearchSnapshotManifest(StrictModel):
@@ -591,6 +656,7 @@ class FactorFactorySnapshotManifest(StrictModel):
     schema_version: Literal[
         "quant_lab_factor_factory_snapshot.v1",
         "quant_lab_factor_factory_snapshot.v2",
+        "quant_lab_factor_factory_snapshot.v3",
     ] = FACTOR_FACTORY_SNAPSHOT_SCHEMA
     task_type: Literal["factor_factory"] = FACTOR_FACTORY_TASK_TYPE
     snapshot_id: str = Field(min_length=1, max_length=180)
@@ -613,6 +679,10 @@ class FactorFactorySnapshotManifest(StrictModel):
     factor_plan_digest: str = Field(min_length=64, max_length=64)
     source_input_digest: str = Field(min_length=64, max_length=64)
     cost_input_digest: str = Field(min_length=64, max_length=64)
+    feature_input_digest: str | None = Field(default=None, min_length=64, max_length=64)
+    market_input_digest: str | None = Field(default=None, min_length=64, max_length=64)
+    combined_input_digest: str | None = Field(default=None, min_length=64, max_length=64)
+    input_fingerprint: FactorFactoryInputFingerprint | None = None
     cost_snapshot: tuple[FactorFactoryCostSnapshotRecord, ...] = ()
     feature_min_ts: datetime | None = None
     feature_max_ts: datetime | None = None
@@ -626,6 +696,14 @@ class FactorFactorySnapshotManifest(StrictModel):
     market_estimated_uncompressed_bytes: int = Field(default=0, ge=0)
     cost_estimated_uncompressed_bytes: int = Field(default=0, ge=0)
     estimated_uncompressed_bytes: int = Field(default=0, ge=0)
+    compressed_input_bytes: int | None = Field(default=None, ge=0)
+    estimated_uncompressed_input_bytes: int | None = Field(default=None, ge=0)
+    feature_compressed_bytes: int | None = Field(default=None, ge=0)
+    feature_uncompressed_bytes: int | None = Field(default=None, ge=0)
+    market_compressed_bytes: int | None = Field(default=None, ge=0)
+    market_uncompressed_bytes: int | None = Field(default=None, ge=0)
+    cost_compressed_bytes: int | None = Field(default=None, ge=0)
+    cost_uncompressed_bytes: int | None = Field(default=None, ge=0)
     datasets: list[str]
     files: list[ResearchDatasetReference]
     total_input_bytes: int = Field(ge=0)
@@ -687,7 +765,7 @@ class FactorFactorySnapshotManifest(StrictModel):
                 != self.previous_generation_digest
             ):
                 raise ValueError("factor factory previous generation manifest mismatch")
-        else:
+        elif self.schema_version == FACTOR_FACTORY_SNAPSHOT_SCHEMA_V2:
             if any(
                 value is not None
                 for value in (
@@ -723,6 +801,110 @@ class FactorFactorySnapshotManifest(StrictModel):
                 raise ValueError("factor factory v2 snapshot file schema fingerprint missing")
             if any(item.uncompressed_bytes is None for item in self.files):
                 raise ValueError("factor factory v2 snapshot file uncompressed size missing")
+        else:
+            if any(
+                value is not None
+                for value in (
+                    self.previous_generation_id,
+                    self.previous_generation_digest,
+                    self.previous_generation_manifest,
+                )
+            ):
+                raise ValueError("factor factory v3 snapshot must not bind previous generation")
+            required_digests = {
+                "feature_input_digest": self.feature_input_digest,
+                "market_input_digest": self.market_input_digest,
+                "combined_input_digest": self.combined_input_digest,
+            }
+            if any(value is None for value in required_digests.values()):
+                raise ValueError("factor factory v3 snapshot input digests missing")
+            for name, value in required_digests.items():
+                _require_sha(str(value), name)
+            if self.input_fingerprint is None:
+                raise ValueError("factor factory v3 snapshot fingerprint missing")
+            fingerprint = self.input_fingerprint
+            if (
+                fingerprint.quant_lab_commit != self.quant_lab_commit
+                or fingerprint.factor_plan_digest != self.factor_plan_digest
+                or fingerprint.feature_input_digest != self.feature_input_digest
+                or fingerprint.market_input_digest != self.market_input_digest
+                or fingerprint.cost_input_digest != self.cost_input_digest
+                or fingerprint.combined_input_digest != self.combined_input_digest
+                or fingerprint.feature_set != self.feature_set
+                or fingerprint.feature_version != self.feature_version
+                or fingerprint.factor_version != self.factor_version
+                or fingerprint.timeframe != self.timeframe
+                or fingerprint.horizon_bars != self.horizon_bars
+                or fingerprint.decision_delay_bars != self.decision_delay_bars
+                or fingerprint.max_factors != self.max_factors
+                or fingerprint.min_samples != self.min_samples
+                or fingerprint.top_quantile != self.top_quantile
+                or fingerprint.cost_quantile != self.cost_quantile
+            ):
+                raise ValueError("factor factory v3 snapshot fingerprint mismatch")
+            source_paths = [item.relative_path for item in self.source_files]
+            if len(source_paths) != len(set(source_paths)):
+                raise ValueError("factor factory source file paths must be unique")
+            if any(item.schema_fingerprint is None for item in self.files):
+                raise ValueError("factor factory v3 snapshot file schema fingerprint missing")
+            if any(item.uncompressed_bytes is None for item in self.files):
+                raise ValueError("factor factory v3 snapshot file uncompressed size missing")
+            required_capacity = (
+                self.compressed_input_bytes,
+                self.estimated_uncompressed_input_bytes,
+                self.feature_compressed_bytes,
+                self.feature_uncompressed_bytes,
+                self.market_compressed_bytes,
+                self.market_uncompressed_bytes,
+                self.cost_compressed_bytes,
+                self.cost_uncompressed_bytes,
+            )
+            if any(value is None for value in required_capacity):
+                raise ValueError("factor factory v3 snapshot capacity fields missing")
+            compressed_by_dataset = {
+                dataset: sum(item.size_bytes for item in self.files if item.dataset_name == dataset)
+                for dataset in self.datasets
+            }
+            uncompressed_by_dataset = {
+                dataset: sum(
+                    int(item.uncompressed_bytes or 0)
+                    for item in self.files
+                    if item.dataset_name == dataset
+                )
+                for dataset in self.datasets
+            }
+            if self.compressed_input_bytes != sum(compressed_by_dataset.values()):
+                raise ValueError("factor factory v3 compressed input bytes mismatch")
+            if self.estimated_uncompressed_input_bytes != sum(
+                uncompressed_by_dataset.values()
+            ):
+                raise ValueError("factor factory v3 uncompressed input bytes mismatch")
+            capacity_pairs = (
+                (self.feature_compressed_bytes, compressed_by_dataset.get("gold/feature_value", 0)),
+                (
+                    self.feature_uncompressed_bytes,
+                    uncompressed_by_dataset.get("gold/feature_value", 0),
+                ),
+                (self.market_compressed_bytes, compressed_by_dataset.get("silver/market_bar", 0)),
+                (
+                    self.market_uncompressed_bytes,
+                    uncompressed_by_dataset.get("silver/market_bar", 0),
+                ),
+                (
+                    self.cost_compressed_bytes,
+                    compressed_by_dataset.get("gold/cost_bucket_daily", 0),
+                ),
+                (
+                    self.cost_uncompressed_bytes,
+                    uncompressed_by_dataset.get("gold/cost_bucket_daily", 0),
+                ),
+            )
+            if any(observed != expected for observed, expected in capacity_pairs):
+                raise ValueError("factor factory v3 dataset capacity fields mismatch")
+            if self.total_input_bytes != self.compressed_input_bytes:
+                raise ValueError("factor factory v3 total input bytes mismatch")
+            if self.estimated_uncompressed_bytes != self.estimated_uncompressed_input_bytes:
+                raise ValueError("factor factory v3 legacy uncompressed alias mismatch")
         cost_symbols = [item.symbol for item in self.cost_snapshot]
         if len(cost_symbols) != len(set(cost_symbols)):
             raise ValueError("factor factory cost snapshot symbols must be unique")
@@ -1106,6 +1288,8 @@ class FactorFactoryPartitionReference(StrictModel):
     sha256: str = Field(min_length=64, max_length=64)
     row_count: int = Field(ge=1)
     size_bytes: int = Field(ge=1)
+    uncompressed_bytes: int | None = Field(default=None, ge=1)
+    partition_identity: str | None = Field(default=None, min_length=64, max_length=64)
     min_ts: datetime
     max_ts: datetime
     primary_keys: tuple[str, ...] = (
@@ -1124,6 +1308,8 @@ class FactorFactoryPartitionReference(StrictModel):
         _require_safe_relative_path(self.relative_path)
         _require_sha(self.schema_fingerprint, "schema_fingerprint")
         _require_sha(self.sha256, "sha256")
+        if self.partition_identity is not None:
+            _require_sha(self.partition_identity, "partition_identity")
         _require_utc(self.min_ts, "min_ts")
         _require_utc(self.max_ts, "max_ts")
         if self.min_ts > self.max_ts:
@@ -1205,7 +1391,10 @@ class FactorFactoryAntiLeakageCheck(StrictModel):
 
 
 class FactorFactoryResultManifest(StrictModel):
-    schema_version: Literal["quant_lab_factor_factory_result.v1"] = FACTOR_FACTORY_RESULT_SCHEMA
+    schema_version: Literal[
+        "quant_lab_factor_factory_result.v1",
+        "quant_lab_factor_factory_result.v2",
+    ] = FACTOR_FACTORY_RESULT_SCHEMA
     task_type: Literal["factor_factory"] = FACTOR_FACTORY_TASK_TYPE
     task_id: str = Field(min_length=1, max_length=180)
     snapshot_id: str = Field(min_length=1, max_length=180)
@@ -1283,6 +1472,11 @@ class FactorFactoryResultManifest(StrictModel):
             value <= 0 or value > 10_000 for value in self.horizon_bars
         ):
             raise ValueError("factor factory result horizons invalid")
+        if self.schema_version != FACTOR_FACTORY_RESULT_SCHEMA_V1 and any(
+            item.partition_identity is None or item.uncompressed_bytes is None
+            for item in self.value_partitions
+        ):
+            raise ValueError("factor factory v2 partition capacity identity missing")
         check_names = [item.check_name for item in self.anti_leakage_checks]
         if len(check_names) != len(set(check_names)):
             raise ValueError("factor factory anti-leakage checks must be unique")

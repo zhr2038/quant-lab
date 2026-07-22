@@ -17,6 +17,7 @@ from quant_lab.data.lake import (
     count_parquet_rows,
     read_parquet_dataset,
     read_parquet_lazy,
+    upsert_parquet_dataset,
     write_parquet_dataset,
 )
 from quant_lab.research.evidence import DEFAULT_RESEARCH_COST_BPS
@@ -502,10 +503,13 @@ def _append_incremental_strategy_evidence_samples(
         return samples.height
 
     day = as_of_date or _latest_sample_as_of_date(samples)
+    publish_keys = [
+        column
+        for column in ["source", *STRATEGY_EVIDENCE_SAMPLE_KEY_COLUMNS]
+        if column in samples.columns
+    ]
     samples = samples.unique(
-        subset=[
-            column for column in STRATEGY_EVIDENCE_SAMPLE_KEY_COLUMNS if column in samples.columns
-        ],
+        subset=publish_keys,
         keep="last",
         maintain_order=True,
     )
@@ -518,15 +522,56 @@ def _append_incremental_strategy_evidence_samples(
     if recent_existing.is_empty():
         new_samples = samples
     else:
-        existing_keys = _sample_key_set(normalize_strategy_evidence_samples(recent_existing))
-        new_rows = [
-            row
-            for row in samples.to_dicts()
-            if _sample_key(row) not in existing_keys
+        normalized_existing = normalize_strategy_evidence_samples(recent_existing)
+        existing_keys = normalized_existing.select(publish_keys).unique(
+            subset=publish_keys,
+            keep="last",
+            maintain_order=True,
+        )
+        new_samples = samples.join(existing_keys, on=publish_keys, how="anti")
+        compare_columns = [
+            column
+            for column in SAMPLE_SCHEMA
+            if column not in {*publish_keys, "created_at"}
         ]
-        if not new_rows:
+        existing_compare = normalized_existing.select(
+            [
+                *publish_keys,
+                *[
+                    pl.col(column).alias(f"__existing_{column}")
+                    for column in compare_columns
+                ],
+            ]
+        ).unique(
+            subset=publish_keys,
+            keep="last",
+            maintain_order=True,
+        )
+        overlap = samples.join(existing_compare, on=publish_keys, how="inner")
+        semantic_equal: list[pl.Expr] = []
+        for column in compare_columns:
+            incoming = pl.col(column)
+            existing = pl.col(f"__existing_{column}")
+            if SAMPLE_SCHEMA[column] in {pl.Float32, pl.Float64}:
+                incoming = incoming.fill_nan(None)
+                existing = existing.fill_nan(None)
+            semantic_equal.append(incoming.eq_missing(existing))
+        changed_samples = overlap.filter(
+            ~pl.all_horizontal(semantic_equal)
+        ).select(list(SAMPLE_SCHEMA))
+        if not changed_samples.is_empty():
+            upsert_rows = pl.concat(
+                [changed_samples, new_samples],
+                how="vertical",
+            )
+            return upsert_parquet_dataset(
+                upsert_rows,
+                dataset_path,
+                key_columns=["source", *STRATEGY_EVIDENCE_SAMPLE_KEY_COLUMNS],
+                streaming_upsert=True,
+            )
+        if new_samples.is_empty():
             return existing_total
-        new_samples = pl.DataFrame(new_rows, schema=SAMPLE_SCHEMA, orient="row")
     append_parquet_dataset(new_samples, dataset_path, target_rows_per_file=250_000)
     return existing_total + new_samples.height
 
@@ -719,16 +764,6 @@ def _parse_date(value: Any) -> date | None:
         return date.fromisoformat(text[:10])
     except ValueError:
         return None
-
-
-def _sample_key_set(samples: pl.DataFrame) -> set[tuple[str, ...]]:
-    if samples.is_empty():
-        return set()
-    return {_sample_key(row) for row in samples.to_dicts()}
-
-
-def _sample_key(row: dict[str, Any]) -> tuple[str, ...]:
-    return tuple(str(row.get(column) or "") for column in STRATEGY_EVIDENCE_SAMPLE_KEY_COLUMNS)
 
 
 def _read_recent_dataset(

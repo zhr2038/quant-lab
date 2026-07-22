@@ -452,6 +452,99 @@ def test_strategy_evidence_incremental_appends_without_rewriting_history(tmp_pat
     assert rerun_samples.height == 2
 
 
+def test_strategy_evidence_incremental_updates_pending_sample_and_preserves_other_source(
+    tmp_path,
+):
+    lake = tmp_path / "lake"
+    sample_path = lake / "gold" / "strategy_evidence_sample"
+    created_at = datetime(2026, 5, 10, 1, tzinfo=UTC)
+    row = {column: None for column in strategy_evidence_module.SAMPLE_SCHEMA}
+    row.update(
+        {
+            "strategy": "v5",
+            "evidence_version": strategy_evidence_module.EVIDENCE_VERSION,
+            "as_of_date": "2026-05-10",
+            "candidate_id": "pending-candidate",
+            "run_id": "run-pending",
+            "ts_utc": datetime(2026, 5, 10, tzinfo=UTC),
+            "symbol": "SOL-USDT",
+            "strategy_candidate": "v5.sol_protect_exception",
+            "candidate_name": "v5.sol_protect_exception",
+            "source_type": "candidate_event_label",
+            "sample_count": 1,
+            "complete_sample_count": 0,
+            "regime_state": "trend",
+            "horizon_hours": 4,
+            "label_status": "partial",
+            "label_reason": "future_bar_unavailable",
+            "source_event_key": "pending-candidate",
+            "created_at": created_at,
+            "source": strategy_evidence_module.SOURCE_NAME,
+        }
+    )
+    pending = pl.DataFrame(
+        [row], schema=strategy_evidence_module.SAMPLE_SCHEMA, orient="row"
+    )
+    unrelated = pending.with_columns(
+        pl.lit("research.second_stage_alpha_factory.v0.1").alias("source")
+    )
+    write_parquet_dataset(pl.concat([pending, unrelated, unrelated]), sample_path)
+    unrelated_before = read_parquet_dataset(sample_path).filter(
+        pl.col("source") == "research.second_stage_alpha_factory.v0.1"
+    )
+
+    complete = pending.with_columns(
+        pl.lit(1).alias("complete_sample_count"),
+        pl.lit(datetime(2026, 5, 10, 2, tzinfo=UTC)).alias("decision_ts"),
+        pl.lit(datetime(2026, 5, 10, 6, tzinfo=UTC)).alias("label_ts"),
+        pl.lit(100.0).alias("entry_close"),
+        pl.lit(101.0).alias("label_close"),
+        pl.lit(100.0).alias("gross_bps"),
+        pl.lit(96.0).alias("net_bps_after_cost"),
+        pl.lit(True).alias("win"),
+        pl.lit("complete").alias("label_status"),
+        pl.lit("ok").alias("label_reason"),
+        pl.lit(created_at + timedelta(minutes=1)).alias("created_at"),
+    )
+
+    rows = strategy_evidence_module.publish_strategy_evidence_samples(
+        lake,
+        complete,
+        replace_as_of_dates=False,
+        lookback_days=2,
+    )
+    published = read_parquet_dataset(sample_path)
+    managed = published.filter(
+        pl.col("source") == strategy_evidence_module.SOURCE_NAME
+    )
+    unrelated_after = published.filter(
+        pl.col("source") == "research.second_stage_alpha_factory.v0.1"
+    )
+
+    assert rows == 3
+    assert managed.height == 1
+    assert managed["complete_sample_count"][0] == 1
+    assert managed["label_status"][0] == "complete"
+    assert managed["net_bps_after_cost"][0] == 96.0
+    assert unrelated_after.to_dicts() == unrelated_before.to_dicts()
+
+    files_before = {
+        path.name: path.read_bytes() for path in sample_path.glob("*.parquet")
+    }
+    strategy_evidence_module.publish_strategy_evidence_samples(
+        lake,
+        complete.with_columns(
+            pl.lit(created_at + timedelta(minutes=2)).alias("created_at")
+        ),
+        replace_as_of_dates=False,
+        lookback_days=2,
+    )
+    files_after = {
+        path.name: path.read_bytes() for path in sample_path.glob("*.parquet")
+    }
+    assert files_after == files_before
+
+
 def test_strategy_evidence_incremental_mode_skips_historical_outcome_inputs(tmp_path):
     lake = tmp_path / "lake"
     now = datetime(2026, 5, 10, tzinfo=UTC)

@@ -343,6 +343,7 @@ def validate_research_task_snapshot(
             task.include_historical_outcomes,
             task.candidate_label_schema_version,
             task.strategy_evidence_version,
+            task.projection_version,
         )
         observed_identity = (
             snapshot.input_fingerprint_digest,
@@ -353,6 +354,7 @@ def validate_research_task_snapshot(
             snapshot.include_historical_outcomes,
             snapshot.candidate_label_schema_version,
             snapshot.strategy_evidence_version,
+            snapshot.projection_version,
         )
         if observed_identity != expected_identity:
             raise ValueError("research_task_snapshot_v5_candidate_evidence_identity_mismatch")

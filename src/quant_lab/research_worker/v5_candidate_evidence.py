@@ -17,6 +17,8 @@ import polars as pl
 
 from quant_lab.research.candidate_labels import (
     LABEL_SCHEMA,
+    candidate_event_symbol,
+    candidate_event_symbol_expr,
     candidate_label_bars_by_symbol,
     compute_v5_candidate_labels,
 )
@@ -39,6 +41,8 @@ V5_CANDIDATE_EVIDENCE_ANTI_LEAKAGE_CHECKS = (
     "candidate_events_within_signed_window",
     "candidate_event_primary_keys_are_unique",
     "candidate_symbols_are_normalized",
+    "candidate_event_symbol_fallback_matches_label",
+    "worker_symbol_groups_match_snapshot_manifest",
     "decision_bar_is_first_closed_bar_after_event",
     "decision_timestamp_is_after_event",
     "label_timestamp_is_after_decision",
@@ -145,14 +149,9 @@ def compute_v5_candidate_evidence_result(
     markets = _scan_paths(market_paths)
     event_columns = events.collect_schema().names()
     market_columns = markets.collect_schema().names()
-    if "symbol" not in event_columns:
-        normalized_events = events.with_columns(pl.lit("").alias("_normalized_symbol"))
-    else:
-        normalized_events = events.with_columns(
-            pl.col("symbol")
-            .map_elements(normalize_symbol, return_dtype=pl.Utf8)
-            .alias("_normalized_symbol")
-        )
+    normalized_events = events.with_columns(
+        candidate_event_symbol_expr(event_columns).alias("_normalized_symbol")
+    )
     if "symbol" not in market_columns:
         normalized_markets = markets.with_columns(pl.lit("").alias("_normalized_symbol"))
     else:
@@ -163,18 +162,16 @@ def compute_v5_candidate_evidence_result(
         )
 
     symbols = tuple(
-        normalized_events.select(
-            pl.col("_normalized_symbol").fill_null("").unique().sort()
-        )
+        normalized_events.select(pl.col("_normalized_symbol").fill_null("").unique().sort())
         .collect(engine="streaming")
         .get_column("_normalized_symbol")
         .to_list()
     )
     expected_symbols = tuple(symbol for symbol in symbols if symbol)
-    if expected_symbols != manifest.candidate_symbols:
-        raise ValueError("v5_candidate_evidence_snapshot_symbol_binding_mismatch")
-
     violations = {name: 0 for name in V5_CANDIDATE_EVIDENCE_ANTI_LEAKAGE_CHECKS}
+    if expected_symbols != manifest.candidate_symbols:
+        violations["worker_symbol_groups_match_snapshot_manifest"] += 1
+        raise ValueError("v5_candidate_evidence_snapshot_symbol_binding_mismatch")
     warnings: list[str] = []
     label_paths: list[Path] = []
     sample_paths: list[Path] = []
@@ -300,7 +297,7 @@ def compute_v5_candidate_evidence_result(
         for name in V5_CANDIDATE_EVIDENCE_ANTI_LEAKAGE_CHECKS
     ]
     anti_leakage = {
-        "schema_version": "v5_candidate_evidence_anti_leakage.v1",
+        "schema_version": "v5_candidate_evidence_anti_leakage.v2",
         "task_id": task.task_id,
         "snapshot_id": manifest.snapshot_id,
         "status": "PASS" if not failed else "FAIL",
@@ -318,14 +315,16 @@ def compute_v5_candidate_evidence_result(
     peak_rss = max(peak_rss, _peak_rss_bytes())
     temporary_disk_peak = max(temporary_disk_peak, _directory_size_bytes(stage_root))
     worker_report = {
-        "schema_version": "v5_candidate_evidence_worker_report.v1",
+        "schema_version": "v5_candidate_evidence_worker_report.v2",
         "task_id": task.task_id,
         "snapshot_id": manifest.snapshot_id,
         "input_fingerprint_digest": manifest.input_fingerprint_digest,
         "candidate_event_rows": manifest.candidate_event_row_count,
         "market_bar_rows": manifest.market_bar_row_count,
         "run_summary_rows": manifest.run_summary_row_count,
+        "run_summary_run_ids": list(manifest.run_summary_run_ids),
         "candidate_symbols": list(manifest.candidate_symbols),
+        "projection_version": manifest.projection_version,
         "label_rows": label_rows,
         "sample_rows": sample_rows,
         "stage_durations_seconds": stage_durations,
@@ -377,6 +376,7 @@ def _validate_task_manifest_binding(
         (task.include_historical_outcomes, manifest.include_historical_outcomes),
         (task.candidate_label_schema_version, manifest.candidate_label_schema_version),
         (task.strategy_evidence_version, manifest.strategy_evidence_version),
+        (task.projection_version, manifest.projection_version),
     )
     if any(left != right for left, right in checks):
         raise ValueError("v5_candidate_evidence_task_snapshot_binding_mismatch")
@@ -421,6 +421,9 @@ def _accumulate_symbol_label_checks(
             violations["candidate_label_events_exist_in_snapshot"] += len(rows)
             continue
         first = rows[0]
+        expected_symbol = candidate_event_symbol(event)
+        if first.get("symbol") != expected_symbol:
+            violations["candidate_event_symbol_fallback_matches_label"] += 1
         symbol = normalize_symbol(first.get("symbol"))
         if first.get("symbol") != symbol:
             violations["candidate_symbols_are_normalized"] += 1
@@ -463,9 +466,10 @@ def _accumulate_symbol_label_checks(
                 )
             ):
                 violations["future_unavailable_rows_are_pending"] += 1
-            if row.get("label_reason") == "future_bar_unavailable" and row.get(
-                "label_status"
-            ) != "partial":
+            if (
+                row.get("label_reason") == "future_bar_unavailable"
+                and row.get("label_status") != "partial"
+            ):
                 violations["future_unavailable_rows_are_pending"] += 1
             if str(row.get("source_event_bundle_sha256") or "") != str(
                 event.get("bundle_sha256") or ""
@@ -475,9 +479,7 @@ def _accumulate_symbol_label_checks(
                 event.get("source_path_inside_bundle") or ""
             ):
                 violations["source_path_matches_event"] += 1
-            event_cost = _finite_float(
-                _signed_event_value(event, "cost_bps", "cost")
-            ) or 0.0
+            event_cost = _finite_float(_signed_event_value(event, "cost_bps", "cost")) or 0.0
             if not _float_equal(row.get("cost_bps"), abs(event_cost)):
                 violations["cost_bps_comes_from_signed_event"] += 1
             if not _path_metrics_match(row, bars, event):
@@ -557,9 +559,7 @@ def _path_metrics_match(
     if decision_ts is None or label_ts is None or entry is None or entry <= 0:
         return False
     path = [
-        bar
-        for bar in bars
-        if decision_ts <= (_as_utc(bar.get("ts")) or decision_ts) <= label_ts
+        bar for bar in bars if decision_ts <= (_as_utc(bar.get("ts")) or decision_ts) <= label_ts
     ]
     highs = [_finite_float(bar.get("high")) for bar in path]
     lows = [_finite_float(bar.get("low")) for bar in path]
@@ -578,9 +578,7 @@ def _path_metrics_match(
             (min(lows) / entry - 1.0) * 10_000.0,
         )
     actual = (row.get("mfe_bps"), row.get("mae_bps"))
-    return _float_equal(actual[0], expected[0]) and _float_equal(
-        actual[1], expected[1]
-    )
+    return _float_equal(actual[0], expected[0]) and _float_equal(actual[1], expected[1])
 
 
 def _signed_event_value(event: dict[str, Any], *fields: str) -> Any:
@@ -644,9 +642,10 @@ def _write_frame_by_utc_date(
         return []
     root.mkdir(parents=True, exist_ok=True)
     partitioned = frame.with_columns(
-        pl.col(timestamp_column).cast(pl.Datetime(time_zone="UTC"), strict=False).dt.date().alias(
-            "_partition_date"
-        )
+        pl.col(timestamp_column)
+        .cast(pl.Datetime(time_zone="UTC"), strict=False)
+        .dt.date()
+        .alias("_partition_date")
     )
     days = partitioned.get_column("_partition_date").drop_nulls().unique().sort().to_list()
     if partitioned.get_column("_partition_date").null_count():
@@ -672,9 +671,7 @@ def _snapshot_dataset_paths(
     dataset_name: str,
 ) -> list[Path]:
     return [
-        root / item.relative_path
-        for item in manifest.files
-        if item.dataset_name == dataset_name
+        root / item.relative_path for item in manifest.files if item.dataset_name == dataset_name
     ]
 
 

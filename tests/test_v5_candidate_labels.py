@@ -8,6 +8,7 @@ from quant_lab.data.lake import read_parquet_dataset, write_market_bars, write_p
 from quant_lab.research.candidate_labels import (
     build_and_publish_candidate_labels,
     build_candidate_quality,
+    candidate_event_symbol,
 )
 from quant_lab.strategy_telemetry.ingest import ingest_v5_bundle
 from tests.v5_bundle_fixture import make_v5_bundle_fixture
@@ -16,9 +17,7 @@ from tests.v5_bundle_fixture import make_v5_bundle_fixture
 def test_candidate_snapshot_ingest_builds_events_labels_quality_and_summary(tmp_path):
     lake = tmp_path / "lake"
     _write_btc_bars(lake)
-    bundle = make_v5_bundle_fixture(
-        tmp_path / "v5_live_followup_bundle_20260510T140249Z.tar.gz"
-    )
+    bundle = make_v5_bundle_fixture(tmp_path / "v5_live_followup_bundle_20260510T140249Z.tar.gz")
 
     result = ingest_v5_bundle(bundle, lake, tmp_path / "restricted", tmp_path / "redacted")
 
@@ -27,9 +26,12 @@ def test_candidate_snapshot_ingest_builds_events_labels_quality_and_summary(tmp_
     quality = read_parquet_dataset(lake / "gold/v5_candidate_quality_daily")
     summary = read_parquet_dataset(lake / "gold/v5_candidate_outcome_summary")
 
-    expected_id = "cand_" + hashlib.sha256(
-        b"run_001|2026-05-10T01:00:00Z|BTC-USDT|v5.btc_leadership_probe_strict|0"
-    ).hexdigest()[:24]
+    expected_id = (
+        "cand_"
+        + hashlib.sha256(
+            b"run_001|2026-05-10T01:00:00Z|BTC-USDT|v5.btc_leadership_probe_strict|0"
+        ).hexdigest()[:24]
+    )
 
     assert result.silver_rows["v5_candidate_event"] == 1
     assert events.height == 1
@@ -245,13 +247,32 @@ def test_candidate_quality_warns_only_when_required_features_are_missing():
 
     assert score_only_quality["feature_completeness"] < 0.8
     assert score_only_quality["required_feature_completeness"] == pytest.approx(1.0)
-    assert "candidate_required_feature_completeness_below_80pct" not in score_only_quality[
-        "warnings_json"
-    ]
+    assert (
+        "candidate_required_feature_completeness_below_80pct"
+        not in score_only_quality["warnings_json"]
+    )
     assert missing_required_quality["required_feature_completeness"] == pytest.approx(0.0)
-    assert "candidate_required_feature_completeness_below_80pct" in missing_required_quality[
-        "warnings_json"
-    ]
+    assert (
+        "candidate_required_feature_completeness_below_80pct"
+        in missing_required_quality["warnings_json"]
+    )
+
+
+@pytest.mark.parametrize(
+    ("row", "expected"),
+    [
+        ({"symbol": "btc/usdt", "normalized_symbol": "ETH-USDT"}, "BTC-USDT"),
+        ({"symbol": "null", "normalized_symbol": "eth_usdt"}, "ETH-USDT"),
+        ({"symbol": None, "normalized_symbol": None, "inst_id": "sol-usdt"}, "SOL-USDT"),
+        ({"symbol": "", "inst_id": "na", "instId": "bnb/usdt"}, "BNB-USDT"),
+        ({"raw_payload_json": '{"instId":"xrp_usdt"}'}, "XRP-USDT"),
+    ],
+)
+def test_candidate_event_symbol_uses_authoritative_fallback_order(
+    row: dict[str, object],
+    expected: str,
+) -> None:
+    assert candidate_event_symbol(row) == expected
 
 
 def _candidate_event(candidate_id: str, ts: datetime) -> dict[str, object]:

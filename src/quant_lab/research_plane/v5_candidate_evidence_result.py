@@ -112,13 +112,9 @@ def validate_v5_candidate_evidence_result_bundle(
         if isinstance(reference, V5CandidateEvidenceOutputDataset):
             uncompressed = _parquet_uncompressed_bytes(path)
             if reference.uncompressed_bytes != uncompressed:
-                raise ValueError(
-                    "v5_candidate_evidence_partition_uncompressed_size_mismatch"
-                )
+                raise ValueError("v5_candidate_evidence_partition_uncompressed_size_mismatch")
             if uncompressed > max_partition_uncompressed_bytes:
-                raise ValueError(
-                    "v5_candidate_evidence_partition_uncompressed_size_limit_exceeded"
-                )
+                raise ValueError("v5_candidate_evidence_partition_uncompressed_size_limit_exceeded")
             actual_uncompressed[reference.relative_path] = uncompressed
         else:
             actual_uncompressed[reference.relative_path] = path.stat().st_size
@@ -138,13 +134,10 @@ def validate_v5_candidate_evidence_result_bundle(
         expected_schema = V5_CANDIDATE_EVIDENCE_OUTPUT_SCHEMAS[output.dataset_name]
         schema = pl.read_parquet_schema(path)
         if list(schema.items()) != list(expected_schema.items()):
-            raise ValueError(
-                f"v5_candidate_evidence_result_schema_mismatch:{output.dataset_name}"
-            )
+            raise ValueError(f"v5_candidate_evidence_result_schema_mismatch:{output.dataset_name}")
         if output.schema_fingerprint != schema_fingerprint(schema):
             raise ValueError(
-                "v5_candidate_evidence_result_schema_fingerprint_mismatch:"
-                f"{output.dataset_name}"
+                f"v5_candidate_evidence_result_schema_fingerprint_mismatch:{output.dataset_name}"
             )
         if output.partition_identity != _partition_identity(output):
             raise ValueError("v5_candidate_evidence_partition_identity_mismatch")
@@ -208,6 +201,7 @@ def _validate_binding(
         task.include_historical_outcomes,
         task.candidate_label_schema_version,
         task.strategy_evidence_version,
+        task.projection_version,
     )
     actual = (
         manifest.task_id,
@@ -227,6 +221,7 @@ def _validate_binding(
         manifest.include_historical_outcomes,
         manifest.candidate_label_schema_version,
         manifest.strategy_evidence_version,
+        manifest.projection_version,
     )
     if expected != actual:
         raise ValueError("v5_candidate_evidence_result_task_binding_mismatch")
@@ -257,14 +252,15 @@ def _validate_output_scope(
     samples: pl.LazyFrame,
     manifest: V5CandidateEvidenceResultManifest,
 ) -> None:
-    invalid_horizons = labels.filter(
-        ~pl.col("horizon_hours").is_in(manifest.horizon_hours)
-    ).select(pl.len()).collect(engine="streaming").item()
+    invalid_horizons = (
+        labels.filter(~pl.col("horizon_hours").is_in(manifest.horizon_hours))
+        .select(pl.len())
+        .collect(engine="streaming")
+        .item()
+    )
     if invalid_horizons:
         raise ValueError("v5_candidate_evidence_result_horizon_scope_mismatch")
-    label_rows = labels.select(
-        ["strategy", "candidate_id", "horizon_hours", "net_bps_after_cost"]
-    )
+    label_rows = labels.select(["strategy", "candidate_id", "horizon_hours", "net_bps_after_cost"])
     sample_rows = samples.select(
         [
             "strategy",
@@ -307,13 +303,7 @@ def _validate_output_scope(
             how="inner",
             suffix="_label",
         )
-        .filter(
-            ~(
-                pl.col("net_bps_after_cost").eq_missing(
-                    pl.col("net_bps_after_cost_label")
-                )
-            )
-        )
+        .filter(~(pl.col("net_bps_after_cost").eq_missing(pl.col("net_bps_after_cost_label"))))
         .select(pl.len())
         .collect(engine="streaming")
         .item()

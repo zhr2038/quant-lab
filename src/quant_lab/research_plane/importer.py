@@ -37,6 +37,11 @@ from quant_lab.research_plane.contracts import (
     DEFAULT_FACTOR_FACTORY_MAX_VALUE_PARTITION_BYTES,
     DEFAULT_FACTOR_FACTORY_MAX_VALUE_PARTITION_UNCOMPRESSED_BYTES,
     DEFAULT_RESEARCH_MAX_RESULT_BYTES,
+    DEFAULT_TRADE_LEVEL_HISTORY_MAX_FILE_COUNT,
+    DEFAULT_TRADE_LEVEL_HISTORY_MAX_PARTITION_BYTES,
+    DEFAULT_TRADE_LEVEL_HISTORY_MAX_PARTITION_UNCOMPRESSED_BYTES,
+    DEFAULT_TRADE_LEVEL_HISTORY_MAX_RESULT_BYTES,
+    DEFAULT_TRADE_LEVEL_HISTORY_MAX_RESULT_UNCOMPRESSED_BYTES,
     DEFAULT_V5_CANDIDATE_EVIDENCE_MAX_FILE_COUNT,
     DEFAULT_V5_CANDIDATE_EVIDENCE_MAX_PARTITION_BYTES,
     DEFAULT_V5_CANDIDATE_EVIDENCE_MAX_PARTITION_UNCOMPRESSED_BYTES,
@@ -66,6 +71,10 @@ from quant_lab.research_plane.contracts import (
     ResearchTaskStatus,
     ResearchValidationEvent,
     ResearchWorkerReceipt,
+    TradeLevelHistoryResultManifest,
+    TradeLevelHistorySnapshotManifest,
+    TradeLevelHistoryTask,
+    TradeLevelHistoryWorkerReceipt,
     V5CandidateEvidenceResultManifest,
     V5CandidateEvidenceSnapshotManifest,
     V5CandidateEvidenceTask,
@@ -99,6 +108,14 @@ from quant_lab.research_plane.status import (
     ensure_research_queue_layout,
     read_research_status,
     write_research_status,
+)
+from quant_lab.research_plane.trade_level_history_publish import (
+    TRADE_LEVEL_HISTORY_DATASETS,
+    publish_trade_level_history_generation,
+    verify_trade_level_history_generation_fast,
+)
+from quant_lab.research_plane.trade_level_history_result import (
+    validate_trade_level_history_result_bundle,
 )
 from quant_lab.research_plane.v5_candidate_evidence_publish import (
     V5_CANDIDATE_EVIDENCE_DATASETS,
@@ -163,6 +180,21 @@ def validate_entry_quality_history_result_for_import(
     v5_candidate_evidence_max_file_count: int = (
         DEFAULT_V5_CANDIDATE_EVIDENCE_MAX_FILE_COUNT
     ),
+    trade_level_history_max_result_bytes: int = (
+        DEFAULT_TRADE_LEVEL_HISTORY_MAX_RESULT_BYTES
+    ),
+    trade_level_history_max_result_uncompressed_bytes: int = (
+        DEFAULT_TRADE_LEVEL_HISTORY_MAX_RESULT_UNCOMPRESSED_BYTES
+    ),
+    trade_level_history_max_partition_bytes: int = (
+        DEFAULT_TRADE_LEVEL_HISTORY_MAX_PARTITION_BYTES
+    ),
+    trade_level_history_max_partition_uncompressed_bytes: int = (
+        DEFAULT_TRADE_LEVEL_HISTORY_MAX_PARTITION_UNCOMPRESSED_BYTES
+    ),
+    trade_level_history_max_file_count: int = (
+        DEFAULT_TRADE_LEVEL_HISTORY_MAX_FILE_COUNT
+    ),
 ) -> ResearchImportValidationResult:
     """Validate one inbox result without changing queue state or publishing Gold."""
 
@@ -190,7 +222,54 @@ def validate_entry_quality_history_result_for_import(
         raise ValueError("research_result_superseded_by_newer_snapshot")
     manifest = _load_result_manifest(inbox)
     receipt = RESEARCH_RECEIPT_ADAPTER.validate_json((inbox / "receipt.json").read_text("utf-8"))
-    if isinstance(task, V5CandidateEvidenceTask):
+    if isinstance(task, TradeLevelHistoryTask):
+        if not all(
+            (
+                isinstance(
+                    snapshot,
+                    TradeLevelHistorySnapshotManifest,
+                ),
+                isinstance(
+                    manifest,
+                    TradeLevelHistoryResultManifest,
+                ),
+                isinstance(
+                    receipt,
+                    TradeLevelHistoryWorkerReceipt,
+                ),
+            )
+        ):
+            raise ValueError("research_result_task_type_mismatch")
+        validated_trade = (
+            validate_trade_level_history_result_bundle(
+                inbox,
+                manifest=manifest,
+                receipt=receipt,
+                task=task,
+                snapshot=snapshot,
+                snapshot_root=snapshot_root,
+                worker_public_key=worker_public_key,
+                expected_worker_key_id=expected_worker_key_id,
+                max_result_bytes=(
+                    trade_level_history_max_result_bytes
+                ),
+                max_result_uncompressed_bytes=(
+                    trade_level_history_max_result_uncompressed_bytes
+                ),
+                max_partition_bytes=(
+                    trade_level_history_max_partition_bytes
+                ),
+                max_partition_uncompressed_bytes=(
+                    trade_level_history_max_partition_uncompressed_bytes
+                ),
+                max_file_count=trade_level_history_max_file_count,
+            )
+        )
+        output_rows = sum(
+            item.row_count
+            for item in validated_trade.manifest.outputs
+        )
+    elif isinstance(task, V5CandidateEvidenceTask):
         if not all(
             (
                 isinstance(snapshot, V5CandidateEvidenceSnapshotManifest),
@@ -350,6 +429,21 @@ def validate_pending_entry_quality_history_results(
     v5_candidate_evidence_max_file_count: int = (
         DEFAULT_V5_CANDIDATE_EVIDENCE_MAX_FILE_COUNT
     ),
+    trade_level_history_max_result_bytes: int = (
+        DEFAULT_TRADE_LEVEL_HISTORY_MAX_RESULT_BYTES
+    ),
+    trade_level_history_max_result_uncompressed_bytes: int = (
+        DEFAULT_TRADE_LEVEL_HISTORY_MAX_RESULT_UNCOMPRESSED_BYTES
+    ),
+    trade_level_history_max_partition_bytes: int = (
+        DEFAULT_TRADE_LEVEL_HISTORY_MAX_PARTITION_BYTES
+    ),
+    trade_level_history_max_partition_uncompressed_bytes: int = (
+        DEFAULT_TRADE_LEVEL_HISTORY_MAX_PARTITION_UNCOMPRESSED_BYTES
+    ),
+    trade_level_history_max_file_count: int = (
+        DEFAULT_TRADE_LEVEL_HISTORY_MAX_FILE_COUNT
+    ),
 ) -> list[ResearchImportValidationResult]:
     """Validate every current inbox result without creating or moving queue files."""
 
@@ -390,6 +484,21 @@ def validate_pending_entry_quality_history_results(
                     v5_candidate_evidence_max_partition_uncompressed_bytes
                 ),
                 v5_candidate_evidence_max_file_count=(v5_candidate_evidence_max_file_count),
+                trade_level_history_max_result_bytes=(
+                    trade_level_history_max_result_bytes
+                ),
+                trade_level_history_max_result_uncompressed_bytes=(
+                    trade_level_history_max_result_uncompressed_bytes
+                ),
+                trade_level_history_max_partition_bytes=(
+                    trade_level_history_max_partition_bytes
+                ),
+                trade_level_history_max_partition_uncompressed_bytes=(
+                    trade_level_history_max_partition_uncompressed_bytes
+                ),
+                trade_level_history_max_file_count=(
+                    trade_level_history_max_file_count
+                ),
             )
         )
     return results
@@ -430,9 +539,45 @@ def import_entry_quality_history_result(
     v5_candidate_evidence_max_file_count: int = (
         DEFAULT_V5_CANDIDATE_EVIDENCE_MAX_FILE_COUNT
     ),
+    trade_level_history_max_result_bytes: int = (
+        DEFAULT_TRADE_LEVEL_HISTORY_MAX_RESULT_BYTES
+    ),
+    trade_level_history_max_result_uncompressed_bytes: int = (
+        DEFAULT_TRADE_LEVEL_HISTORY_MAX_RESULT_UNCOMPRESSED_BYTES
+    ),
+    trade_level_history_max_partition_bytes: int = (
+        DEFAULT_TRADE_LEVEL_HISTORY_MAX_PARTITION_BYTES
+    ),
+    trade_level_history_max_partition_uncompressed_bytes: int = (
+        DEFAULT_TRADE_LEVEL_HISTORY_MAX_PARTITION_UNCOMPRESSED_BYTES
+    ),
+    trade_level_history_max_file_count: int = (
+        DEFAULT_TRADE_LEVEL_HISTORY_MAX_FILE_COUNT
+    ),
 ) -> ResearchImportResult:
     queue = ensure_research_queue_layout(queue_root)
     task_envelope = _load_task_envelope(queue, task_id)
+    if isinstance(task_envelope, TradeLevelHistoryTask):
+        return _import_trade_level_history_result(
+            lake_root,
+            queue,
+            task_id,
+            task=task_envelope,
+            task_public_key=task_public_key,
+            worker_public_key=worker_public_key,
+            expected_task_key_id=expected_task_key_id,
+            expected_worker_key_id=expected_worker_key_id,
+            expected_quant_lab_commit=expected_quant_lab_commit,
+            max_result_bytes=trade_level_history_max_result_bytes,
+            max_result_uncompressed_bytes=(
+                trade_level_history_max_result_uncompressed_bytes
+            ),
+            max_partition_bytes=trade_level_history_max_partition_bytes,
+            max_partition_uncompressed_bytes=(
+                trade_level_history_max_partition_uncompressed_bytes
+            ),
+            max_file_count=trade_level_history_max_file_count,
+        )
     if isinstance(task_envelope, V5CandidateEvidenceTask):
         return _import_v5_candidate_evidence_result(
             lake_root,
@@ -633,6 +778,244 @@ def import_entry_quality_history_result(
             _record_finalize_pending(queue, status, manifest.generation_id, exc)
         elif strict_validation_passed and manifest is not None:
             _record_publish_retry(queue, status, manifest.generation_id, exc)
+            return ResearchImportResult(
+                task_id=task_id,
+                state="publish_retry_pending",
+                generation_id=manifest.generation_id,
+                published_rows={},
+                idempotent=False,
+            )
+        else:
+            _reject_result(queue, task, status, inbox, running, exc)
+        raise
+
+
+def _import_trade_level_history_result(
+    lake_root: str | Path,
+    queue: Path,
+    task_id: str,
+    *,
+    task: TradeLevelHistoryTask,
+    task_public_key: Ed25519PublicKey,
+    worker_public_key: Ed25519PublicKey,
+    expected_task_key_id: str,
+    expected_worker_key_id: str,
+    expected_quant_lab_commit: str,
+    max_result_bytes: int,
+    max_result_uncompressed_bytes: int,
+    max_partition_bytes: int,
+    max_partition_uncompressed_bytes: int,
+    max_file_count: int,
+) -> ResearchImportResult:
+    lake = Path(lake_root)
+    inbox = queue / "results" / "inbox" / task_id
+    imported = queue / "results" / "imported" / task_id
+    if imported.is_dir() and inbox.is_dir():
+        if sha256_file(imported / "manifest.json") != sha256_file(
+            inbox / "manifest.json"
+        ):
+            raise ValueError("research_result_duplicate_payload_conflict")
+        shutil.rmtree(inbox)
+    if imported.is_dir() and not inbox.exists():
+        manifest = _load_result_manifest(imported)
+        if not isinstance(manifest, TradeLevelHistoryResultManifest):
+            raise ValueError("research_result_task_type_mismatch")
+        published_rows = verify_trade_level_history_generation_fast(
+            lake,
+            manifest.generation_id,
+            expected_input_fingerprint=manifest.input_fingerprint_digest,
+            expected_candidate_generation_id=(
+                manifest.candidate_evidence_generation_id
+            ),
+            expected_candidate_generation_digest=(
+                manifest.candidate_evidence_generation_digest
+            ),
+        )
+        _finalize_committed_import(queue, task_id, manifest)
+        return ResearchImportResult(
+            task_id=task_id,
+            state=ResearchTaskState.COMPLETED.value,
+            generation_id=manifest.generation_id,
+            published_rows=published_rows,
+            idempotent=True,
+        )
+    if not inbox.is_dir():
+        raise FileNotFoundError(f"research result inbox missing: {task_id}")
+    running = queue / "running" / task_id
+    if not running.is_dir():
+        raise ValueError("research_result_task_not_running")
+    snapshot_root = queue / "snapshots" / task.snapshot_id
+    snapshot = RESEARCH_SNAPSHOT_ADAPTER.validate_json(
+        (snapshot_root / "manifest.json").read_text("utf-8")
+    )
+    if not isinstance(snapshot, TradeLevelHistorySnapshotManifest):
+        raise ValueError("research_result_task_type_mismatch")
+    status = read_research_status(queue, task_id) or _initial_import_status(
+        task,
+        snapshot,
+    )
+    publication_committed = False
+    strict_validation_passed = False
+    manifest: TradeLevelHistoryResultManifest | None = None
+    try:
+        status = status.model_copy(
+            update={
+                "state": ResearchTaskState.VALIDATING_ON_CLOUD,
+                "heartbeat_at": datetime.now(UTC),
+                "import_status": "validating",
+                "last_error": None,
+            }
+        )
+        write_research_status(queue, status)
+        (queue / "lease" / f"{task_id}.json").unlink(missing_ok=True)
+        validate_research_task_snapshot(
+            task,
+            snapshot,
+            task_public_key=task_public_key,
+            expected_key_id=expected_task_key_id,
+            expected_quant_lab_commit=expected_quant_lab_commit,
+            snapshot_root=snapshot_root,
+        )
+        if _task_is_superseded(queue, task):
+            raise ValueError(
+                "research_result_superseded_by_newer_snapshot"
+            )
+        parsed_manifest = _load_result_manifest(inbox)
+        parsed_receipt = RESEARCH_RECEIPT_ADAPTER.validate_json(
+            (inbox / "receipt.json").read_text("utf-8")
+        )
+        if not isinstance(
+            parsed_manifest,
+            TradeLevelHistoryResultManifest,
+        ) or not isinstance(
+            parsed_receipt,
+            TradeLevelHistoryWorkerReceipt,
+        ):
+            raise ValueError("research_result_task_type_mismatch")
+        manifest = parsed_manifest
+        validated = validate_trade_level_history_result_bundle(
+            inbox,
+            manifest=manifest,
+            receipt=parsed_receipt,
+            task=task,
+            snapshot=snapshot,
+            snapshot_root=snapshot_root,
+            worker_public_key=worker_public_key,
+            expected_worker_key_id=expected_worker_key_id,
+            max_result_bytes=max_result_bytes,
+            max_result_uncompressed_bytes=max_result_uncompressed_bytes,
+            max_partition_bytes=max_partition_bytes,
+            max_partition_uncompressed_bytes=(
+                max_partition_uncompressed_bytes
+            ),
+            max_file_count=max_file_count,
+        )
+        strict_validation_passed = True
+        _write_validation_event(
+            queue,
+            task_id,
+            "strict_trade_level_history_result_validation",
+            "PASS",
+            (
+                f"{len(manifest.anti_leakage_checks)} checks passed; "
+                "judgment, risk, and Gold remain cloud-owned"
+            ),
+        )
+        status = status.model_copy(
+            update={
+                "state": ResearchTaskState.PUBLISHING,
+                "heartbeat_at": datetime.now(UTC),
+                "import_status": "publishing",
+                "output_rows": parsed_receipt.output_rows,
+                "output_bytes": manifest.output_bytes,
+                "peak_rss_bytes": manifest.peak_rss_bytes,
+                "compute_duration_seconds": (
+                    manifest.compute_duration_seconds
+                ),
+                "anti_leakage_status": manifest.anti_leakage_status,
+            }
+        )
+        write_research_status(queue, status)
+        try:
+            published_rows = verify_trade_level_history_generation_fast(
+                lake,
+                manifest.generation_id,
+                expected_input_fingerprint=(
+                    manifest.input_fingerprint_digest
+                ),
+                expected_candidate_generation_id=(
+                    manifest.candidate_evidence_generation_id
+                ),
+                expected_candidate_generation_digest=(
+                    manifest.candidate_evidence_generation_digest
+                ),
+            )
+        except (
+            FileNotFoundError,
+            RuntimeError,
+            ValueError,
+            json.JSONDecodeError,
+        ):
+            publish_result = publish_trade_level_history_generation(
+                lake,
+                validated,
+                snapshot_root=snapshot_root,
+            )
+            published_rows = dict(publish_result["row_counts"])
+        publication_committed = True
+        verify_trade_level_history_generation_fast(
+            lake,
+            manifest.generation_id,
+            expected_input_fingerprint=manifest.input_fingerprint_digest,
+            expected_candidate_generation_id=(
+                manifest.candidate_evidence_generation_id
+            ),
+            expected_candidate_generation_digest=(
+                manifest.candidate_evidence_generation_digest
+            ),
+        )
+        build_lake_file_index(
+            lake,
+            TRADE_LEVEL_HISTORY_DATASETS.values(),
+        )
+        _finalize_committed_import(queue, task_id, manifest, status=status)
+        return ResearchImportResult(
+            task_id=task_id,
+            state=ResearchTaskState.COMPLETED.value,
+            generation_id=manifest.generation_id,
+            published_rows=published_rows,
+            idempotent=False,
+        )
+    except Exception as exc:
+        if publication_committed and manifest is not None:
+            _record_finalize_pending(
+                queue,
+                status,
+                manifest.generation_id,
+                exc,
+            )
+        elif strict_validation_passed and str(exc) in {
+            "trade_level_history_result_superseded_by_generation",
+            (
+                "trade_level_history_result_"
+                "superseded_by_candidate_generation"
+            ),
+        }:
+            _reject_result(
+                queue,
+                task,
+                status,
+                inbox,
+                running,
+                exc,
+            )
+        elif strict_validation_passed and manifest is not None:
+            _record_publish_retry(
+                queue,
+                status,
+                manifest.generation_id,
+                exc,
+            )
             return ResearchImportResult(
                 task_id=task_id,
                 state="publish_retry_pending",
@@ -1374,6 +1757,21 @@ def import_pending_entry_quality_history_results(
     v5_candidate_evidence_max_file_count: int = (
         DEFAULT_V5_CANDIDATE_EVIDENCE_MAX_FILE_COUNT
     ),
+    trade_level_history_max_result_bytes: int = (
+        DEFAULT_TRADE_LEVEL_HISTORY_MAX_RESULT_BYTES
+    ),
+    trade_level_history_max_result_uncompressed_bytes: int = (
+        DEFAULT_TRADE_LEVEL_HISTORY_MAX_RESULT_UNCOMPRESSED_BYTES
+    ),
+    trade_level_history_max_partition_bytes: int = (
+        DEFAULT_TRADE_LEVEL_HISTORY_MAX_PARTITION_BYTES
+    ),
+    trade_level_history_max_partition_uncompressed_bytes: int = (
+        DEFAULT_TRADE_LEVEL_HISTORY_MAX_PARTITION_UNCOMPRESSED_BYTES
+    ),
+    trade_level_history_max_file_count: int = (
+        DEFAULT_TRADE_LEVEL_HISTORY_MAX_FILE_COUNT
+    ),
 ) -> list[ResearchImportResult]:
     queue = ensure_research_queue_layout(queue_root)
     results: list[ResearchImportResult] = []
@@ -1411,6 +1809,21 @@ def import_pending_entry_quality_history_results(
                     v5_candidate_evidence_max_partition_uncompressed_bytes
                 ),
                 v5_candidate_evidence_max_file_count=(v5_candidate_evidence_max_file_count),
+                trade_level_history_max_result_bytes=(
+                    trade_level_history_max_result_bytes
+                ),
+                trade_level_history_max_result_uncompressed_bytes=(
+                    trade_level_history_max_result_uncompressed_bytes
+                ),
+                trade_level_history_max_partition_bytes=(
+                    trade_level_history_max_partition_bytes
+                ),
+                trade_level_history_max_partition_uncompressed_bytes=(
+                    trade_level_history_max_partition_uncompressed_bytes
+                ),
+                trade_level_history_max_file_count=(
+                    trade_level_history_max_file_count
+                ),
             )
         )
     return results
@@ -1476,6 +1889,11 @@ def _task_is_superseded(queue: Path, task: ResearchTaskEnvelope) -> bool:
                 same_scope = bool(set(other.hypothesis_ids).intersection(task.hypothesis_ids))
             elif isinstance(task, V5CandidateEvidenceTask) and isinstance(
                 other, V5CandidateEvidenceTask
+            ):
+                same_scope = True
+            elif isinstance(task, TradeLevelHistoryTask) and isinstance(
+                other,
+                TradeLevelHistoryTask,
             ):
                 same_scope = True
             elif isinstance(task, ResearchTask) and isinstance(other, ResearchTask):
@@ -1548,6 +1966,7 @@ def _finalize_committed_import(
         | FactorResearchResultManifest
         | FactorFactoryResultManifest
         | V5CandidateEvidenceResultManifest
+        | TradeLevelHistoryResultManifest
     ),
     *,
     status: ResearchTaskStatus | None = None,
@@ -1659,8 +2078,9 @@ def _load_result_manifest(
     ResearchResultManifest
     | AlphaFactoryResultManifest
     | FactorResearchResultManifest
-    | FactorFactoryResultManifest
-    | V5CandidateEvidenceResultManifest
+        | FactorFactoryResultManifest
+        | V5CandidateEvidenceResultManifest
+        | TradeLevelHistoryResultManifest
 ):
     return RESEARCH_RESULT_ADAPTER.validate_json((root / "manifest.json").read_text("utf-8"))
 
@@ -1682,6 +2102,7 @@ def _initial_import_status(
         | FactorResearchSnapshotManifest
         | FactorFactorySnapshotManifest
         | V5CandidateEvidenceSnapshotManifest
+        | TradeLevelHistorySnapshotManifest
     ),
 ) -> ResearchTaskStatus:
     if isinstance(task, FactorFactoryTask):
@@ -1704,6 +2125,11 @@ def _initial_import_status(
         end_date = task.as_of_date
         mode = f"{task.mode}/lookback_{task.lookback_days}d"
         cost_mode = "signed_candidate_event"
+    elif isinstance(task, TradeLevelHistoryTask):
+        start_date = task.as_of_date
+        end_date = task.as_of_date
+        mode = task.history_mode
+        cost_mode = "signed_point_in_time_labels"
     else:
         start_date = task.start_date
         end_date = task.end_date

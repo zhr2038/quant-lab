@@ -16,6 +16,9 @@ from quant_lab.research_plane.contracts import (
     ResearchTaskLease,
     ResearchTaskState,
     ResearchTaskStatus,
+    TradeLevelHistoryResultManifest,
+    TradeLevelHistorySnapshotManifest,
+    TradeLevelHistoryTask,
     V5CandidateEvidenceResultManifest,
     V5CandidateEvidenceSnapshotManifest,
     V5CandidateEvidenceTask,
@@ -129,12 +132,19 @@ def v5_candidate_evidence_plane_status(root: str | Path) -> dict[str, Any]:
     return _research_plane_status_for_type(root, "v5_candidate_evidence")
 
 
+def trade_level_history_plane_status(
+    root: str | Path,
+) -> dict[str, Any]:
+    return _research_plane_status_for_type(root, "trade_level_history")
+
+
 def research_plane_status(root: str | Path) -> dict[str, Any]:
     entry_quality = entry_quality_history_plane_status(root)
     alpha_factory = alpha_factory_plane_status(root)
     factor_research = factor_research_plane_status(root)
     factor_factory = factor_factory_plane_status(root)
     v5_candidate_evidence = v5_candidate_evidence_plane_status(root)
+    trade_level_history = trade_level_history_plane_status(root)
     return {
         "schema_version": "quant_lab_research_plane_status.v2",
         "state": _aggregate_state(
@@ -144,6 +154,7 @@ def research_plane_status(root: str | Path) -> dict[str, Any]:
                 factor_research,
                 factor_factory,
                 v5_candidate_evidence,
+                trade_level_history,
             ]
         ),
         "tasks": {
@@ -152,6 +163,7 @@ def research_plane_status(root: str | Path) -> dict[str, Any]:
             "factor_research": factor_research,
             "factor_factory": factor_factory,
             "v5_candidate_evidence": v5_candidate_evidence,
+            "trade_level_history": trade_level_history,
         },
         "nas_offline_behavior": "wait_no_local_fallback",
         "research_only": True,
@@ -205,6 +217,7 @@ def _research_plane_status_for_type(
     request_status_name = {
         "factor_factory": "factor_factory_request.json",
         "v5_candidate_evidence": "v5_candidate_evidence_request.json",
+        "trade_level_history": "trade_level_history_request.json",
     }.get(task_type)
     request_status = (
         read_json(queue_root / "status" / request_status_name)
@@ -222,9 +235,20 @@ def _research_plane_status_for_type(
             selected_payload.update(_factor_factory_status_details(queue_root, selected))
         elif task_type == "v5_candidate_evidence":
             selected_payload.update(_v5_candidate_evidence_status_details(queue_root, selected))
+        elif task_type == "trade_level_history":
+            selected_payload.update(
+                _trade_level_history_status_details(
+                    queue_root,
+                    selected,
+                )
+            )
     state = selected.state.value if selected else "idle"
     snapshot_root = queue_root / "snapshots"
-    transient_snapshot_task = task_type in {"factor_factory", "v5_candidate_evidence"}
+    transient_snapshot_task = task_type in {
+        "factor_factory",
+        "v5_candidate_evidence",
+        "trade_level_history",
+    }
     snapshot_rehydrating = transient_snapshot_task and any(
         snapshot_root.glob(".rehydrate.*.partial")
     )
@@ -286,7 +310,10 @@ def _research_plane_status_for_type(
                 "no_update_reason": request.get("no_update_reason"),
             }
         )
-    elif task_type == "v5_candidate_evidence":
+    elif task_type in {
+        "v5_candidate_evidence",
+        "trade_level_history",
+    }:
         request = request_status or {}
         latest_completed = next(
             (
@@ -319,7 +346,11 @@ def _research_plane_status_for_type(
             {
                 "health_state": request.get("health_state") or state,
                 "request_outcome": request.get("request_outcome") or request.get("state"),
-                "candidate_evidence_generation_id": generation_id,
+                (
+                    "candidate_evidence_generation_id"
+                    if task_type == "v5_candidate_evidence"
+                    else "trade_level_history_generation_id"
+                ): generation_id,
                 "generation_age_seconds": (
                     max(0, int((datetime.now(UTC) - completed_at).total_seconds()))
                     if completed_at is not None
@@ -357,6 +388,7 @@ def _aggregate_state(statuses: list[dict[str, Any]]) -> str:
         "computing_correlation",
         "computing_evidence",
         "computing_samples",
+        "computing_similarity",
         "computing_labels",
         "computing_values",
         "computing",
@@ -553,6 +585,169 @@ def _v5_candidate_evidence_status_details(
                     item.row_count
                     for item in manifest.outputs
                     if item.dataset_name == "strategy_evidence_sample_delta"
+                ),
+            }
+        )
+        break
+    return details
+
+
+def _trade_level_history_status_details(
+    queue_root: Path,
+    status: ResearchTaskStatus,
+) -> dict[str, Any]:
+    details: dict[str, Any] = {}
+    task_directory = find_research_task_directory(
+        queue_root,
+        status.task_id,
+    )
+    if task_directory is not None:
+        try:
+            task = RESEARCH_TASK_ADAPTER.validate_json(
+                (task_directory / "task.json").read_text("utf-8")
+            )
+        except (OSError, ValueError):
+            task = None
+        if isinstance(task, TradeLevelHistoryTask):
+            details.update(
+                {
+                    "as_of_date": task.as_of_date.isoformat(),
+                    "history_mode": task.history_mode,
+                    "input_fingerprint_digest": (
+                        task.input_fingerprint_digest
+                    ),
+                    "candidate_evidence_generation_id": (
+                        task.candidate_evidence_generation_id
+                    ),
+                    "previous_generation_id": (
+                        task.previous_generation_id
+                    ),
+                    "live_order_effect": task.live_order_effect,
+                }
+            )
+            try:
+                snapshot = RESEARCH_SNAPSHOT_ADAPTER.validate_json(
+                    (
+                        queue_root
+                        / "snapshots"
+                        / task.snapshot_id
+                        / "manifest.json"
+                    ).read_text("utf-8")
+                )
+            except (OSError, ValueError):
+                snapshot = None
+            if isinstance(
+                snapshot,
+                TradeLevelHistorySnapshotManifest,
+            ):
+                snapshot_root = (
+                    queue_root / "snapshots" / task.snapshot_id
+                )
+                payload_state = "sealed"
+                if any(
+                    (queue_root / "snapshots").glob(
+                        f".rehydrate.{task.snapshot_id}.*.partial"
+                    )
+                ):
+                    payload_state = "rehydrating"
+                elif (
+                    snapshot_root / "FILES_RELEASED.json"
+                ).is_file():
+                    payload_state = "released"
+                elif (
+                    snapshot_root / "FILES_REHYDRATED.json"
+                ).is_file():
+                    payload_state = "rehydrated"
+                elif (snapshot_root / "files").is_dir():
+                    payload_state = "materialized"
+                details.update(
+                    {
+                        "input_fingerprint": (
+                            {
+                                "input_fingerprint_digest": (
+                                    snapshot.input_fingerprint_digest
+                                ),
+                                "derived_event_digest": (
+                                    snapshot.derived_trade_opportunity_event_digest
+                                ),
+                                "candidate_label_dataset_hash": (
+                                    snapshot.candidate_label_dataset_hash
+                                ),
+                                "candidate_evidence_generation_id": (
+                                    snapshot.candidate_evidence_generation_id
+                                ),
+                                "candidate_evidence_generation_digest": (
+                                    snapshot.candidate_evidence_generation_digest
+                                ),
+                                "history_mode": snapshot.history_mode,
+                            }
+                        ),
+                        "snapshot_payload_state": payload_state,
+                        "compressed_input_bytes": (
+                            snapshot.total_input_bytes
+                        ),
+                        "estimated_uncompressed_input_bytes": (
+                            snapshot.estimated_uncompressed_bytes
+                        ),
+                        "event_rows": snapshot.event_row_count,
+                        "candidate_label_rows": (
+                            snapshot.candidate_label_row_count
+                        ),
+                    }
+                )
+    for result_state in ("inbox", "imported"):
+        manifest_path = (
+            queue_root
+            / "results"
+            / result_state
+            / status.task_id
+            / "manifest.json"
+        )
+        if not manifest_path.is_file():
+            continue
+        try:
+            manifest = RESEARCH_RESULT_ADAPTER.validate_json(
+                manifest_path.read_text("utf-8")
+            )
+        except (OSError, ValueError):
+            continue
+        if not isinstance(
+            manifest,
+            TradeLevelHistoryResultManifest,
+        ):
+            continue
+        rows: dict[str, int] = {}
+        for item in manifest.outputs:
+            rows[item.dataset_name] = (
+                rows.get(item.dataset_name, 0) + item.row_count
+            )
+        details.update(
+            {
+                "trade_level_history_generation_id": (
+                    manifest.generation_id
+                ),
+                "generation_age_seconds": max(
+                    0,
+                    int(
+                        (
+                            datetime.now(UTC)
+                            - manifest.completed_at
+                        ).total_seconds()
+                    ),
+                ),
+                "last_completed_at": (
+                    manifest.completed_at.isoformat()
+                ),
+                "label_rows": rows.get(
+                    "trade_opportunity_label",
+                    0,
+                ),
+                "similarity_rows": rows.get(
+                    "trade_level_similarity_outcome",
+                    0,
+                ),
+                "anti_leakage_status": (
+                    manifest.anti_leakage_status
                 ),
             }
         )

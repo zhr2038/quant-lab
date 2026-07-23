@@ -17,6 +17,9 @@ from quant_lab.research_plane.factor_factory_snapshot import (
 )
 from quant_lab.research_plane.snapshot_lock import snapshot_payload_lock
 from quant_lab.research_plane.status import ensure_research_queue_layout
+from quant_lab.research_plane.trade_level_history_snapshot import (
+    cleanup_stale_trade_level_history_rehydrate_partials,
+)
 from quant_lab.research_plane.v5_candidate_evidence_snapshot import (
     cleanup_stale_v5_candidate_evidence_rehydrate_partials,
 )
@@ -53,6 +56,10 @@ def gc_research_snapshot_payloads(
     observed_at = now or datetime.now(UTC)
     cleanup_stale_v5_candidate_evidence_rehydrate_partials(queue, now=observed_at)
     cleanup_stale_factor_factory_rehydrate_partials(queue, now=observed_at)
+    cleanup_stale_trade_level_history_rehydrate_partials(
+        queue,
+        now=observed_at,
+    )
     active = _active_snapshot_ids(queue)
     snapshots = _snapshot_records(queue)
     bytes_before = sum(record[2] for record in snapshots)

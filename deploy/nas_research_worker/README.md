@@ -1,14 +1,18 @@
 # NAS Research Worker
 
 This container pulls signed, sealed Entry Quality History, Alpha Factory,
-Factor Research, Factor Factory, and V5 Candidate Evidence snapshots from qyun2, computes
-research-only derived data, signs the result, and uploads it for strict cloud
-validation. It has no exchange credentials, does not mount the cloud Lake, and
-cannot publish Gold or influence live orders. Factor Factory claims are skipped
-unless `QUANT_RESEARCH_FACTOR_FACTORY_ENABLED=1`. V5 Candidate Evidence claims
-are likewise skipped unless
+Factor Research, Factor Factory, V5 Candidate Evidence, and Trade-Level History
+snapshots from qyun2, computes research-only derived data, signs the result, and
+uploads it for strict cloud validation. It has no exchange credentials, does
+not mount the cloud Lake, and cannot publish Gold or influence live orders.
+Factor Factory claims are skipped unless
+`QUANT_RESEARCH_FACTOR_FACTORY_ENABLED=1`. V5 Candidate Evidence claims are
+likewise skipped unless
 `QUANT_RESEARCH_V5_CANDIDATE_EVIDENCE_ENABLED=1`; those results contain only
 Candidate Label and Evidence Sample deltas, never PAPER/LIVE decisions.
+Trade-Level History claims require
+`QUANT_RESEARCH_TRADE_LEVEL_HISTORY_ENABLED=1` and can return only causal
+Trade Opportunity Labels and Similarity Outcomes.
 
 ## Host preparation
 
@@ -33,8 +37,12 @@ UID 10004:
 
 Never place keys in `.env`, Compose, an image layer, or Git. Copy `.env.example`
 to `.env`, keep `NAS_RESEARCH_SECRETS_HOST_PATH` pointed at the host secrets
-directory above, set `BUILD_GIT_COMMIT` to the exact deployed 40-character
-commit, then:
+directory above, set `NAS_RESEARCH_IMAGE_GIT_COMMIT` to the exact deployed
+40-character commit, and set `NAS_RESEARCH_REPOSITORY_GIT_PATH` to the `.git`
+directory of that exact checked-out repository. Do not add a runtime
+`QUANT_RESEARCH_WORKER_COMMIT` override. The worker compares the immutable image
+commit file, both image-provided commit environment values, and repository HEAD
+before it polls or claims any task. Then:
 
 ```bash
 docker compose build --pull

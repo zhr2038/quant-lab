@@ -29,6 +29,14 @@ from quant_lab.research_plane.contracts import (
     DEFAULT_FACTOR_FACTORY_MAX_UNCOMPRESSED_BYTES,
     DEFAULT_FACTOR_FACTORY_MAX_VALUE_PARTITION_BYTES,
     DEFAULT_RESEARCH_MAX_RESULT_BYTES,
+    DEFAULT_TRADE_LEVEL_HISTORY_MAX_FILE_COUNT,
+    DEFAULT_TRADE_LEVEL_HISTORY_MAX_INPUT_ROWS,
+    DEFAULT_TRADE_LEVEL_HISTORY_MAX_INPUT_UNCOMPRESSED_BYTES,
+    DEFAULT_TRADE_LEVEL_HISTORY_MAX_PARTITION_BYTES,
+    DEFAULT_TRADE_LEVEL_HISTORY_MAX_PARTITION_UNCOMPRESSED_BYTES,
+    DEFAULT_TRADE_LEVEL_HISTORY_MAX_RESULT_BYTES,
+    DEFAULT_TRADE_LEVEL_HISTORY_MAX_RESULT_UNCOMPRESSED_BYTES,
+    DEFAULT_TRADE_LEVEL_HISTORY_MAX_SNAPSHOT_BYTES,
     DEFAULT_V5_CANDIDATE_EVIDENCE_MAX_FILE_COUNT,
     DEFAULT_V5_CANDIDATE_EVIDENCE_MAX_INPUT_UNCOMPRESSED_BYTES,
     DEFAULT_V5_CANDIDATE_EVIDENCE_MAX_PARTITION_BYTES,
@@ -48,6 +56,8 @@ from quant_lab.research_plane.contracts import (
     ResearchTaskLease,
     ResearchTaskState,
     ResearchTaskStatus,
+    TradeLevelHistorySnapshotManifest,
+    TradeLevelHistoryTask,
     V5CandidateEvidenceSnapshotManifest,
     V5CandidateEvidenceTask,
 )
@@ -68,6 +78,12 @@ from quant_lab.research_worker.result_writer import (
     write_factor_factory_result_bundle,
     write_factor_research_result_bundle,
 )
+from quant_lab.research_worker.trade_level_history import (
+    compute_trade_level_history_result,
+)
+from quant_lab.research_worker.trade_level_history_result_writer import (
+    write_trade_level_history_result_bundle,
+)
 from quant_lab.research_worker.v5_candidate_evidence import (
     compute_v5_candidate_evidence_result,
 )
@@ -82,6 +98,8 @@ _STATUS_UPLOAD_LOCK = threading.RLock()
 _LEASE_UPLOAD_LOCK = threading.RLock()
 _HANDOFF_READY_MARKER = ".HANDOFF_READY"
 _NON_RETRYABLE_TASK_ERRORS = frozenset({"worker_code_mismatch"})
+_IMAGE_BUILD_COMMIT_PATH = Path("/app/BUILD_GIT_COMMIT")
+_REPOSITORY_GIT_PATH = Path("/run/provenance/repository_git")
 
 
 @dataclass(frozen=True)
@@ -139,11 +157,48 @@ class Config:
         DEFAULT_V5_CANDIDATE_EVIDENCE_MAX_FILE_COUNT
     )
     v5_candidate_evidence_max_input_rows: int = 5_000_000
+    trade_level_history_enabled: bool = False
+    trade_level_history_max_snapshot_bytes: int = (
+        DEFAULT_TRADE_LEVEL_HISTORY_MAX_SNAPSHOT_BYTES
+    )
+    trade_level_history_max_input_uncompressed_bytes: int = (
+        DEFAULT_TRADE_LEVEL_HISTORY_MAX_INPUT_UNCOMPRESSED_BYTES
+    )
+    trade_level_history_max_result_bytes: int = (
+        DEFAULT_TRADE_LEVEL_HISTORY_MAX_RESULT_BYTES
+    )
+    trade_level_history_max_result_uncompressed_bytes: int = (
+        DEFAULT_TRADE_LEVEL_HISTORY_MAX_RESULT_UNCOMPRESSED_BYTES
+    )
+    trade_level_history_max_partition_bytes: int = (
+        DEFAULT_TRADE_LEVEL_HISTORY_MAX_PARTITION_BYTES
+    )
+    trade_level_history_max_partition_uncompressed_bytes: int = (
+        DEFAULT_TRADE_LEVEL_HISTORY_MAX_PARTITION_UNCOMPRESSED_BYTES
+    )
+    trade_level_history_max_file_count: int = (
+        DEFAULT_TRADE_LEVEL_HISTORY_MAX_FILE_COUNT
+    )
+    trade_level_history_max_input_rows: int = (
+        DEFAULT_TRADE_LEVEL_HISTORY_MAX_INPUT_ROWS
+    )
+    build_git_commit: str | None = None
+    runtime_worker_commit: str | None = None
+    repository_commit: str | None = None
     ssh_timeout_seconds: int = 90
     scp_timeout_seconds: int = 900
 
     @classmethod
     def from_env(cls) -> Config:
+        image_file_commit = _read_full_git_sha(
+            _IMAGE_BUILD_COMMIT_PATH,
+            "image_file_commit",
+        )
+        build_git_commit = _required("BUILD_GIT_COMMIT").strip().lower()
+        runtime_worker_commit = _required(
+            "QUANT_RESEARCH_WORKER_COMMIT"
+        ).strip().lower()
+        repository_commit = _repository_head(_REPOSITORY_GIT_PATH)
         return cls(
             cloud_host=_required("QUANT_RESEARCH_CLOUD_HOST"),
             cloud_user=_required("QUANT_RESEARCH_CLOUD_USER"),
@@ -159,7 +214,7 @@ class Config:
             worker_signing_key_path=Path(_required("QUANT_RESEARCH_WORKER_SIGNING_KEY_PATH")),
             worker_key_id=_required("QUANT_RESEARCH_WORKER_KEY_ID"),
             worker_id=os.environ.get("QUANT_RESEARCH_WORKER_ID", "nas-research-worker-01"),
-            worker_commit=_required("QUANT_RESEARCH_WORKER_COMMIT"),
+            worker_commit=image_file_commit,
             run_once=_bool_env("RUN_ONCE", False),
             poll_seconds=max(5, int(os.environ.get("POLL_SECONDS", "30"))),
             heartbeat_seconds=max(10, int(os.environ.get("HEARTBEAT_SECONDS", "30"))),
@@ -252,6 +307,74 @@ class Config:
                     "QUANT_LAB_V5_CANDIDATE_EVIDENCE_MAX_INPUT_ROWS", "5000000"
                 )
             ),
+            trade_level_history_enabled=_bool_env(
+                "QUANT_RESEARCH_TRADE_LEVEL_HISTORY_ENABLED",
+                False,
+            ),
+            trade_level_history_max_snapshot_bytes=int(
+                os.environ.get(
+                    "QUANT_LAB_TRADE_LEVEL_HISTORY_MAX_SNAPSHOT_BYTES",
+                    str(
+                        DEFAULT_TRADE_LEVEL_HISTORY_MAX_SNAPSHOT_BYTES
+                    ),
+                )
+            ),
+            trade_level_history_max_input_uncompressed_bytes=int(
+                os.environ.get(
+                    "QUANT_LAB_TRADE_LEVEL_HISTORY_MAX_INPUT_"
+                    "UNCOMPRESSED_BYTES",
+                    str(
+                        DEFAULT_TRADE_LEVEL_HISTORY_MAX_INPUT_UNCOMPRESSED_BYTES
+                    ),
+                )
+            ),
+            trade_level_history_max_result_bytes=int(
+                os.environ.get(
+                    "QUANT_LAB_TRADE_LEVEL_HISTORY_MAX_RESULT_BYTES",
+                    str(DEFAULT_TRADE_LEVEL_HISTORY_MAX_RESULT_BYTES),
+                )
+            ),
+            trade_level_history_max_result_uncompressed_bytes=int(
+                os.environ.get(
+                    "QUANT_LAB_TRADE_LEVEL_HISTORY_MAX_RESULT_"
+                    "UNCOMPRESSED_BYTES",
+                    str(
+                        DEFAULT_TRADE_LEVEL_HISTORY_MAX_RESULT_UNCOMPRESSED_BYTES
+                    ),
+                )
+            ),
+            trade_level_history_max_partition_bytes=int(
+                os.environ.get(
+                    "QUANT_LAB_TRADE_LEVEL_HISTORY_MAX_PARTITION_BYTES",
+                    str(
+                        DEFAULT_TRADE_LEVEL_HISTORY_MAX_PARTITION_BYTES
+                    ),
+                )
+            ),
+            trade_level_history_max_partition_uncompressed_bytes=int(
+                os.environ.get(
+                    "QUANT_LAB_TRADE_LEVEL_HISTORY_MAX_PARTITION_"
+                    "UNCOMPRESSED_BYTES",
+                    str(
+                        DEFAULT_TRADE_LEVEL_HISTORY_MAX_PARTITION_UNCOMPRESSED_BYTES
+                    ),
+                )
+            ),
+            trade_level_history_max_file_count=int(
+                os.environ.get(
+                    "QUANT_LAB_TRADE_LEVEL_HISTORY_MAX_FILE_COUNT",
+                    str(DEFAULT_TRADE_LEVEL_HISTORY_MAX_FILE_COUNT),
+                )
+            ),
+            trade_level_history_max_input_rows=int(
+                os.environ.get(
+                    "QUANT_LAB_TRADE_LEVEL_HISTORY_MAX_INPUT_ROWS",
+                    str(DEFAULT_TRADE_LEVEL_HISTORY_MAX_INPUT_ROWS),
+                )
+            ),
+            build_git_commit=build_git_commit,
+            runtime_worker_commit=runtime_worker_commit,
+            repository_commit=repository_commit,
             heavy_job_lock=Path(
                 os.environ.get("QUANT_HEAVY_JOB_LOCK", "/runtime/quant-runtime/heavy-job.lock")
             ),
@@ -269,6 +392,14 @@ def main() -> int:
     signal.signal(signal.SIGTERM, _request_stop)
     signal.signal(signal.SIGINT, _request_stop)
     config = Config.from_env()
+    LOG.info(
+        "worker provenance image_file_commit=%s BUILD_GIT_COMMIT=%s "
+        "QUANT_RESEARCH_WORKER_COMMIT=%s repository_HEAD=%s",
+        config.worker_commit,
+        config.build_git_commit,
+        config.runtime_worker_commit,
+        config.repository_commit,
+    )
     _validate_config(config)
     while not STOP.is_set():
         recover_expired_leases(config)
@@ -296,17 +427,27 @@ def claim_next_task(config: Config) -> str | None:
     allow_v5_candidate_evidence = (
         "1" if getattr(config, "v5_candidate_evidence_enabled", False) else "0"
     )
+    allow_trade_level_history = (
+        "1"
+        if getattr(config, "trade_level_history_enabled", False)
+        else "0"
+    )
     script = (
         "set -eu; "
         f"root={root}; "
         f"allow_factor_factory={allow_factor_factory}; "
         f"allow_v5_candidate_evidence={allow_v5_candidate_evidence}; "
+        f"allow_trade_level_history={allow_trade_level_history}; "
         'task=""; '
         'for candidate in $(find "$root/pending" -mindepth 1 -maxdepth 1 -type d '
         "-printf '%f\\n' 2>/dev/null | LC_ALL=C sort); do "
         "case \"$candidate\" in *[!A-Za-z0-9_.:-]*|'') continue;; esac; "
         'if [ "$allow_factor_factory" != "1" ] && '
         'grep -Eq \'"task_type"[[:space:]]*:[[:space:]]*"factor_factory"\' '
+        '"$root/pending/$candidate/task.json"; then continue; fi; '
+        'if [ "$allow_trade_level_history" != "1" ] && '
+        'grep -Eq \'"task_type"[[:space:]]*:[[:space:]]*'
+        '"trade_level_history"\' '
         '"$root/pending/$candidate/task.json"; then continue; fi; '
         'if [ "$allow_v5_candidate_evidence" != "1" ] && '
         'grep -Eq \'"task_type"[[:space:]]*:[[:space:]]*"v5_candidate_evidence"\' '
@@ -474,6 +615,11 @@ def process_claimed_task(config: Config, task_id: str) -> None:
         raise RuntimeError("factor_factory_worker_disabled")
     if isinstance(task, V5CandidateEvidenceTask) and not config.v5_candidate_evidence_enabled:
         raise RuntimeError("v5_candidate_evidence_worker_disabled")
+    if (
+        isinstance(task, TradeLevelHistoryTask)
+        and not getattr(config, "trade_level_history_enabled", False)
+    ):
+        raise RuntimeError("trade_level_history_worker_disabled")
     if task.quant_lab_commit != config.worker_commit:
         raise ValueError("worker_code_mismatch")
     snapshot_dir = work / "snapshot-control"
@@ -553,6 +699,28 @@ def process_claimed_task(config: Config, task_id: str) -> None:
                 )
             if snapshot.total_input_rows > config.v5_candidate_evidence_max_input_rows:
                 raise ValueError("v5_candidate_evidence_input_row_limit_exceeded")
+        elif isinstance(snapshot, TradeLevelHistorySnapshotManifest):
+            if (
+                snapshot.total_input_bytes
+                > config.trade_level_history_max_snapshot_bytes
+            ):
+                raise ValueError(
+                    "trade_level_history_snapshot_input_size_limit_exceeded"
+                )
+            if (
+                snapshot.estimated_uncompressed_bytes
+                > config.trade_level_history_max_input_uncompressed_bytes
+            ):
+                raise ValueError(
+                    "trade_level_history_input_uncompressed_size_limit_exceeded"
+                )
+            if (
+                snapshot.total_input_rows
+                > config.trade_level_history_max_input_rows
+            ):
+                raise ValueError(
+                    "trade_level_history_input_row_limit_exceeded"
+                )
         sync_result = sync_snapshot_blobs(
             snapshot,
             data_root=config.data_root,
@@ -624,6 +792,38 @@ def process_claimed_task(config: Config, task_id: str) -> None:
                         config.v5_candidate_evidence_max_input_uncompressed_bytes
                     ),
                     max_input_rows=config.v5_candidate_evidence_max_input_rows,
+                    min_free_disk_bytes=config.min_free_disk_bytes,
+                    work_dir=work,
+                )
+            elif isinstance(task, TradeLevelHistoryTask):
+                if not isinstance(
+                    snapshot,
+                    TradeLevelHistorySnapshotManifest,
+                ):
+                    raise ValueError(
+                        "research_task_snapshot_type_mismatch"
+                    )
+                compute = compute_trade_level_history_result(
+                    sync_result.snapshot_root,
+                    snapshot,
+                    task,
+                    stage_callback=lambda stage: (
+                        _upload_trade_level_history_stage(
+                            config,
+                            status,
+                            work,
+                            stage,
+                        )
+                    ),
+                    max_snapshot_bytes=(
+                        config.trade_level_history_max_snapshot_bytes
+                    ),
+                    max_input_uncompressed_bytes=(
+                        config.trade_level_history_max_input_uncompressed_bytes
+                    ),
+                    max_input_rows=(
+                        config.trade_level_history_max_input_rows
+                    ),
                     min_free_disk_bytes=config.min_free_disk_bytes,
                     work_dir=work,
                 )
@@ -708,6 +908,52 @@ def process_claimed_task(config: Config, task_id: str) -> None:
                         config.v5_candidate_evidence_max_partition_uncompressed_bytes
                     ),
                     max_file_count=config.v5_candidate_evidence_max_file_count,
+                )
+            elif isinstance(task, TradeLevelHistoryTask):
+                if not isinstance(
+                    snapshot,
+                    TradeLevelHistorySnapshotManifest,
+                ):
+                    raise ValueError(
+                        "research_task_snapshot_type_mismatch"
+                    )
+                (
+                    result_root,
+                    manifest,
+                    receipt,
+                ) = write_trade_level_history_result_bundle(
+                    config.data_root / "results",
+                    task=task,
+                    snapshot=snapshot,
+                    snapshot_root=sync_result.snapshot_root,
+                    compute=compute,
+                    worker_id=config.worker_id,
+                    worker_commit=config.worker_commit,
+                    worker_key_id=config.worker_key_id,
+                    worker_signing_key=signing_key,
+                    claimed_at=claimed_at,
+                    input_bytes=snapshot.total_input_bytes,
+                    cache_hit_bytes=status.cache_hit_bytes,
+                    downloaded_bytes=status.downloaded_bytes,
+                    peak_rss_bytes=peak_rss,
+                    compute_duration_seconds=(
+                        time.perf_counter() - started
+                    ),
+                    max_result_bytes=(
+                        config.trade_level_history_max_result_bytes
+                    ),
+                    max_result_uncompressed_bytes=(
+                        config.trade_level_history_max_result_uncompressed_bytes
+                    ),
+                    max_partition_bytes=(
+                        config.trade_level_history_max_partition_bytes
+                    ),
+                    max_partition_uncompressed_bytes=(
+                        config.trade_level_history_max_partition_uncompressed_bytes
+                    ),
+                    max_file_count=(
+                        config.trade_level_history_max_file_count
+                    ),
                 )
             elif isinstance(task, AlphaFactoryTask):
                 if not isinstance(snapshot, AlphaFactorySnapshotManifest):
@@ -795,6 +1041,7 @@ def process_claimed_task(config: Config, task_id: str) -> None:
             _stop_heartbeat(config, heartbeat_stop, heartbeat)
         shutil.rmtree(work / "factor-factory-stage", ignore_errors=True)
         shutil.rmtree(work / "v5-candidate-evidence-stage", ignore_errors=True)
+        shutil.rmtree(work / "trade-level-history-stage", ignore_errors=True)
 
 
 def _task_status_dimensions(task: ResearchTaskEnvelope) -> tuple[Any, Any, str, str]:
@@ -825,6 +1072,13 @@ def _task_status_dimensions(task: ResearchTaskEnvelope) -> tuple[Any, Any, str, 
             task.as_of_date,
             f"{task.mode}/lookback_{task.lookback_days}d",
             "signed_candidate_event",
+        )
+    if isinstance(task, TradeLevelHistoryTask):
+        return (
+            task.as_of_date,
+            task.as_of_date,
+            "PARITY_FULL/bootstrap_full",
+            "causal_availability",
         )
     return (
         task.parameters.start_date,
@@ -884,11 +1138,37 @@ def _upload_v5_candidate_evidence_stage(
     )
 
 
+def _upload_trade_level_history_stage(
+    config: Config,
+    status: ResearchTaskStatus,
+    work: Path,
+    stage: str,
+) -> None:
+    allowed = {
+        ResearchTaskState.COMPUTING_LABELS.value,
+        ResearchTaskState.COMPUTING_SIMILARITY.value,
+    }
+    if stage not in allowed:
+        raise ValueError(f"unknown_trade_level_history_stage:{stage}")
+    _upload_status(
+        config,
+        status.model_copy(
+            update={
+                "state": ResearchTaskState(stage),
+                "heartbeat_at": datetime.now(UTC),
+            }
+        ),
+        work,
+    )
+
+
 def _max_result_bytes_for_task(config: Config, task: ResearchTaskEnvelope) -> int:
     if isinstance(task, FactorFactoryTask):
         return config.factor_factory_max_result_bytes
     if isinstance(task, V5CandidateEvidenceTask):
         return config.v5_candidate_evidence_max_result_bytes
+    if isinstance(task, TradeLevelHistoryTask):
+        return config.trade_level_history_max_result_bytes
     return config.max_result_bytes
 
 
@@ -1258,6 +1538,24 @@ def _validate_config(config: Config) -> None:
         character not in "0123456789abcdef" for character in config.worker_commit
     ):
         raise ValueError("QUANT_RESEARCH_WORKER_COMMIT must be a full git SHA")
+    observed_provenance = {
+        "BUILD_GIT_COMMIT": config.build_git_commit,
+        "QUANT_RESEARCH_WORKER_COMMIT": (
+            config.runtime_worker_commit
+        ),
+        "repository_HEAD": config.repository_commit,
+    }
+    if any(value is None for value in observed_provenance.values()):
+        raise ValueError("research_worker_provenance_missing")
+    if any(value != config.worker_commit for value in observed_provenance.values()):
+        detail = ",".join(
+            f"{name}={value}"
+            for name, value in observed_provenance.items()
+        )
+        raise ValueError(
+            "research_worker_provenance_mismatch:"
+            f"expected={config.worker_commit},{detail}"
+        )
     for path in (
         config.ssh_key_path,
         config.known_hosts_path,
@@ -1307,7 +1605,85 @@ def _validate_config(config: Config) -> None:
     for name, value in v5_capacity_values.items():
         if value <= 0:
             raise ValueError(f"{name} must be positive")
+    trade_level_capacity_values = {
+        "QUANT_LAB_TRADE_LEVEL_HISTORY_MAX_SNAPSHOT_BYTES": (
+            config.trade_level_history_max_snapshot_bytes
+        ),
+        "QUANT_LAB_TRADE_LEVEL_HISTORY_MAX_INPUT_UNCOMPRESSED_BYTES": (
+            config.trade_level_history_max_input_uncompressed_bytes
+        ),
+        "QUANT_LAB_TRADE_LEVEL_HISTORY_MAX_RESULT_BYTES": (
+            config.trade_level_history_max_result_bytes
+        ),
+        "QUANT_LAB_TRADE_LEVEL_HISTORY_MAX_RESULT_UNCOMPRESSED_BYTES": (
+            config.trade_level_history_max_result_uncompressed_bytes
+        ),
+        "QUANT_LAB_TRADE_LEVEL_HISTORY_MAX_PARTITION_BYTES": (
+            config.trade_level_history_max_partition_bytes
+        ),
+        "QUANT_LAB_TRADE_LEVEL_HISTORY_MAX_PARTITION_UNCOMPRESSED_BYTES": (
+            config.trade_level_history_max_partition_uncompressed_bytes
+        ),
+        "QUANT_LAB_TRADE_LEVEL_HISTORY_MAX_FILE_COUNT": (
+            config.trade_level_history_max_file_count
+        ),
+        "QUANT_LAB_TRADE_LEVEL_HISTORY_MAX_INPUT_ROWS": (
+            config.trade_level_history_max_input_rows
+        ),
+    }
+    for name, value in trade_level_capacity_values.items():
+        if value <= 0:
+            raise ValueError(f"{name} must be positive")
     config.data_root.mkdir(parents=True, exist_ok=True)
+
+
+def _read_full_git_sha(path: Path, label: str) -> str:
+    try:
+        value = path.read_text("ascii").strip().lower()
+    except OSError as exc:
+        raise RuntimeError(
+            f"research_worker_provenance_unreadable:{label}"
+        ) from exc
+    if len(value) != 40 or any(
+        character not in "0123456789abcdef" for character in value
+    ):
+        raise ValueError(
+            f"research_worker_provenance_invalid:{label}"
+        )
+    return value
+
+
+def _repository_head(git_dir: Path) -> str:
+    if not git_dir.is_dir():
+        raise RuntimeError(
+            "research_worker_provenance_repository_git_missing"
+        )
+    result = subprocess.run(
+        [
+            "git",
+            f"--git-dir={git_dir}",
+            "rev-parse",
+            "--verify",
+            "HEAD",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            "research_worker_provenance_repository_head_failed:"
+            f"{_tail(result.stderr)}"
+        )
+    value = result.stdout.strip().lower()
+    if len(value) != 40 or any(
+        character not in "0123456789abcdef" for character in value
+    ):
+        raise ValueError(
+            "research_worker_provenance_repository_head_invalid"
+        )
+    return value
 
 
 def _remote_task_path(config: Config, state: str, task_id: str, name: str) -> str:

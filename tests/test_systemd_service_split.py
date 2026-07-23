@@ -448,6 +448,70 @@ def test_v5_candidate_evidence_uses_bounded_hourly_nas_request_plane():
     assert "QUANT_LAB_V5_CANDIDATE_EVIDENCE_MAX_FILE_COUNT=5000" in nas_env
 
 
+def test_trade_level_history_uses_bounded_nas_request_and_shadow_control():
+    request_service = _unit(
+        "quant-lab-trade-level-history-request.service"
+    )
+    request_timer = _unit(
+        "quant-lab-trade-level-history-request.timer"
+    )
+    importer = _unit("quant-lab-research-result-import.service")
+    refresh_service = _unit(
+        "quant-lab-v5-research-refresh.service"
+    )
+    nas_compose = (
+        ROOT
+        / "deploy"
+        / "nas_research_worker"
+        / "docker-compose.yml"
+    ).read_text(encoding="utf-8")
+    nas_env = (
+        ROOT
+        / "deploy"
+        / "nas_research_worker"
+        / ".env.example"
+    ).read_text(encoding="utf-8")
+
+    assert "request-trade-level-history" in request_service
+    assert "build-trade-level-judgment" not in request_service
+    assert "QUANT_LAB_NAS_TRADE_LEVEL_HISTORY_ENABLED" in request_service
+    assert "POLARS_MAX_THREADS=1" in request_service
+    assert "CPUQuota=30%" in request_service
+    assert "MemoryHigh=600M" in request_service
+    assert "MemoryMax=1G" in request_service
+    assert "OnCalendar=*-*-* *:50:00 UTC" in request_timer
+    assert "RandomizedDelaySec=2min" in request_timer
+    assert "quant-lab-v5-candidate-evidence-request.service" in request_service
+    assert "quant-lab-research-result-import.service" in request_service
+    assert "--trade-level-history-max-result-bytes" in importer
+    assert (
+        "--trade-level-history-max-result-uncompressed-bytes"
+        in importer
+    )
+    assert "--trade-level-history-max-partition-bytes" in importer
+    assert (
+        "--trade-level-history-max-partition-uncompressed-bytes"
+        in importer
+    )
+    assert "--trade-level-history-max-file-count" in importer
+    assert (
+        "build-trade-level-legacy-control-shadow"
+        in refresh_service
+    )
+    assert "build-trade-level-judgment" not in refresh_service
+    assert "build-trade-level-control" not in refresh_service
+    assert (
+        "QUANT_RESEARCH_TRADE_LEVEL_HISTORY_ENABLED=0"
+        in nas_env
+    )
+    assert "repository_git:ro" in nas_compose
+    assert "NAS_RESEARCH_IMAGE_GIT_COMMIT" in nas_compose
+    assert (
+        "QUANT_RESEARCH_WORKER_COMMIT="
+        not in nas_env
+    )
+
+
 def test_scheduled_compaction_covers_hot_ws_datasets():
     unit = _unit("quant-lab-lake-compaction.service")
     timer = _unit("quant-lab-lake-compaction.timer")

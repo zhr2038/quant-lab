@@ -12,6 +12,7 @@ import polars as pl
 from pydantic import BaseModel, ConfigDict, Field
 
 from quant_lab.data.lake import read_parquet_dataset, write_parquet_dataset, write_snapshot_meta
+from quant_lab.export_plane.status import atomic_write_json
 from quant_lab.opportunity_cost.ledger import (
     DECISION_REGRET_SCHEMA_VERSION,
     OPPORTUNITY_COST_BY_BUCKET_SCHEMA_VERSION,
@@ -57,6 +58,8 @@ OPPORTUNITY_COST_EVENT_DATASET = Path("gold") / "quant_lab_opportunity_cost_even
 OPPORTUNITY_COST_DAILY_DATASET = Path("gold") / "quant_lab_opportunity_cost_daily"
 OPPORTUNITY_COST_BY_BUCKET_DATASET = Path("gold") / "opportunity_cost_by_bucket"
 DECISION_REGRET_DATASET = Path("gold") / "quant_lab_decision_regret"
+TRADE_LEVEL_CONTROL_STATUS = Path("gold") / "trade_level_control_status.json"
+DEFAULT_TRADE_LEVEL_HISTORY_MAX_AGE_HOURS = 36
 
 V5_CANDIDATE_EVENT_DATASET = Path("silver") / "v5_candidate_event"
 V5_TRADE_EVENT_DATASET = Path("silver") / "v5_trade_event"
@@ -64,6 +67,33 @@ V5_ROUNDTRIP_DATASET = Path("silver") / "v5_roundtrip"
 V5_ORDER_LIFECYCLE_DATASET = Path("silver") / "v5_order_lifecycle"
 V5_CANDIDATE_LABEL_DATASET = Path("gold") / "v5_candidate_label"
 RISK_PERMISSION_DATASET = Path("gold") / "risk_permission"
+TRADE_LEVEL_CONTROL_OUTPUT_SPECS = (
+    ("trade_level_judgment", TRADE_LEVEL_JUDGMENT_DATASET),
+    ("quant_lab_false_block_audit", FALSE_BLOCK_AUDIT_DATASET),
+    ("v5_trade_learning_sample", V5_TRADE_LEARNING_SAMPLE_DATASET),
+    (
+        "v5_trade_outcome_attribution",
+        V5_TRADE_OUTCOME_ATTRIBUTION_DATASET,
+    ),
+    (
+        "quant_lab_opportunity_cost_event",
+        OPPORTUNITY_COST_EVENT_DATASET,
+    ),
+    (
+        "quant_lab_opportunity_cost_daily",
+        OPPORTUNITY_COST_DAILY_DATASET,
+    ),
+    (
+        "opportunity_cost_by_bucket",
+        OPPORTUNITY_COST_BY_BUCKET_DATASET,
+    ),
+    ("trade_level_bucket_policy", TRADE_LEVEL_BUCKET_POLICY_DATASET),
+    (
+        "trade_level_opportunity_queue",
+        TRADE_LEVEL_OPPORTUNITY_QUEUE_DATASET,
+    ),
+    ("quant_lab_decision_regret", DECISION_REGRET_DATASET),
+)
 
 TRADE_OPPORTUNITY_EVENT_SCHEMA = {
     "schema_version": pl.Utf8,
@@ -220,6 +250,33 @@ class TradeLevelBuildResult(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
+class TradeLevelControlBuildResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    lake_root: str
+    as_of_date: str
+    history_status: str
+    history_generation_id: str | None = None
+    history_generation_age_hours: float | None = None
+    history_stale_reason: str | None = None
+    trade_level_judgment_rows: int = Field(ge=0)
+    false_block_audit_rows: int = Field(ge=0)
+    v5_trade_learning_sample_rows: int = Field(ge=0)
+    v5_trade_outcome_attribution_rows: int = Field(ge=0)
+    opportunity_cost_event_rows: int = Field(ge=0)
+    opportunity_cost_daily_rows: int = Field(ge=0)
+    opportunity_cost_by_bucket_rows: int = Field(ge=0)
+    trade_level_bucket_policy_rows: int = Field(ge=0)
+    trade_level_opportunity_queue_rows: int = Field(ge=0)
+    decision_regret_rows: int = Field(ge=0)
+    micro_canary_review_count: int = Field(ge=0)
+    micro_canary_allow_count: int = Field(ge=0)
+    risk_block_count: int = Field(ge=0)
+    max_live_notional_usdt: float = Field(ge=0.0)
+    live_order_effect: str
+    warnings: list[str] = Field(default_factory=list)
+
+
 def build_and_publish_trade_level_judgment(
     lake_root: str | Path,
     *,
@@ -286,6 +343,244 @@ def build_and_publish_trade_level_judgment(
     )
 
 
+def build_and_publish_trade_level_control(
+    lake_root: str | Path,
+    *,
+    as_of_date: str | date | None = None,
+    max_generation_age_hours: int = (
+        DEFAULT_TRADE_LEVEL_HISTORY_MAX_AGE_HOURS
+    ),
+) -> TradeLevelControlBuildResult:
+    """Build cloud-owned control outputs from accepted history Gold.
+
+    The function never recomputes labels or similarity locally. Missing,
+    corrupt, or stale history is published fail-closed with no new live
+    allowance or non-zero order limit.
+    """
+
+    if max_generation_age_hours <= 0:
+        raise ValueError(
+            "trade_level_history_max_generation_age_hours_must_be_positive"
+        )
+    root = Path(lake_root)
+    day = _parse_day(as_of_date)
+    generated_at = datetime.now(UTC)
+    history_status = "CURRENT"
+    history_stale_reason: str | None = None
+    history_generation_id: str | None = None
+    history_generation_age_hours: float | None = None
+    pointer: dict[str, Any] = {}
+    events = pl.DataFrame(schema=TRADE_OPPORTUNITY_EVENT_SCHEMA)
+    labels = pl.DataFrame()
+    similarity = pl.DataFrame()
+    try:
+        from quant_lab.research_plane.trade_level_history_publish import (
+            TRADE_LEVEL_HISTORY_GENERATION_POINTER,
+            verify_trade_level_history_generation_fast,
+        )
+
+        pointer_path = root / TRADE_LEVEL_HISTORY_GENERATION_POINTER
+        pointer = json.loads(pointer_path.read_text("utf-8"))
+        if not isinstance(pointer, dict):
+            raise ValueError(
+                "trade_level_history_generation_pointer_invalid"
+            )
+        history_generation_id = _text(pointer.get("generation_id")) or None
+        if history_generation_id is None:
+            raise ValueError(
+                "trade_level_history_generation_id_missing"
+            )
+        verify_trade_level_history_generation_fast(
+            root,
+            history_generation_id,
+            expected_input_fingerprint=_text(
+                pointer.get("input_fingerprint_digest")
+            ),
+            expected_candidate_generation_id=_text(
+                pointer.get("candidate_evidence_generation_id")
+            ),
+            expected_candidate_generation_digest=_text(
+                pointer.get("candidate_evidence_generation_digest")
+            ),
+        )
+        published_at = _timestamp(pointer.get("published_at"))
+        if published_at is None:
+            raise ValueError(
+                "trade_level_history_generation_published_at_missing"
+            )
+        age_seconds = (generated_at - published_at).total_seconds()
+        if age_seconds < -300:
+            raise ValueError(
+                "trade_level_history_generation_published_in_future"
+            )
+        history_generation_age_hours = max(0.0, age_seconds / 3600.0)
+        if history_generation_age_hours > max_generation_age_hours:
+            history_status = "STALE"
+            history_stale_reason = (
+                "trade_level_history_generation_age_exceeded:"
+                f"{history_generation_age_hours:.3f}h>"
+                f"{max_generation_age_hours}h"
+            )
+        events = read_parquet_dataset(
+            root / TRADE_OPPORTUNITY_EVENT_DATASET
+        )
+        labels = read_parquet_dataset(
+            root / TRADE_OPPORTUNITY_LABEL_DATASET
+        )
+        similarity = read_parquet_dataset(
+            root / TRADE_LEVEL_SIMILARITY_DATASET
+        )
+    except (
+        FileNotFoundError,
+        RuntimeError,
+        ValueError,
+        json.JSONDecodeError,
+    ) as exc:
+        history_status = "INVALID"
+        history_stale_reason = (
+            "trade_level_history_unavailable_or_invalid:"
+            f"{type(exc).__name__}:{str(exc)[:500]}"
+        )
+        events = pl.DataFrame(schema=TRADE_OPPORTUNITY_EVENT_SCHEMA)
+        labels = pl.DataFrame()
+        similarity = pl.DataFrame()
+
+    frames = build_trade_level_control_frames(
+        events=events,
+        labels=labels,
+        similarity=similarity,
+        v5_trades=read_parquet_dataset(
+            root / V5_TRADE_EVENT_DATASET
+        ),
+        v5_roundtrips=read_parquet_dataset(
+            root / V5_ROUNDTRIP_DATASET
+        ),
+        order_lifecycles=read_parquet_dataset(
+            root / V5_ORDER_LIFECYCLE_DATASET
+        ),
+        as_of_date=day,
+        created_at=generated_at,
+        history_stale_reason=history_stale_reason,
+    )
+    for dataset_name, relative_path in TRADE_LEVEL_CONTROL_OUTPUT_SPECS:
+        frame = frames[dataset_name]
+        dataset_path = root / relative_path
+        write_parquet_dataset(frame, dataset_path)
+        write_snapshot_meta(
+            dataset_path,
+            dataset_name=dataset_name,
+            frame=frame,
+            schema_version=_schema_version_for_dataset(dataset_name),
+            generated_at=generated_at,
+        )
+    judgments = frames["trade_level_judgment"]
+    decisions = (
+        judgments.get_column("trade_level_decision")
+        if "trade_level_decision" in judgments.columns
+        else pl.Series([], dtype=pl.Utf8)
+    )
+    micro_review_count = int(
+        decisions.is_in(
+            [
+                "MICRO_CANARY_REVIEW",
+                "MICRO_CANARY_REVIEW_BLOCKED_BY_OBSERVABILITY",
+            ]
+        ).sum()
+    )
+    micro_allow_count = int(
+        (decisions == "MICRO_CANARY_ALLOW").sum()
+    )
+    risk_block_count = int(
+        decisions.is_in(["HARD_BLOCK", "RISK_BLOCK"]).sum()
+    )
+    max_live_notional = (
+        float(
+            judgments.get_column("max_single_order_usdt")
+            .fill_null(0.0)
+            .max()
+            or 0.0
+        )
+        if "max_single_order_usdt" in judgments.columns
+        and not judgments.is_empty()
+        else 0.0
+    )
+    if history_status != "CURRENT" and (
+        micro_allow_count != 0 or max_live_notional != 0.0
+    ):
+        raise RuntimeError(
+            "trade_level_history_fail_closed_output_violation"
+        )
+    status_payload = {
+        "schema_version": "trade_level_control_status.v1",
+        "as_of_date": day.isoformat(),
+        "history_status": history_status,
+        "history_generation_id": history_generation_id,
+        "history_generation_digest": (
+            _text(pointer.get("generation_digest")) or None
+        ),
+        "history_generation_age_hours": (
+            history_generation_age_hours
+        ),
+        "history_stale_reason": history_stale_reason,
+        "max_generation_age_hours": max_generation_age_hours,
+        "micro_canary_review_count": micro_review_count,
+        "micro_canary_allow_count": micro_allow_count,
+        "risk_block_count": risk_block_count,
+        "max_live_notional_usdt": max_live_notional,
+        "automatic_local_history_recompute": False,
+        "live_order_effect": "cloud_control_only",
+        "generated_at": generated_at.isoformat(),
+    }
+    atomic_write_json(root / TRADE_LEVEL_CONTROL_STATUS, status_payload)
+    warnings = (
+        [history_stale_reason]
+        if history_stale_reason is not None
+        else []
+    )
+    return TradeLevelControlBuildResult(
+        lake_root=str(root),
+        as_of_date=day.isoformat(),
+        history_status=history_status,
+        history_generation_id=history_generation_id,
+        history_generation_age_hours=history_generation_age_hours,
+        history_stale_reason=history_stale_reason,
+        trade_level_judgment_rows=judgments.height,
+        false_block_audit_rows=frames[
+            "quant_lab_false_block_audit"
+        ].height,
+        v5_trade_learning_sample_rows=frames[
+            "v5_trade_learning_sample"
+        ].height,
+        v5_trade_outcome_attribution_rows=frames[
+            "v5_trade_outcome_attribution"
+        ].height,
+        opportunity_cost_event_rows=frames[
+            "quant_lab_opportunity_cost_event"
+        ].height,
+        opportunity_cost_daily_rows=frames[
+            "quant_lab_opportunity_cost_daily"
+        ].height,
+        opportunity_cost_by_bucket_rows=frames[
+            "opportunity_cost_by_bucket"
+        ].height,
+        trade_level_bucket_policy_rows=frames[
+            "trade_level_bucket_policy"
+        ].height,
+        trade_level_opportunity_queue_rows=frames[
+            "trade_level_opportunity_queue"
+        ].height,
+        decision_regret_rows=frames[
+            "quant_lab_decision_regret"
+        ].height,
+        micro_canary_review_count=micro_review_count,
+        micro_canary_allow_count=micro_allow_count,
+        risk_block_count=risk_block_count,
+        max_live_notional_usdt=max_live_notional,
+        live_order_effect="cloud_control_only",
+        warnings=warnings,
+    )
+
+
 def build_trade_level_frames_from_sources(
     *,
     candidate_events: pl.DataFrame,
@@ -315,6 +610,54 @@ def build_trade_level_frames_from_sources(
         created_at=generated_at,
     )
     similarity = build_trade_level_similarity_outcome(events, labels, created_at=generated_at)
+    control = build_trade_level_control_frames(
+        events=events,
+        labels=labels,
+        similarity=similarity,
+        v5_trades=v5_trades,
+        v5_roundtrips=(
+            v5_roundtrips
+            if v5_roundtrips is not None
+            else pl.DataFrame()
+        ),
+        order_lifecycles=(
+            order_lifecycles
+            if order_lifecycles is not None
+            else pl.DataFrame()
+        ),
+        as_of_date=day,
+        created_at=generated_at,
+    )
+    return {
+        "trade_opportunity_event": events,
+        "trade_opportunity_label": labels,
+        "trade_level_similarity_outcome": similarity,
+        **control,
+    }
+
+
+def build_trade_level_control_frames(
+    *,
+    events: pl.DataFrame,
+    labels: pl.DataFrame,
+    similarity: pl.DataFrame,
+    v5_trades: pl.DataFrame,
+    v5_roundtrips: pl.DataFrame | None = None,
+    order_lifecycles: pl.DataFrame | None = None,
+    as_of_date: str | date | None = None,
+    created_at: datetime | None = None,
+    history_stale_reason: str | None = None,
+    shadow_allowed_allow_event_ids: frozenset[str] | None = None,
+    shadow_allowed_allow_bucket_keys: frozenset[str] | None = None,
+) -> dict[str, pl.DataFrame]:
+    """Build the cloud-only two-stage judgment and control loop."""
+
+    generated_at = created_at or datetime.now(UTC)
+    day = (
+        _parse_day(as_of_date)
+        if as_of_date is not None
+        else generated_at.date()
+    )
     judgments = build_trade_level_judgments(
         events,
         similarity=similarity,
@@ -350,12 +693,32 @@ def build_trade_level_frames_from_sources(
         policy_date=day,
         created_at=generated_at,
     )
+    if history_stale_reason is not None:
+        bucket_policy = _fail_closed_bucket_policy(
+            bucket_policy,
+            reason=history_stale_reason,
+        )
+    if shadow_allowed_allow_bucket_keys is not None:
+        bucket_policy = _restrict_shadow_bucket_policy(
+            bucket_policy,
+            allowed_bucket_keys=shadow_allowed_allow_bucket_keys,
+        )
     judgments = build_trade_level_judgments(
         events,
         similarity=similarity,
         bucket_policy=bucket_policy,
         created_at=generated_at,
     )
+    if history_stale_reason is not None:
+        judgments = _fail_closed_history_judgments(
+            judgments,
+            reason=history_stale_reason,
+        )
+    if shadow_allowed_allow_event_ids is not None:
+        judgments = _restrict_shadow_judgments(
+            judgments,
+            allowed_event_ids=shadow_allowed_allow_event_ids,
+        )
     samples = build_v5_trade_learning_samples(
         events,
         labels,
@@ -386,9 +749,6 @@ def build_trade_level_frames_from_sources(
         created_at=generated_at,
     )
     return {
-        "trade_opportunity_event": events,
-        "trade_opportunity_label": labels,
-        "trade_level_similarity_outcome": similarity,
         "trade_level_judgment": judgments,
         "quant_lab_false_block_audit": audit,
         "v5_trade_learning_sample": samples,
@@ -397,6 +757,120 @@ def build_trade_level_frames_from_sources(
         "trade_level_opportunity_queue": opportunity_queue,
         **opportunity_cost,
     }
+
+
+def _fail_closed_bucket_policy(
+    frame: pl.DataFrame,
+    *,
+    reason: str,
+) -> pl.DataFrame:
+    if frame.is_empty():
+        return frame
+    return frame.with_columns(
+        pl.when(pl.col("policy_action") == "RISK_BLOCK")
+        .then(pl.lit("RISK_BLOCK"))
+        .otherwise(pl.lit("PAPER_ONLY"))
+        .alias("policy_action"),
+        pl.lit(reason).alias("policy_reason"),
+        pl.lit("low").alias("policy_confidence"),
+        pl.lit(reason).alias("policy_basis"),
+        pl.lit(0.0).alias("min_arrival_mid_coverage"),
+        pl.lit(0.0).alias("min_required_observability"),
+        pl.lit(0.0).alias("max_single_order_usdt"),
+        pl.lit(0).cast(pl.Int64).alias("daily_trade_limit"),
+    )
+
+
+def _fail_closed_history_judgments(
+    frame: pl.DataFrame,
+    *,
+    reason: str,
+) -> pl.DataFrame:
+    if frame.is_empty():
+        return frame
+    return frame.with_columns(
+        pl.when(
+            pl.col("trade_level_decision").is_in(
+                ["HARD_BLOCK", "RISK_BLOCK"]
+            )
+        )
+        .then(pl.col("trade_level_decision"))
+        .otherwise(pl.lit("PAPER_ONLY"))
+        .alias("trade_level_decision"),
+        pl.lit(0.0).alias("max_single_order_usdt"),
+        pl.lit(0).cast(pl.Int64).alias("daily_trade_limit"),
+        (
+            pl.col("reason").fill_null("")
+            + pl.lit(";")
+            + pl.lit(reason)
+        ).alias("reason"),
+    )
+
+
+def _restrict_shadow_bucket_policy(
+    frame: pl.DataFrame,
+    *,
+    allowed_bucket_keys: frozenset[str],
+) -> pl.DataFrame:
+    if frame.is_empty():
+        return frame
+    blocked_expansion = (
+        (pl.col("policy_action") == "MICRO_CANARY_ALLOW")
+        & ~pl.col("bucket_key").is_in(sorted(allowed_bucket_keys))
+    )
+    reason = "shadow_prevents_new_micro_canary_allow"
+    return frame.with_columns(
+        pl.when(blocked_expansion)
+        .then(pl.lit("MICRO_CANARY_REVIEW"))
+        .otherwise(pl.col("policy_action"))
+        .alias("policy_action"),
+        pl.when(blocked_expansion)
+        .then(pl.lit(reason))
+        .otherwise(pl.col("policy_reason"))
+        .alias("policy_reason"),
+        pl.when(blocked_expansion)
+        .then(pl.lit(0.0))
+        .otherwise(pl.col("max_single_order_usdt"))
+        .alias("max_single_order_usdt"),
+        pl.when(blocked_expansion)
+        .then(pl.lit(0).cast(pl.Int64))
+        .otherwise(pl.col("daily_trade_limit"))
+        .alias("daily_trade_limit"),
+    )
+
+
+def _restrict_shadow_judgments(
+    frame: pl.DataFrame,
+    *,
+    allowed_event_ids: frozenset[str],
+) -> pl.DataFrame:
+    if frame.is_empty():
+        return frame
+    blocked_expansion = (
+        (pl.col("trade_level_decision") == "MICRO_CANARY_ALLOW")
+        & ~pl.col("event_id").is_in(sorted(allowed_event_ids))
+    )
+    return frame.with_columns(
+        pl.when(blocked_expansion)
+        .then(pl.lit("MICRO_CANARY_REVIEW"))
+        .otherwise(pl.col("trade_level_decision"))
+        .alias("trade_level_decision"),
+        pl.when(blocked_expansion)
+        .then(pl.lit(0.0))
+        .otherwise(pl.col("max_single_order_usdt"))
+        .alias("max_single_order_usdt"),
+        pl.when(blocked_expansion)
+        .then(pl.lit(0).cast(pl.Int64))
+        .otherwise(pl.col("daily_trade_limit"))
+        .alias("daily_trade_limit"),
+        pl.when(blocked_expansion)
+        .then(
+            pl.col("reason").fill_null("")
+            + pl.lit(";shadow_prevents_new_micro_canary_allow")
+        )
+        .otherwise(pl.col("reason"))
+        .alias("reason"),
+    )
 
 
 def build_trade_opportunity_events(

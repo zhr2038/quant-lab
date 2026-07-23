@@ -8,6 +8,43 @@ from typing import Annotated, Literal, TypeAlias
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator, model_validator
 
 from quant_lab.factors.plan import EffectiveFactorPlan
+from quant_lab.research_plane.trade_level_history_contracts import (  # noqa: F401
+    DEFAULT_TRADE_LEVEL_HISTORY_MAX_FILE_COUNT,
+    DEFAULT_TRADE_LEVEL_HISTORY_MAX_INPUT_ROWS,
+    DEFAULT_TRADE_LEVEL_HISTORY_MAX_INPUT_UNCOMPRESSED_BYTES,
+    DEFAULT_TRADE_LEVEL_HISTORY_MAX_PARTITION_BYTES,
+    DEFAULT_TRADE_LEVEL_HISTORY_MAX_PARTITION_UNCOMPRESSED_BYTES,
+    DEFAULT_TRADE_LEVEL_HISTORY_MAX_RESULT_BYTES,
+    DEFAULT_TRADE_LEVEL_HISTORY_MAX_RESULT_UNCOMPRESSED_BYTES,
+    DEFAULT_TRADE_LEVEL_HISTORY_MAX_SNAPSHOT_BYTES,
+    TRADE_LEVEL_HISTORY_ANTI_LEAKAGE_CHECKS,
+    TRADE_LEVEL_HISTORY_AVAILABILITY_POLICY,
+    TRADE_LEVEL_HISTORY_EVENT_SCHEMA,
+    TRADE_LEVEL_HISTORY_FINGERPRINT_SCHEMA,
+    TRADE_LEVEL_HISTORY_GENERATION_SCHEMA,
+    TRADE_LEVEL_HISTORY_INPUT_DATASETS,
+    TRADE_LEVEL_HISTORY_LABEL_SCHEMA,
+    TRADE_LEVEL_HISTORY_MODE,
+    TRADE_LEVEL_HISTORY_OUTPUT_DATASETS,
+    TRADE_LEVEL_HISTORY_PRIMARY_KEYS,
+    TRADE_LEVEL_HISTORY_RECEIPT_SCHEMA,
+    TRADE_LEVEL_HISTORY_RESULT_SCHEMA,
+    TRADE_LEVEL_HISTORY_RISK_JOIN_VERSION,
+    TRADE_LEVEL_HISTORY_SIMILARITY_SCHEMA,
+    TRADE_LEVEL_HISTORY_SNAPSHOT_SCHEMA,
+    TRADE_LEVEL_HISTORY_TASK_SCHEMA,
+    TRADE_LEVEL_HISTORY_TASK_TYPE,
+    TradeLevelHistoryAntiLeakageCheck,
+    TradeLevelHistoryInputFingerprint,
+    TradeLevelHistoryOutputDataset,
+    TradeLevelHistoryReportFile,
+    TradeLevelHistoryResultManifest,
+    TradeLevelHistorySnapshotFile,
+    TradeLevelHistorySnapshotManifest,
+    TradeLevelHistoryTask,
+    TradeLevelHistoryTaskPayload,
+    TradeLevelHistoryWorkerReceipt,
+)
 from quant_lab.research_plane.v5_candidate_evidence_contracts import (  # noqa: F401
     DEFAULT_V5_CANDIDATE_EVIDENCE_MAX_FILE_COUNT,
     DEFAULT_V5_CANDIDATE_EVIDENCE_MAX_INPUT_UNCOMPRESSED_BYTES,
@@ -86,6 +123,7 @@ class ResearchTaskState(StrEnum):
     COMPUTING = "computing"
     COMPUTING_VALUES = "computing_values"
     COMPUTING_LABELS = "computing_labels"
+    COMPUTING_SIMILARITY = "computing_similarity"
     COMPUTING_SAMPLES = "computing_samples"
     COMPUTING_EVIDENCE = "computing_evidence"
     COMPUTING_CORRELATION = "computing_correlation"
@@ -1048,7 +1086,8 @@ ResearchTaskEnvelope: TypeAlias = Annotated[
     | AlphaFactoryTask
     | FactorResearchTask
     | FactorFactoryTask
-    | V5CandidateEvidenceTask,
+    | V5CandidateEvidenceTask
+    | TradeLevelHistoryTask,
     Field(discriminator="task_type"),
 ]
 RESEARCH_TASK_ADAPTER = TypeAdapter(ResearchTaskEnvelope)
@@ -1059,7 +1098,8 @@ ResearchSnapshotEnvelope: TypeAlias = Annotated[
     | AlphaFactorySnapshotManifest
     | FactorResearchSnapshotManifest
     | FactorFactorySnapshotManifest
-    | V5CandidateEvidenceSnapshotManifest,
+    | V5CandidateEvidenceSnapshotManifest
+    | TradeLevelHistorySnapshotManifest,
     Field(discriminator="schema_version"),
 ]
 RESEARCH_SNAPSHOT_ADAPTER = TypeAdapter(ResearchSnapshotEnvelope)
@@ -1556,7 +1596,8 @@ ResearchResultEnvelope: TypeAlias = Annotated[
     | AlphaFactoryResultManifest
     | FactorResearchResultManifest
     | FactorFactoryResultManifest
-    | V5CandidateEvidenceResultManifest,
+    | V5CandidateEvidenceResultManifest
+    | TradeLevelHistoryResultManifest,
     Field(discriminator="task_type"),
 ]
 RESEARCH_RESULT_ADAPTER = TypeAdapter(ResearchResultEnvelope)
@@ -1708,7 +1749,8 @@ ResearchReceiptEnvelope: TypeAlias = Annotated[
     | AlphaFactoryWorkerReceipt
     | FactorResearchWorkerReceipt
     | FactorFactoryWorkerReceipt
-    | V5CandidateEvidenceWorkerReceipt,
+    | V5CandidateEvidenceWorkerReceipt
+    | TradeLevelHistoryWorkerReceipt,
     Field(discriminator="schema_version"),
 ]
 RESEARCH_RECEIPT_ADAPTER = TypeAdapter(ResearchReceiptEnvelope)
@@ -1740,6 +1782,7 @@ class ResearchTaskStatus(StrictModel):
         "factor_research",
         "factor_factory",
         "v5_candidate_evidence",
+        "trade_level_history",
     ] = ENTRY_QUALITY_HISTORY_TASK_TYPE
     start_date: date
     end_date: date
@@ -1795,6 +1838,7 @@ class ResearchTaskLease(StrictModel):
         "factor_research",
         "factor_factory",
         "v5_candidate_evidence",
+        "trade_level_history",
     ] = ENTRY_QUALITY_HISTORY_TASK_TYPE
     worker_id: str = Field(min_length=1, max_length=180)
     claimed_at: datetime

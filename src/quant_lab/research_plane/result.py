@@ -49,6 +49,8 @@ from quant_lab.research_plane.contracts import (
     ResearchSnapshotManifest,
     ResearchTask,
     ResearchWorkerReceipt,
+    TradeLevelHistorySnapshotManifest,
+    TradeLevelHistoryTask,
     V5CandidateEvidenceSnapshotManifest,
     V5CandidateEvidenceTask,
 )
@@ -150,6 +152,7 @@ def validate_research_task_snapshot(
         | FactorResearchTask
         | FactorFactoryTask
         | V5CandidateEvidenceTask
+        | TradeLevelHistoryTask
     ),
     snapshot: (
         ResearchSnapshotManifest
@@ -157,6 +160,7 @@ def validate_research_task_snapshot(
         | FactorResearchSnapshotManifest
         | FactorFactorySnapshotManifest
         | V5CandidateEvidenceSnapshotManifest
+        | TradeLevelHistorySnapshotManifest
     ),
     *,
     task_public_key: Ed25519PublicKey,
@@ -182,6 +186,10 @@ def validate_research_task_snapshot(
             isinstance(task, V5CandidateEvidenceTask)
             and isinstance(snapshot, V5CandidateEvidenceSnapshotManifest)
         )
+        or (
+            isinstance(task, TradeLevelHistoryTask)
+            and isinstance(snapshot, TradeLevelHistorySnapshotManifest)
+        )
     )
     if not matching_types:
         raise ValueError("research_task_snapshot_type_mismatch")
@@ -192,7 +200,11 @@ def validate_research_task_snapshot(
     verify_payload(task, task.signature, task_public_key)
     if not isinstance(
         snapshot,
-        (FactorFactorySnapshotManifest, V5CandidateEvidenceSnapshotManifest),
+        (
+            FactorFactorySnapshotManifest,
+            V5CandidateEvidenceSnapshotManifest,
+            TradeLevelHistorySnapshotManifest,
+        ),
     ):
         verify_payload(snapshot, snapshot.signature, task_public_key)
     if isinstance(snapshot, AlphaFactorySnapshotManifest):
@@ -210,6 +222,19 @@ def validate_research_task_snapshot(
             verify_payload(snapshot, snapshot.signature, task_public_key)
         else:
             verify_v5_candidate_evidence_snapshot_manifest(
+                snapshot,
+                final_root=snapshot_root,
+                public_key=task_public_key,
+            )
+    elif isinstance(snapshot, TradeLevelHistorySnapshotManifest):
+        if snapshot_root is None:
+            verify_payload(snapshot, snapshot.signature, task_public_key)
+        else:
+            from quant_lab.research_plane.trade_level_history_snapshot import (  # noqa: PLC0415
+                verify_trade_level_history_snapshot_manifest,
+            )
+
+            verify_trade_level_history_snapshot_manifest(
                 snapshot,
                 final_root=snapshot_root,
                 public_key=task_public_key,
@@ -358,12 +383,51 @@ def validate_research_task_snapshot(
         )
         if observed_identity != expected_identity:
             raise ValueError("research_task_snapshot_v5_candidate_evidence_identity_mismatch")
+    elif isinstance(task, TradeLevelHistoryTask) and isinstance(
+        snapshot,
+        TradeLevelHistorySnapshotManifest,
+    ):
+        expected_identity = (
+            task.input_fingerprint_digest,
+            task.as_of_date,
+            task.history_mode,
+            task.candidate_evidence_generation_id,
+            task.candidate_evidence_generation_digest,
+            task.candidate_evidence_input_fingerprint,
+            task.trade_event_schema_version,
+            task.trade_label_schema_version,
+            task.similarity_schema_version,
+            task.similarity_availability_policy,
+        )
+        observed_identity = (
+            snapshot.input_fingerprint_digest,
+            snapshot.as_of_date,
+            snapshot.history_mode,
+            snapshot.candidate_evidence_generation_id,
+            snapshot.candidate_evidence_generation_digest,
+            snapshot.candidate_evidence_input_fingerprint,
+            snapshot.trade_event_schema_version,
+            snapshot.trade_label_schema_version,
+            snapshot.similarity_schema_version,
+            snapshot.similarity_availability_policy,
+        )
+        if observed_identity != expected_identity:
+            raise ValueError(
+                "research_task_snapshot_trade_level_history_identity_mismatch"
+            )
     elif isinstance(task, ResearchTask) and isinstance(snapshot, ResearchSnapshotManifest):
         if task.entry_quality_schema_version != snapshot.entry_quality_schema_version:
             raise ValueError("research_task_snapshot_schema_mismatch")
     else:  # pragma: no cover - guarded above; keeps the type boundary explicit.
         raise ValueError("research_task_snapshot_type_mismatch")
-    if not isinstance(task, (FactorFactoryTask, V5CandidateEvidenceTask)) and (
+    if not isinstance(
+        task,
+        (
+            FactorFactoryTask,
+            V5CandidateEvidenceTask,
+            TradeLevelHistoryTask,
+        ),
+    ) and (
         task.selected_v5_bundle_id != snapshot.selected_v5_bundle_id
     ):
         raise ValueError("research_task_snapshot_bundle_mismatch")

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
 
 import polars as pl
@@ -12,7 +13,9 @@ from quant_lab.trade_level.judgment import (
     build_trade_level_judgments,
     build_trade_opportunity_events,
 )
+from quant_lab.trade_level.labels import build_trade_opportunity_labels
 from quant_lab.trade_level.opportunity_queue import build_trade_level_opportunity_queue
+from quant_lab.trade_level.similarity import build_trade_level_similarity_outcome
 
 
 def test_sol_high_confidence_abort_becomes_micro_canary_review():
@@ -143,6 +146,241 @@ def test_trade_opportunity_event_preserves_quote_metadata():
     assert event["quote_ts"] == "2026-06-29T08:05:01Z"
     assert event["quote_age_ms"] == 320.0
     assert event["quote_source"] == "okx_books5"
+
+
+def test_trade_opportunity_label_records_source_and_derived_availability():
+    decision_ts = datetime(2026, 7, 1, tzinfo=UTC)
+    events = pl.DataFrame(
+        [
+            {
+                "event_id": "event-a",
+                "candidate_id": "candidate-a",
+                "run_id": "run-a",
+                "symbol": "BTC-USDT",
+                "strategy_candidate": "strategy-a",
+                "decision_ts": decision_ts,
+            }
+        ]
+    )
+    labels = build_trade_opportunity_labels(
+        events,
+        pl.DataFrame(
+            [
+                {
+                    "candidate_id": "candidate-a",
+                    "run_id": "run-a",
+                    "symbol": "BTC-USDT",
+                    "strategy_candidate": "strategy-a",
+                    "horizon_hours": 4,
+                    "decision_ts": decision_ts,
+                    "label_ts": decision_ts + timedelta(hours=4, minutes=5),
+                    "net_bps_after_cost": 4.0,
+                    "label_status": "complete",
+                },
+                {
+                    "candidate_id": "candidate-a",
+                    "run_id": "run-a",
+                    "symbol": "BTC-USDT",
+                    "strategy_candidate": "strategy-a",
+                    "horizon_hours": 8,
+                    "decision_ts": decision_ts,
+                    "net_bps_after_cost": 8.0,
+                    "label_status": "complete",
+                },
+            ]
+        ),
+        created_at=decision_ts + timedelta(days=2),
+    ).row(0, named=True)
+
+    assert labels["schema_version"] == "trade_opportunity_label.v0.2"
+    assert labels["label_4h_available_at"] == decision_ts + timedelta(hours=4, minutes=5)
+    assert labels["label_4h_availability_source"] == "candidate_label_label_ts"
+    assert labels["label_8h_available_at"] == decision_ts + timedelta(hours=8)
+    assert labels["label_8h_availability_source"] == "derived_from_horizon"
+
+
+@pytest.mark.parametrize(
+    ("elapsed_hours", "expected_count", "expected_mean"),
+    [
+        (1, 0, None),
+        (5, 1, 4.0),
+        (9, 1, 8.0),
+        (25, 1, 24.0),
+    ],
+)
+def test_trade_level_similarity_uses_only_causally_available_outcome(
+    elapsed_hours: int,
+    expected_count: int,
+    expected_mean: float | None,
+):
+    prior_ts = datetime(2026, 7, 1, tzinfo=UTC)
+    current_ts = prior_ts + timedelta(hours=elapsed_hours)
+    events = pl.DataFrame(
+        [
+            _similarity_event("prior", prior_ts),
+            _similarity_event("current", current_ts),
+        ]
+    )
+    labels = pl.DataFrame(
+        [
+            {
+                "event_id": "prior",
+                "decision_ts": prior_ts,
+                "label_4h_after_cost_bps": 4.0,
+                "label_8h_after_cost_bps": 8.0,
+                "label_24h_after_cost_bps": 24.0,
+                "label_4h_available_at": prior_ts + timedelta(hours=4),
+                "label_8h_available_at": prior_ts + timedelta(hours=8),
+                "label_24h_available_at": prior_ts + timedelta(hours=24),
+                "label_4h_mae_bps": -4.0,
+                "label_8h_mae_bps": -8.0,
+                "label_24h_mae_bps": -24.0,
+            }
+        ]
+    )
+
+    current = (
+        build_trade_level_similarity_outcome(events, labels, created_at=current_ts)
+        .filter(pl.col("event_id") == "current")
+        .row(0, named=True)
+    )
+
+    assert current["similar_sample_count"] == expected_count
+    assert current["similar_mean_after_cost_bps"] == expected_mean
+    assert current["similar_max_adverse_bps"] == (
+        -expected_mean if expected_mean is not None else None
+    )
+
+
+def test_trade_level_similarity_excludes_same_timestamp_and_self():
+    decision_ts = datetime(2026, 7, 1, tzinfo=UTC)
+    events = pl.DataFrame(
+        [
+            _similarity_event("event-a", decision_ts),
+            _similarity_event("event-b", decision_ts),
+        ]
+    )
+    labels = pl.DataFrame(
+        [
+            {
+                "event_id": event_id,
+                "decision_ts": decision_ts,
+                "label_4h_after_cost_bps": value,
+                "label_4h_available_at": decision_ts,
+                "label_4h_mae_bps": -value,
+            }
+            for event_id, value in (("event-a", 1.0), ("event-b", 2.0))
+        ]
+    )
+
+    similarity = build_trade_level_similarity_outcome(
+        events,
+        labels,
+        created_at=decision_ts,
+    )
+
+    assert similarity["similar_sample_count"].to_list() == [0, 0]
+
+
+def test_trade_opportunity_event_uses_point_in_time_risk_permission():
+    candidate = _sol_candidate()
+    candidate["decision_ts"] = datetime(2026, 7, 1, 10, tzinfo=UTC)
+    candidate["ts_utc"] = candidate["decision_ts"]
+    events = build_trade_opportunity_events(
+        pl.DataFrame([candidate]),
+        risk_permissions=pl.DataFrame(
+            [
+                {
+                    "permission": "ABORT",
+                    "permission_status": "ACTIVE_ABORT",
+                    "as_of_ts": datetime(2026, 7, 1, 9, tzinfo=UTC),
+                    "live_block_reasons": '["no_strategy_live_small_ready"]',
+                },
+                {
+                    "permission": "ALLOW",
+                    "permission_status": "ACTIVE_ALLOW",
+                    "as_of_ts": datetime(2026, 7, 1, 11, tzinfo=UTC),
+                    "live_block_reasons": "[]",
+                },
+            ]
+        ),
+        v5_trades=pl.DataFrame(),
+        created_at=datetime(2026, 7, 1, 12, tzinfo=UTC),
+    ).row(0, named=True)
+
+    assert events["schema_version"] == "trade_opportunity_event.v0.3"
+    assert events["quant_lab_permission"] == "ABORT"
+    assert events["risk_permission_as_of_ts"] == datetime(2026, 7, 1, 9, tzinfo=UTC)
+    assert events["risk_permission_source"] == "risk_permission_asof_join"
+    assert events["risk_permission_status_at_decision"] == "ACTIVE_ABORT"
+
+
+def test_trade_opportunity_event_prefers_signed_permission_context():
+    candidate = _sol_candidate()
+    candidate["decision_ts"] = datetime(2026, 7, 1, 10, tzinfo=UTC)
+    candidate["ts_utc"] = candidate["decision_ts"]
+    candidate["raw_payload_json"] = json.dumps(
+        {
+            "quant_lab_permission_context": {
+                "permission": "ABORT",
+                "permission_status": "ACTIVE_ABORT",
+                "as_of_ts": "2026-07-01T09:00:00Z",
+                "live_block_reasons": ["signed_context_block"],
+                "allowed_live_modes": [],
+            }
+        }
+    )
+    event = build_trade_opportunity_events(
+        pl.DataFrame([candidate]),
+        risk_permissions=pl.DataFrame(
+            [
+                {
+                    "permission": "ALLOW",
+                    "permission_status": "ACTIVE_ALLOW",
+                    "as_of_ts": datetime(2026, 7, 1, 9, 30, tzinfo=UTC),
+                    "live_block_reasons": "[]",
+                }
+            ]
+        ),
+        v5_trades=pl.DataFrame(),
+        created_at=datetime(2026, 7, 1, 12, tzinfo=UTC),
+    ).row(0, named=True)
+
+    assert event["quant_lab_permission"] == "ABORT"
+    assert event["risk_permission_source"] == "candidate_event_signed_context"
+    assert event["risk_permission_as_of_ts"] == datetime(2026, 7, 1, 9, tzinfo=UTC)
+    assert "signed_context_block" in event["quant_lab_live_block_reasons"]
+
+
+def test_missing_point_in_time_risk_permission_fails_closed():
+    candidate = _sol_candidate()
+    candidate["decision_ts"] = datetime(2026, 7, 1, 10, tzinfo=UTC)
+    candidate["ts_utc"] = candidate["decision_ts"]
+    events = build_trade_opportunity_events(
+        pl.DataFrame([candidate]),
+        risk_permissions=pl.DataFrame(
+            [
+                {
+                    "permission": "ALLOW",
+                    "permission_status": "ACTIVE_ALLOW",
+                    "as_of_ts": datetime(2026, 7, 1, 11, tzinfo=UTC),
+                }
+            ]
+        ),
+        v5_trades=pl.DataFrame(),
+        created_at=datetime(2026, 7, 1, 12, tzinfo=UTC),
+    )
+    event = events.row(0, named=True)
+    judgment = build_trade_level_judgments(
+        events,
+        created_at=datetime(2026, 7, 1, 12, tzinfo=UTC),
+    ).row(0, named=True)
+
+    assert event["quant_lab_permission"] == "UNKNOWN"
+    assert event["quant_lab_permission_status"] == "MISSING"
+    assert event["risk_permission_source"] == "missing"
+    assert judgment["trade_level_decision"] == "RISK_BLOCK"
+    assert judgment["max_single_order_usdt"] == 0.0
 
 
 def test_hard_safety_reason_always_hard_blocks():
@@ -1057,4 +1295,18 @@ def _sol_candidate(candidate_id: str = "sol-cand-1") -> dict[str, object]:
         "source_event_bundle_sha256": "sha-sol",
         "source_path_inside_bundle": "candidate_snapshot.csv",
         "created_at": datetime(2026, 6, 29, 8, 5, tzinfo=UTC) + timedelta(seconds=1),
+    }
+
+
+def _similarity_event(event_id: str, decision_ts: datetime) -> dict[str, object]:
+    return {
+        "event_id": event_id,
+        "decision_ts": decision_ts,
+        "symbol": "BTC-USDT",
+        "strategy_candidate": "strategy-a",
+        "regime": "normal",
+        "risk_level": "normal",
+        "alpha6_score": 0.9,
+        "rank": 1,
+        "cost_bps": 10.0,
     }

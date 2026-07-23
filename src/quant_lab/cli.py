@@ -112,6 +112,14 @@ from quant_lab.research_plane.contracts import (
     DEFAULT_FACTOR_FACTORY_MAX_VALUE_PARTITION_BYTES,
     DEFAULT_FACTOR_FACTORY_MAX_VALUE_PARTITION_UNCOMPRESSED_BYTES,
     DEFAULT_RESEARCH_MAX_RESULT_BYTES,
+    DEFAULT_TRADE_LEVEL_HISTORY_MAX_FILE_COUNT,
+    DEFAULT_TRADE_LEVEL_HISTORY_MAX_INPUT_ROWS,
+    DEFAULT_TRADE_LEVEL_HISTORY_MAX_INPUT_UNCOMPRESSED_BYTES,
+    DEFAULT_TRADE_LEVEL_HISTORY_MAX_PARTITION_BYTES,
+    DEFAULT_TRADE_LEVEL_HISTORY_MAX_PARTITION_UNCOMPRESSED_BYTES,
+    DEFAULT_TRADE_LEVEL_HISTORY_MAX_RESULT_BYTES,
+    DEFAULT_TRADE_LEVEL_HISTORY_MAX_RESULT_UNCOMPRESSED_BYTES,
+    DEFAULT_TRADE_LEVEL_HISTORY_MAX_SNAPSHOT_BYTES,
     DEFAULT_V5_CANDIDATE_EVIDENCE_MAX_FILE_COUNT,
     DEFAULT_V5_CANDIDATE_EVIDENCE_MAX_INPUT_UNCOMPRESSED_BYTES,
     DEFAULT_V5_CANDIDATE_EVIDENCE_MAX_PARTITION_BYTES,
@@ -129,6 +137,7 @@ from quant_lab.research_plane.queue import (
     create_entry_quality_history_task,
     create_factor_factory_task,
     create_factor_research_task,
+    create_trade_level_history_task,
     create_v5_candidate_evidence_task,
 )
 from quant_lab.research_plane.signatures import load_public_key, load_signing_key
@@ -147,7 +156,14 @@ from quant_lab.strategy_telemetry.ingest import ingest_v5_inbox as ingest_v5_inb
 from quant_lab.strategy_telemetry.models import BundleLimits
 from quant_lab.strategy_telemetry.remote_pull import RemoteBundlePuller
 from quant_lab.strategy_telemetry.sanitize import scan_for_secrets
-from quant_lab.trade_level.judgment import build_and_publish_trade_level_judgment
+from quant_lab.trade_level.judgment import (
+    DEFAULT_TRADE_LEVEL_HISTORY_MAX_AGE_HOURS,
+    build_and_publish_trade_level_control,
+    build_and_publish_trade_level_judgment,
+)
+from quant_lab.trade_level.shadow import (
+    build_and_publish_trade_level_legacy_control_shadow,
+)
 from quant_lab.web.export_request import run_web_export_request
 
 app = typer.Typer(help="quant-lab read-only research utilities.")
@@ -2164,6 +2180,104 @@ def request_v5_candidate_evidence_command(
         raise typer.Exit(1)
 
 
+@app.command("request-trade-level-history")
+def request_trade_level_history_command(
+    lake_root: Annotated[
+        Path,
+        typer.Option("--lake-root", file_okay=False, dir_okay=True),
+    ],
+    queue_root: Annotated[
+        Path,
+        typer.Option("--queue-root", file_okay=False, dir_okay=True),
+    ],
+    signing_key_path: Annotated[
+        Path,
+        typer.Option(
+            "--signing-key-path",
+            envvar="QUANT_LAB_RESEARCH_TASK_PRIVATE_KEY_PATH",
+            exists=True,
+            dir_okay=False,
+        ),
+    ],
+    key_id: Annotated[str, typer.Option("--key-id")],
+    quant_lab_commit: Annotated[
+        str,
+        typer.Option("--quant-lab-commit"),
+    ],
+    as_of_date: Annotated[str, typer.Option("--date")] = "auto",
+    max_input_bytes: Annotated[
+        int,
+        typer.Option("--max-input-bytes", min=1),
+    ] = DEFAULT_TRADE_LEVEL_HISTORY_MAX_SNAPSHOT_BYTES,
+    max_input_uncompressed_bytes: Annotated[
+        int,
+        typer.Option("--max-input-uncompressed-bytes", min=1),
+    ] = DEFAULT_TRADE_LEVEL_HISTORY_MAX_INPUT_UNCOMPRESSED_BYTES,
+    max_input_rows: Annotated[
+        int,
+        typer.Option("--max-input-rows", min=1),
+    ] = DEFAULT_TRADE_LEVEL_HISTORY_MAX_INPUT_ROWS,
+) -> None:
+    if not _enabled_environment("QUANT_LAB_NAS_RESEARCH_ENABLED"):
+        raise typer.BadParameter(
+            "QUANT_LAB_NAS_RESEARCH_ENABLED must be 1"
+        )
+    if not _enabled_environment(
+        "QUANT_LAB_NAS_TRADE_LEVEL_HISTORY_ENABLED"
+    ):
+        raise typer.BadParameter(
+            "QUANT_LAB_NAS_TRADE_LEVEL_HISTORY_ENABLED must be 1"
+        )
+    day = (
+        datetime.now(UTC).date()
+        if as_of_date == "auto"
+        else date.fromisoformat(as_of_date)
+    )
+    result = create_trade_level_history_task(
+        lake_root,
+        queue_root,
+        as_of_date=day,
+        signing_key=load_signing_key(signing_key_path),
+        signature_key_id=key_id,
+        quant_lab_commit=quant_lab_commit,
+        max_input_bytes=max_input_bytes,
+        max_input_uncompressed_bytes=max_input_uncompressed_bytes,
+        max_input_rows=max_input_rows,
+    )
+    event_by_state = {
+        "task_created": "TRADE_LEVEL_HISTORY_TASK_CREATED",
+        "already_current": "TRADE_LEVEL_HISTORY_ALREADY_CURRENT",
+        "coalesced": "TRADE_LEVEL_HISTORY_TASK_COALESCED",
+        "generation_integrity_failed": (
+            "TRADE_LEVEL_HISTORY_GENERATION_INTEGRITY_FAILED"
+        ),
+    }
+    events = [
+        event_by_state.get(
+            result.state,
+            f"TRADE_LEVEL_HISTORY_{result.state.upper()}",
+        )
+    ]
+    if result.snapshot_rehydrated:
+        events.insert(
+            0,
+            "TRADE_LEVEL_HISTORY_SNAPSHOT_REHYDRATED",
+        )
+    typer.echo(
+        json.dumps(
+            {
+                "events": events,
+                **result.model_dump(),
+            },
+            ensure_ascii=True,
+            sort_keys=True,
+            indent=2,
+        )
+    )
+    if result.state == "generation_integrity_failed":
+        raise typer.Exit(1)
+
+
 @app.command("build-v5-candidate-labels")
 def build_v5_candidate_labels_command(
     lake_root: Annotated[Path, typer.Option("--lake-root", file_okay=False, dir_okay=True)],
@@ -2322,12 +2436,97 @@ def build_trade_level_judgment_command(
         typer.Option("--date", help="UTC as-of day in YYYY-MM-DD format or auto."),
     ] = "auto",
 ) -> None:
+    if not _enabled_environment(
+        "QUANT_LAB_LOCAL_TRADE_LEVEL_HISTORY_ENABLED"
+    ):
+        raise typer.BadParameter(
+            "local trade-level history fallback disabled; set "
+            "QUANT_LAB_LOCAL_TRADE_LEVEL_HISTORY_ENABLED=1 only "
+            "during an approved maintenance or parity window"
+        )
     result = run_with_job_metrics(
         lake_root=lake_root,
         job_name="build-trade-level-judgment",
         func=lambda: build_and_publish_trade_level_judgment(
             lake_root=lake_root,
             as_of_date=as_of_date,
+        ),
+    )
+    typer.echo(result.model_dump_json(indent=2))
+
+
+@app.command("build-trade-level-control")
+def build_trade_level_control_command(
+    lake_root: Annotated[
+        Path,
+        typer.Option("--lake-root", file_okay=False, dir_okay=True),
+    ],
+    as_of_date: Annotated[
+        str,
+        typer.Option(
+            "--date",
+            help="UTC as-of day in YYYY-MM-DD format or auto.",
+        ),
+    ] = "auto",
+    max_generation_age_hours: Annotated[
+        int,
+        typer.Option(
+            "--max-generation-age-hours",
+            envvar="QUANT_LAB_TRADE_LEVEL_HISTORY_MAX_AGE_HOURS",
+            min=1,
+        ),
+    ] = DEFAULT_TRADE_LEVEL_HISTORY_MAX_AGE_HOURS,
+) -> None:
+    result = run_with_job_metrics(
+        lake_root=lake_root,
+        job_name="build-trade-level-control",
+        func=lambda: build_and_publish_trade_level_control(
+            lake_root=lake_root,
+            as_of_date=as_of_date,
+            max_generation_age_hours=max_generation_age_hours,
+        ),
+    )
+    typer.echo(result.model_dump_json(indent=2))
+
+
+@app.command("build-trade-level-legacy-control-shadow")
+def build_trade_level_legacy_control_shadow_command(
+    lake_root: Annotated[
+        Path,
+        typer.Option("--lake-root", file_okay=False, dir_okay=True),
+    ],
+    report_root: Annotated[
+        Path,
+        typer.Option(
+            "--report-root",
+            file_okay=False,
+            dir_okay=True,
+        ),
+    ],
+    as_of_date: Annotated[
+        str,
+        typer.Option(
+            "--date",
+            help="UTC as-of day in YYYY-MM-DD format or auto.",
+        ),
+    ] = "auto",
+) -> None:
+    if not _enabled_environment(
+        "QUANT_LAB_LOCAL_TRADE_LEVEL_HISTORY_ENABLED"
+    ):
+        raise typer.BadParameter(
+            "legacy local history is restricted to the approved "
+            "read-only Shadow window"
+        )
+    result = run_with_job_metrics(
+        lake_root=lake_root,
+        job_name="build-trade-level-legacy-control-shadow",
+        func=lambda: (
+            build_and_publish_trade_level_legacy_control_shadow(
+                lake_root=lake_root,
+                report_root=report_root,
+                as_of_date=as_of_date,
+            )
         ),
     )
     typer.echo(result.model_dump_json(indent=2))
@@ -2516,6 +2715,54 @@ def import_entry_quality_history_results_command(
             min=1,
         ),
     ] = DEFAULT_V5_CANDIDATE_EVIDENCE_MAX_FILE_COUNT,
+    trade_level_history_max_result_bytes: Annotated[
+        int,
+        typer.Option(
+            "--trade-level-history-max-result-bytes",
+            envvar="QUANT_LAB_TRADE_LEVEL_HISTORY_MAX_RESULT_BYTES",
+            min=1,
+        ),
+    ] = DEFAULT_TRADE_LEVEL_HISTORY_MAX_RESULT_BYTES,
+    trade_level_history_max_result_uncompressed_bytes: Annotated[
+        int,
+        typer.Option(
+            "--trade-level-history-max-result-uncompressed-bytes",
+            envvar=(
+                "QUANT_LAB_TRADE_LEVEL_HISTORY_MAX_RESULT_"
+                "UNCOMPRESSED_BYTES"
+            ),
+            min=1,
+        ),
+    ] = DEFAULT_TRADE_LEVEL_HISTORY_MAX_RESULT_UNCOMPRESSED_BYTES,
+    trade_level_history_max_partition_bytes: Annotated[
+        int,
+        typer.Option(
+            "--trade-level-history-max-partition-bytes",
+            envvar=(
+                "QUANT_LAB_TRADE_LEVEL_HISTORY_MAX_PARTITION_BYTES"
+            ),
+            min=1,
+        ),
+    ] = DEFAULT_TRADE_LEVEL_HISTORY_MAX_PARTITION_BYTES,
+    trade_level_history_max_partition_uncompressed_bytes: Annotated[
+        int,
+        typer.Option(
+            "--trade-level-history-max-partition-uncompressed-bytes",
+            envvar=(
+                "QUANT_LAB_TRADE_LEVEL_HISTORY_MAX_PARTITION_"
+                "UNCOMPRESSED_BYTES"
+            ),
+            min=1,
+        ),
+    ] = DEFAULT_TRADE_LEVEL_HISTORY_MAX_PARTITION_UNCOMPRESSED_BYTES,
+    trade_level_history_max_file_count: Annotated[
+        int,
+        typer.Option(
+            "--trade-level-history-max-file-count",
+            envvar="QUANT_LAB_TRADE_LEVEL_HISTORY_MAX_FILE_COUNT",
+            min=1,
+        ),
+    ] = DEFAULT_TRADE_LEVEL_HISTORY_MAX_FILE_COUNT,
     validate_only: Annotated[
         bool,
         typer.Option(
@@ -2553,6 +2800,21 @@ def import_entry_quality_history_results_command(
             v5_candidate_evidence_max_partition_uncompressed_bytes
         ),
         "v5_candidate_evidence_max_file_count": v5_candidate_evidence_max_file_count,
+        "trade_level_history_max_result_bytes": (
+            trade_level_history_max_result_bytes
+        ),
+        "trade_level_history_max_result_uncompressed_bytes": (
+            trade_level_history_max_result_uncompressed_bytes
+        ),
+        "trade_level_history_max_partition_bytes": (
+            trade_level_history_max_partition_bytes
+        ),
+        "trade_level_history_max_partition_uncompressed_bytes": (
+            trade_level_history_max_partition_uncompressed_bytes
+        ),
+        "trade_level_history_max_file_count": (
+            trade_level_history_max_file_count
+        ),
     }
     if validate_only:
         results = validate_pending_entry_quality_history_results(queue_root, **common)

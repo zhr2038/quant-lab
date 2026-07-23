@@ -391,6 +391,93 @@ def test_v5_candidate_evidence_fingerprint_is_projection_scoped(tmp_path: Path) 
     )
 
 
+def test_v5_candidate_evidence_run_summary_identity_is_consistent_across_lifecycle(
+    tmp_path: Path,
+) -> None:
+    lake = tmp_path / "lake"
+    queue = tmp_path / "queue"
+    _seed_snapshot_sources(lake)
+    (lake / "silver" / "v5_run_summary" / "runs.parquet").unlink()
+    _write_rows(
+        lake / "silver" / "v5_run_summary" / "direct.parquet",
+        [
+            {
+                "run_id": "run-direct",
+                "bundle_ts": datetime(2026, 7, 9, tzinfo=UTC),
+                "source_path_inside_bundle": "runs/run-direct/run_summary.json",
+            },
+            {
+                "run_id": "run-window",
+                "bundle_ts": datetime(2026, 7, 9, 1, tzinfo=UTC),
+                "source_path_inside_bundle": "reports/window_summary.json",
+            },
+        ],
+    )
+    _write_rows(
+        lake / "silver" / "v5_run_summary" / "payload-only.parquet",
+        [
+            {"raw_payload_json": json.dumps({"runId": "run-payload"})},
+            {"raw_payload_json": json.dumps({"run": "run-payload-run"})},
+        ],
+    )
+    key = Ed25519PrivateKey.generate()
+
+    preflight = preflight_v5_candidate_evidence_snapshot(
+        lake,
+        queue,
+        as_of_date=date(2026, 7, 10),
+        quant_lab_commit=COMMIT,
+    )
+    expected_run_ids = ("run-direct", "run-payload", "run-payload-run")
+    assert preflight.run_summary_run_ids == expected_run_ids
+
+    created = materialize_v5_candidate_evidence_snapshot(
+        preflight,
+        signing_key=key,
+        signature_key_id="test-cloud-key",
+        max_input_bytes=10 * 1024 * 1024,
+        max_input_uncompressed_bytes=10 * 1024 * 1024,
+        max_input_rows=10_000,
+    )
+    root = queue / "snapshots" / preflight.snapshot_id
+    run_summary_path = root / "files" / "silver" / "v5_run_summary" / "data.parquet"
+    assert created.manifest.run_summary_run_ids == expected_run_ids
+    assert {
+        "run_id",
+        "runId",
+        "run",
+        "bundle_ts",
+        "ingest_ts",
+        "created_at",
+        "source_path_inside_bundle",
+        "raw_payload_json",
+    }.issubset(pl.read_parquet_schema(run_summary_path))
+    verify_v5_candidate_evidence_snapshot_manifest(
+        created.manifest,
+        final_root=root,
+        public_key=key.public_key(),
+    )
+
+    assert release_snapshot_payload(queue, preflight.snapshot_id, reason="identity-test")
+    restored = rehydrate_v5_candidate_evidence_snapshot_payload(
+        lake,
+        queue,
+        preflight.snapshot_id,
+        signing_key=key,
+        signature_key_id="test-cloud-key",
+        max_input_bytes=10 * 1024 * 1024,
+        max_input_uncompressed_bytes=10 * 1024 * 1024,
+        max_input_rows=10_000,
+    )
+    assert restored.snapshot_rehydrated is True
+    assert restored.manifest.run_summary_run_ids == expected_run_ids
+    verify_v5_candidate_evidence_snapshot_manifest(
+        restored.manifest,
+        final_root=root,
+        public_key=key.public_key(),
+    )
+
+
 def test_v5_candidate_evidence_snapshot_is_signed_and_immutable(tmp_path: Path) -> None:
     lake = tmp_path / "lake"
     queue = tmp_path / "queue"

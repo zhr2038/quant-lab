@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import heapq
 import statistics
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import polars as pl
 
-TRADE_LEVEL_SIMILARITY_SCHEMA_VERSION = "trade_level_similarity_outcome.v0.1"
+TRADE_LEVEL_SIMILARITY_SCHEMA_VERSION = "trade_level_similarity_outcome.v0.2"
 TRADE_LEVEL_SIMILARITY_SCHEMA = {
     "schema_version": pl.Utf8,
     "event_id": pl.Utf8,
@@ -34,83 +35,231 @@ def build_trade_level_similarity_outcome(
     *,
     created_at: datetime | None = None,
 ) -> pl.DataFrame:
+    """Build causal similarity outcomes by advancing available prior outcomes.
+
+    Events sharing a timestamp are evaluated as one group before any member of
+    that group is registered. Label outcomes become eligible only when their
+    signed/derived availability timestamp has been reached.
+    """
+
     created = created_at or datetime.now(UTC)
     if events.is_empty():
         return pl.DataFrame(schema=TRADE_LEVEL_SIMILARITY_SCHEMA)
     labels_by_event = {str(row.get("event_id") or ""): row for row in labels.to_dicts()}
     event_rows = sorted(
         events.to_dicts(),
-        key=lambda row: _timestamp(row.get("decision_ts")) or datetime.min.replace(tzinfo=UTC),
+        key=lambda row: (
+            _timestamp(row.get("decision_ts")) or datetime.min.replace(tzinfo=UTC),
+            _text(row.get("event_id")),
+        ),
     )
     rows: list[dict[str, Any]] = []
-    for event in event_rows:
-        event_ts = _timestamp(event.get("decision_ts"))
-        prior = [
-            prior_event
-            for prior_event in event_rows
-            if _is_prior_similar(event, prior_event, event_ts, labels_by_event)
-        ]
-        values = [
-            _label_value(labels_by_event.get(str(row.get("event_id") or ""))) for row in prior
-        ]
-        values = [value for value in values if value is not None]
-        recent_cutoff = event_ts - timedelta(days=7) if event_ts else None
-        recent_values = [
-            value
-            for row, value in zip(
-                prior,
-                [
-                    _label_value(labels_by_event.get(str(row.get("event_id") or "")))
-                    for row in prior
-                ],
-                strict=False,
+    prior_events: dict[str, dict[str, Any]] = {}
+    prior_labels: dict[str, dict[str, Any]] = {}
+    active_outcomes: dict[str, tuple[float, int, datetime]] = {}
+    similarity_index: dict[tuple[str, ...], set[str]] = {}
+    pending_availability: list[tuple[datetime, int, str, int]] = []
+    sequence = 0
+
+    position = 0
+    while position < len(event_rows):
+        event_ts = _timestamp(event_rows[position].get("decision_ts"))
+        if event_ts is None:
+            rows.append(_similarity_row(event_rows[position], [], created=created))
+            position += 1
+            continue
+
+        end = position + 1
+        while (
+            end < len(event_rows)
+            and _timestamp(event_rows[end].get("decision_ts")) == event_ts
+        ):
+            end += 1
+        same_time_events = event_rows[position:end]
+
+        while pending_availability and pending_availability[0][0] <= event_ts:
+            _available_at, _sequence, prior_event_id, _horizon = heapq.heappop(
+                pending_availability
             )
-            if value is not None
-            and recent_cutoff is not None
-            and (_timestamp(row.get("decision_ts")) or datetime.min.replace(tzinfo=UTC))
-            >= recent_cutoff
-        ]
-        adverse = [
-            _float(
-                (labels_by_event.get(str(row.get("event_id") or "")) or {}).get("max_adverse_bps")
+            _activate_prior_outcome(
+                prior_event_id,
+                current_decision_ts=event_ts,
+                prior_events=prior_events,
+                prior_labels=prior_labels,
+                active_outcomes=active_outcomes,
+                similarity_index=similarity_index,
             )
-            for row in prior
-        ]
-        adverse = [value for value in adverse if value is not None]
-        rows.append(
-            {
-                "schema_version": TRADE_LEVEL_SIMILARITY_SCHEMA_VERSION,
-                "event_id": str(event.get("event_id") or ""),
-                "decision_ts": event_ts,
-                "symbol": _text(event.get("symbol")),
-                "strategy_candidate": _text(event.get("strategy_candidate")),
-                "regime": _text(event.get("regime")),
-                "risk_level": _text(event.get("risk_level")),
-                "similar_sample_count": len(values),
-                "similar_mean_after_cost_bps": _mean(values),
-                "similar_median_after_cost_bps": _median(values),
-                "similar_p25_after_cost_bps": _quantile(values, 0.25),
-                "similar_hit_rate": _hit_rate(values),
-                "similar_max_adverse_bps": min(adverse) if adverse else None,
-                "recent_7d_similar_mean": _mean(recent_values),
-                "similarity_key": _similarity_key(event),
-                "created_at": created,
-                "source": "quant_lab.trade_level.similarity",
-            }
-        )
+
+        # Evaluate the whole timestamp group before registering any of its
+        # members, so event_id ordering never creates same-time causality.
+        for event in same_time_events:
+            matching_ids: set[str] = set()
+            for key in _similarity_index_keys(event):
+                matching_ids.update(similarity_index.get(key, ()))
+            selected_prior = [
+                (
+                    prior_events[event_id],
+                    prior_labels[event_id],
+                    *active_outcomes[event_id],
+                )
+                for event_id in sorted(matching_ids)
+                if event_id in active_outcomes
+                and _is_prior_similar(
+                    event,
+                    prior_events[event_id],
+                    event_ts,
+                )
+            ]
+            rows.append(_similarity_row(event, selected_prior, created=created))
+
+        for event in same_time_events:
+            event_id = _text(event.get("event_id"))
+            label = labels_by_event.get(event_id)
+            if not event_id or label is None:
+                continue
+            prior_events[event_id] = event
+            prior_labels[event_id] = label
+            for horizon in (4, 8, 24):
+                value = _float(label.get(f"label_{horizon}h_after_cost_bps"))
+                if value is None:
+                    continue
+                available_at = _label_horizon_available_at(label, horizon)
+                if available_at is None:
+                    continue
+                if available_at <= event_ts:
+                    _activate_prior_outcome(
+                        event_id,
+                        current_decision_ts=event_ts,
+                        prior_events=prior_events,
+                        prior_labels=prior_labels,
+                        active_outcomes=active_outcomes,
+                        similarity_index=similarity_index,
+                    )
+                else:
+                    sequence += 1
+                    heapq.heappush(
+                        pending_availability,
+                        (available_at, sequence, event_id, horizon),
+                    )
+        position = end
     return _similarity_frame(rows)
+
+
+def _similarity_row(
+    event: dict[str, Any],
+    selected_prior: list[
+        tuple[dict[str, Any], dict[str, Any], float, int, datetime]
+    ],
+    *,
+    created: datetime,
+) -> dict[str, Any]:
+    event_ts = _timestamp(event.get("decision_ts"))
+    values = [item[2] for item in selected_prior]
+    recent_cutoff = event_ts - timedelta(days=7) if event_ts else None
+    recent_values = [
+        value
+        for prior_event, _label, value, _horizon, _available_at in selected_prior
+        if recent_cutoff is not None
+        and (
+            _timestamp(prior_event.get("decision_ts"))
+            or datetime.min.replace(tzinfo=UTC)
+        )
+        >= recent_cutoff
+    ]
+    adverse = [
+        _float(label.get(f"label_{horizon}h_mae_bps"))
+        for _prior_event, label, _value, horizon, _available_at in selected_prior
+    ]
+    adverse = [value for value in adverse if value is not None]
+    return {
+        "schema_version": TRADE_LEVEL_SIMILARITY_SCHEMA_VERSION,
+        "event_id": str(event.get("event_id") or ""),
+        "decision_ts": event_ts,
+        "symbol": _text(event.get("symbol")),
+        "strategy_candidate": _text(event.get("strategy_candidate")),
+        "regime": _text(event.get("regime")),
+        "risk_level": _text(event.get("risk_level")),
+        "similar_sample_count": len(values),
+        "similar_mean_after_cost_bps": _mean(values),
+        "similar_median_after_cost_bps": _median(values),
+        "similar_p25_after_cost_bps": _quantile(values, 0.25),
+        "similar_hit_rate": _hit_rate(values),
+        "similar_max_adverse_bps": min(adverse) if adverse else None,
+        "recent_7d_similar_mean": _mean(recent_values),
+        "similarity_key": _similarity_key(event),
+        "created_at": created,
+        "source": "quant_lab.trade_level.similarity",
+    }
+
+
+def _activate_prior_outcome(
+    event_id: str,
+    *,
+    current_decision_ts: datetime,
+    prior_events: dict[str, dict[str, Any]],
+    prior_labels: dict[str, dict[str, Any]],
+    active_outcomes: dict[str, tuple[float, int, datetime]],
+    similarity_index: dict[tuple[str, ...], set[str]],
+) -> None:
+    event = prior_events.get(event_id)
+    label = prior_labels.get(event_id)
+    value, horizon, available_at = select_causal_similarity_outcome(
+        label,
+        current_decision_ts=current_decision_ts,
+    )
+    if (
+        event is None
+        or label is None
+        or value is None
+        or horizon is None
+        or available_at is None
+    ):
+        return
+    current = active_outcomes.get(event_id)
+    if current is not None and current[1] >= horizon:
+        return
+    active_outcomes[event_id] = (value, horizon, available_at)
+    if current is None:
+        for key in _similarity_index_keys(event):
+            similarity_index.setdefault(key, set()).add(event_id)
+
+
+def _label_horizon_available_at(
+    label: dict[str, Any],
+    horizon: int,
+) -> datetime | None:
+    available_at = _timestamp(label.get(f"label_{horizon}h_available_at"))
+    if available_at is not None:
+        return available_at
+    decision_ts = _timestamp(label.get("decision_ts"))
+    return decision_ts + timedelta(hours=horizon) if decision_ts is not None else None
+
+
+def _similarity_index_keys(row: dict[str, Any]) -> tuple[tuple[str, ...], ...]:
+    symbol = _text(row.get("symbol"))
+    strategy = _text(row.get("strategy_candidate"))
+    regime = _text(row.get("regime"))
+    risk = _text(row.get("risk_level"))
+    bucket = f"{_alpha_bucket(row)}|{_rank_bucket(row)}"
+    return (
+        (symbol, "strategy_risk", strategy, risk),
+        (symbol, "strategy_bucket", strategy, bucket),
+        (symbol, "regime_risk", regime, risk),
+        (symbol, "regime_bucket", regime, bucket),
+    )
 
 
 def _is_prior_similar(
     event: dict[str, Any],
     prior: dict[str, Any],
     event_ts: datetime | None,
-    labels_by_event: dict[str, dict[str, Any]],
 ) -> bool:
     prior_ts = _timestamp(prior.get("decision_ts"))
     if event_ts is None or prior_ts is None or prior_ts >= event_ts:
         return False
-    if _label_value(labels_by_event.get(str(prior.get("event_id") or ""))) is None:
+    event_id = _text(event.get("event_id"))
+    prior_event_id = _text(prior.get("event_id"))
+    if not event_id or not prior_event_id or event_id == prior_event_id:
         return False
     symbol_match = _text(event.get("symbol")) == _text(prior.get("symbol"))
     strategy_match = _text(event.get("strategy_candidate")) == _text(
@@ -138,18 +287,28 @@ def _similarity_key(row: dict[str, Any]) -> str:
     )
 
 
-def _label_value(label: dict[str, Any] | None) -> float | None:
+def select_causal_similarity_outcome(
+    label: dict[str, Any] | None,
+    *,
+    current_decision_ts: datetime | None,
+) -> tuple[float | None, int | None, datetime | None]:
     if not label:
-        return None
-    for field in (
-        "label_24h_after_cost_bps",
-        "label_8h_after_cost_bps",
-        "label_4h_after_cost_bps",
-    ):
+        return None, None, None
+    current_ts = _timestamp(current_decision_ts)
+    if current_ts is None:
+        return None, None, None
+    label_decision_ts = _timestamp(label.get("decision_ts"))
+    for horizon in (24, 8, 4):
+        field = f"label_{horizon}h_after_cost_bps"
         value = _float(label.get(field))
-        if value is not None:
-            return value
-    return None
+        if value is None:
+            continue
+        available_at = _timestamp(label.get(f"label_{horizon}h_available_at"))
+        if available_at is None and label_decision_ts is not None:
+            available_at = label_decision_ts + timedelta(hours=horizon)
+        if available_at is not None and available_at <= current_ts:
+            return value, horizon, available_at
+    return None, None, None
 
 
 def _alpha_bucket(row: dict[str, Any]) -> str:

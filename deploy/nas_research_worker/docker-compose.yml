@@ -4,7 +4,7 @@ services:
       context: ../..
       dockerfile: deploy/nas_research_worker/Dockerfile
       args:
-        BUILD_GIT_COMMIT: ${BUILD_GIT_COMMIT:?set BUILD_GIT_COMMIT to the deployed full SHA}
+        BUILD_GIT_COMMIT: ${NAS_RESEARCH_IMAGE_GIT_COMMIT:?set NAS_RESEARCH_IMAGE_GIT_COMMIT to the deployed full SHA}
         BUILD_TIMESTAMP: ${BUILD_TIMESTAMP:-unknown}
     container_name: quant-research-worker
     restart: unless-stopped
@@ -28,12 +28,13 @@ services:
       - ${NAS_RESEARCH_SECRETS_HOST_PATH:-./secrets}/known_hosts:/run/secrets/known_hosts:ro
       - ${NAS_RESEARCH_SECRETS_HOST_PATH:-./secrets}/cloud_research_task_public_key:/run/secrets/cloud_research_task_public_key:ro
       - ${NAS_RESEARCH_SECRETS_HOST_PATH:-./secrets}/nas_research_signing_key:/run/secrets/nas_research_signing_key:ro
+      - ${NAS_RESEARCH_REPOSITORY_GIT_PATH:-../../.git}:/run/provenance/repository_git:ro
     healthcheck:
       test:
         - CMD
         - python
         - -c
-        - "import os,pathlib; assert pathlib.Path('/data').is_dir(); assert len(os.environ['QUANT_RESEARCH_WORKER_COMMIT']) == 40; assert os.environ.get('QUANT_RESEARCH_FACTOR_FACTORY_ENABLED', '0') in {'0', '1'}; assert os.environ.get('QUANT_RESEARCH_V5_CANDIDATE_EVIDENCE_ENABLED', '0') in {'0', '1'}"
+        - "import os,pathlib,subprocess; image=pathlib.Path('/app/BUILD_GIT_COMMIT').read_text().strip(); repository=subprocess.check_output(['git','--git-dir=/run/provenance/repository_git','rev-parse','--verify','HEAD'],text=True,timeout=10).strip(); assert pathlib.Path('/data').is_dir(); assert len(image) == 40; assert os.environ['BUILD_GIT_COMMIT'] == image; assert os.environ['QUANT_RESEARCH_WORKER_COMMIT'] == image; assert repository == image; assert os.environ.get('QUANT_RESEARCH_FACTOR_FACTORY_ENABLED', '0') in {'0', '1'}; assert os.environ.get('QUANT_RESEARCH_V5_CANDIDATE_EVIDENCE_ENABLED', '0') in {'0', '1'}; assert os.environ.get('QUANT_RESEARCH_TRADE_LEVEL_HISTORY_ENABLED', '0') in {'0', '1'}"
       interval: 30s
       timeout: 5s
       retries: 3

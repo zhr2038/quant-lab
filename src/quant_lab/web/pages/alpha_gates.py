@@ -56,7 +56,8 @@ def render(lake_root: str | Path, st_module: Any | None = None) -> None:
     show_frame(
         st,
         summary["trade_level_judgment"],
-        "暂无 trade-level 逐笔判断。建议运行 qlab build-trade-level-judgment。",
+        "暂无 trade-level 逐笔判断。请检查已验收 History Generation，"
+        "再运行 qlab build-trade-level-control。",
     )
     show_frame(
         st,

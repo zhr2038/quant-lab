@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import polars as pl
 
 from quant_lab.trade_level.judgment import event_id_for_row
 
-TRADE_OPPORTUNITY_LABEL_SCHEMA_VERSION = "trade_opportunity_label.v0.1"
+TRADE_OPPORTUNITY_LABEL_SCHEMA_VERSION = "trade_opportunity_label.v0.2"
 TRADE_OPPORTUNITY_LABEL_SCHEMA = {
     "schema_version": pl.Utf8,
     "event_id": pl.Utf8,
@@ -19,6 +19,18 @@ TRADE_OPPORTUNITY_LABEL_SCHEMA = {
     "label_4h_after_cost_bps": pl.Float64,
     "label_8h_after_cost_bps": pl.Float64,
     "label_24h_after_cost_bps": pl.Float64,
+    "label_4h_available_at": pl.Datetime(time_zone="UTC"),
+    "label_8h_available_at": pl.Datetime(time_zone="UTC"),
+    "label_24h_available_at": pl.Datetime(time_zone="UTC"),
+    "label_4h_availability_source": pl.Utf8,
+    "label_8h_availability_source": pl.Utf8,
+    "label_24h_availability_source": pl.Utf8,
+    "label_4h_mae_bps": pl.Float64,
+    "label_8h_mae_bps": pl.Float64,
+    "label_24h_mae_bps": pl.Float64,
+    "label_4h_mfe_bps": pl.Float64,
+    "label_8h_mfe_bps": pl.Float64,
+    "label_24h_mfe_bps": pl.Float64,
     "hit_4h": pl.Boolean,
     "hit_8h": pl.Boolean,
     "hit_24h": pl.Boolean,
@@ -59,6 +71,18 @@ def build_trade_opportunity_labels(
             "label_4h_after_cost_bps": None,
             "label_8h_after_cost_bps": None,
             "label_24h_after_cost_bps": None,
+            "label_4h_available_at": None,
+            "label_8h_available_at": None,
+            "label_24h_available_at": None,
+            "label_4h_availability_source": "",
+            "label_8h_availability_source": "",
+            "label_24h_availability_source": "",
+            "label_4h_mae_bps": None,
+            "label_8h_mae_bps": None,
+            "label_24h_mae_bps": None,
+            "label_4h_mfe_bps": None,
+            "label_8h_mfe_bps": None,
+            "label_24h_mfe_bps": None,
             "hit_4h": None,
             "hit_8h": None,
             "hit_24h": None,
@@ -80,6 +104,13 @@ def build_trade_opportunity_labels(
             status = _text(label.get("label_status")).lower()
             reason = _text(label.get("label_reason"))
             net = _float(label.get("net_bps_after_cost"))
+            available_at, availability_source = _label_availability(
+                label,
+                event=event,
+                horizon_hours=horizon,
+            )
+            row[f"label_{horizon}h_available_at"] = available_at
+            row[f"label_{horizon}h_availability_source"] = availability_source
             if status == "complete" and net is not None:
                 complete_count += 1
                 row[f"label_{horizon}h_after_cost_bps"] = net
@@ -91,8 +122,10 @@ def build_trade_opportunity_labels(
             mae = _float(label.get("mae_bps"))
             mfe = _float(label.get("mfe_bps"))
             if mae is not None:
+                row[f"label_{horizon}h_mae_bps"] = mae
                 adverse.append(mae)
             if mfe is not None:
+                row[f"label_{horizon}h_mfe_bps"] = mfe
                 favorable.append(mfe)
         if complete_count:
             row["label_status"] = "complete" if complete_count == len(_HORIZONS) else "partial"
@@ -149,6 +182,23 @@ def _label_keys(row: dict[str, Any]) -> list[tuple[str, str, str, str]]:
     if run_id and symbol:
         keys.append(("", run_id, symbol, ""))
     return keys
+
+
+def _label_availability(
+    label: dict[str, Any],
+    *,
+    event: dict[str, Any],
+    horizon_hours: int,
+) -> tuple[datetime | None, str]:
+    source_label_ts = _timestamp(label.get("label_ts"))
+    if source_label_ts is not None:
+        return source_label_ts, "candidate_label_label_ts"
+    decision_ts = _timestamp(label.get("decision_ts")) or _timestamp(
+        event.get("decision_ts") or event.get("ts_utc") or event.get("ts")
+    )
+    if decision_ts is None:
+        return None, "missing"
+    return decision_ts + timedelta(hours=horizon_hours), "derived_from_horizon"
 
 
 def _label_frame(rows: list[dict[str, Any]]) -> pl.DataFrame:

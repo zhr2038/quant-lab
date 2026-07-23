@@ -6,7 +6,7 @@ from typing import Any
 
 import polars as pl
 
-TRADE_LEVEL_SIMILARITY_SCHEMA_VERSION = "trade_level_similarity_outcome.v0.1"
+TRADE_LEVEL_SIMILARITY_SCHEMA_VERSION = "trade_level_similarity_outcome.v0.2"
 TRADE_LEVEL_SIMILARITY_SCHEMA = {
     "schema_version": pl.Utf8,
     "event_id": pl.Utf8,
@@ -40,41 +40,49 @@ def build_trade_level_similarity_outcome(
     labels_by_event = {str(row.get("event_id") or ""): row for row in labels.to_dicts()}
     event_rows = sorted(
         events.to_dicts(),
-        key=lambda row: _timestamp(row.get("decision_ts")) or datetime.min.replace(tzinfo=UTC),
+        key=lambda row: (
+            _timestamp(row.get("decision_ts")) or datetime.min.replace(tzinfo=UTC),
+            _text(row.get("event_id")),
+        ),
     )
     rows: list[dict[str, Any]] = []
     for event in event_rows:
         event_ts = _timestamp(event.get("decision_ts"))
-        prior = [
-            prior_event
-            for prior_event in event_rows
-            if _is_prior_similar(event, prior_event, event_ts, labels_by_event)
-        ]
-        values = [
-            _label_value(labels_by_event.get(str(row.get("event_id") or ""))) for row in prior
-        ]
-        values = [value for value in values if value is not None]
+        selected_prior: list[
+            tuple[dict[str, Any], dict[str, Any], float, int, datetime]
+        ] = []
+        for prior_event in event_rows:
+            if not _is_prior_similar(event, prior_event, event_ts):
+                continue
+            prior_label = labels_by_event.get(str(prior_event.get("event_id") or ""))
+            value, horizon, available_at = select_causal_similarity_outcome(
+                prior_label,
+                current_decision_ts=event_ts,
+            )
+            if (
+                prior_label is not None
+                and value is not None
+                and horizon is not None
+                and available_at is not None
+            ):
+                selected_prior.append(
+                    (prior_event, prior_label, value, horizon, available_at)
+                )
+        values = [item[2] for item in selected_prior]
         recent_cutoff = event_ts - timedelta(days=7) if event_ts else None
         recent_values = [
             value
-            for row, value in zip(
-                prior,
-                [
-                    _label_value(labels_by_event.get(str(row.get("event_id") or "")))
-                    for row in prior
-                ],
-                strict=False,
+            for prior_event, _label, value, _horizon, _available_at in selected_prior
+            if recent_cutoff is not None
+            and (
+                _timestamp(prior_event.get("decision_ts"))
+                or datetime.min.replace(tzinfo=UTC)
             )
-            if value is not None
-            and recent_cutoff is not None
-            and (_timestamp(row.get("decision_ts")) or datetime.min.replace(tzinfo=UTC))
             >= recent_cutoff
         ]
         adverse = [
-            _float(
-                (labels_by_event.get(str(row.get("event_id") or "")) or {}).get("max_adverse_bps")
-            )
-            for row in prior
+            _float(label.get(f"label_{horizon}h_mae_bps"))
+            for _prior_event, label, _value, horizon, _available_at in selected_prior
         ]
         adverse = [value for value in adverse if value is not None]
         rows.append(
@@ -105,12 +113,13 @@ def _is_prior_similar(
     event: dict[str, Any],
     prior: dict[str, Any],
     event_ts: datetime | None,
-    labels_by_event: dict[str, dict[str, Any]],
 ) -> bool:
     prior_ts = _timestamp(prior.get("decision_ts"))
     if event_ts is None or prior_ts is None or prior_ts >= event_ts:
         return False
-    if _label_value(labels_by_event.get(str(prior.get("event_id") or ""))) is None:
+    event_id = _text(event.get("event_id"))
+    prior_event_id = _text(prior.get("event_id"))
+    if not event_id or not prior_event_id or event_id == prior_event_id:
         return False
     symbol_match = _text(event.get("symbol")) == _text(prior.get("symbol"))
     strategy_match = _text(event.get("strategy_candidate")) == _text(
@@ -138,18 +147,28 @@ def _similarity_key(row: dict[str, Any]) -> str:
     )
 
 
-def _label_value(label: dict[str, Any] | None) -> float | None:
+def select_causal_similarity_outcome(
+    label: dict[str, Any] | None,
+    *,
+    current_decision_ts: datetime | None,
+) -> tuple[float | None, int | None, datetime | None]:
     if not label:
-        return None
-    for field in (
-        "label_24h_after_cost_bps",
-        "label_8h_after_cost_bps",
-        "label_4h_after_cost_bps",
-    ):
+        return None, None, None
+    current_ts = _timestamp(current_decision_ts)
+    if current_ts is None:
+        return None, None, None
+    label_decision_ts = _timestamp(label.get("decision_ts"))
+    for horizon in (24, 8, 4):
+        field = f"label_{horizon}h_after_cost_bps"
         value = _float(label.get(field))
-        if value is not None:
-            return value
-    return None
+        if value is None:
+            continue
+        available_at = _timestamp(label.get(f"label_{horizon}h_available_at"))
+        if available_at is None and label_decision_ts is not None:
+            available_at = label_decision_ts + timedelta(hours=horizon)
+        if available_at is not None and available_at <= current_ts:
+            return value, horizon, available_at
+    return None, None, None
 
 
 def _alpha_bucket(row: dict[str, Any]) -> str:

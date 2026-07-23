@@ -40,7 +40,7 @@ from quant_lab.trade_level.opportunity_queue import (
 )
 
 TRADE_LEVEL_SCHEMA_VERSION = "trade_level_judgment.v0.3"
-TRADE_OPPORTUNITY_EVENT_SCHEMA_VERSION = "trade_opportunity_event.v0.2"
+TRADE_OPPORTUNITY_EVENT_SCHEMA_VERSION = "trade_opportunity_event.v0.3"
 FALSE_BLOCK_AUDIT_SCHEMA_VERSION = "quant_lab_false_block_audit.v0.1"
 TRADE_LEVEL_RISK_SUMMARY_CURRENT_WINDOW_HOURS = 24
 
@@ -100,6 +100,9 @@ TRADE_OPPORTUNITY_EVENT_SCHEMA = {
     "quant_lab_permission_status": pl.Utf8,
     "quant_lab_live_block_reasons": pl.Utf8,
     "allowed_live_modes": pl.Utf8,
+    "risk_permission_as_of_ts": pl.Datetime(time_zone="UTC"),
+    "risk_permission_source": pl.Utf8,
+    "risk_permission_status_at_decision": pl.Utf8,
     "v5_would_open": pl.Boolean,
     "actual_submitted": pl.Boolean,
     "source_bundle_sha256": pl.Utf8,
@@ -410,11 +413,20 @@ def build_trade_opportunity_events(
     risk_frame = risk_permissions if risk_permissions is not None else pl.DataFrame()
     trade_frame = v5_trades if v5_trades is not None else pl.DataFrame()
     lifecycle_frame = order_lifecycles if order_lifecycles is not None else pl.DataFrame()
-    risk_row = _latest_risk_permission_row(risk_frame)
+    risk_rows = risk_frame.to_dicts()
     actual_lookup = _actual_submission_lookup(trade_frame, lifecycle_frame)
     rows: list[dict[str, Any]] = []
     for raw in candidate_events.to_dicts():
         payload = _payload(raw)
+        decision_ts = _timestamp(
+            _first(raw, payload, "decision_ts", "ts_utc", "ts", "timestamp")
+        )
+        risk_row = _risk_permission_at_decision(
+            raw,
+            payload,
+            risk_rows,
+            decision_ts=decision_ts,
+        )
         row = _candidate_event_row(raw, payload, risk_row, actual_lookup, created)
         rows.append(row)
     return _frame(rows, TRADE_OPPORTUNITY_EVENT_SCHEMA)
@@ -751,6 +763,11 @@ def _candidate_event_row(
         "quant_lab_permission_status": _text(risk_row.get("permission_status")),
         "quant_lab_live_block_reasons": _json_list_text(risk_row.get("live_block_reasons")),
         "allowed_live_modes": _json_list_text(risk_row.get("allowed_live_modes")),
+        "risk_permission_as_of_ts": _timestamp(risk_row.get("risk_permission_as_of_ts")),
+        "risk_permission_source": _text(risk_row.get("risk_permission_source")),
+        "risk_permission_status_at_decision": _text(
+            risk_row.get("risk_permission_status_at_decision")
+        ),
         "v5_would_open": _v5_would_open(raw, payload),
         "actual_submitted": (run_id, symbol) in actual_lookup,
         "source_bundle_sha256": _text(
@@ -975,7 +992,13 @@ def _hard_safety_reasons(event: dict[str, Any]) -> list[str]:
 def _risk_permission_veto(event: dict[str, Any]) -> bool:
     permission = _text(event.get("quant_lab_permission")).upper()
     status = _text(event.get("quant_lab_permission_status")).upper()
-    return permission == "ABORT" or status.endswith("_ABORT")
+    source = _text(event.get("risk_permission_source")).lower()
+    return (
+        permission in {"ABORT", "UNKNOWN"}
+        or status.endswith("_ABORT")
+        or status in {"MISSING", "UNKNOWN"}
+        or source == "missing"
+    )
 
 
 def _risk_reasons(event: dict[str, Any]) -> list[str]:
@@ -1079,17 +1102,127 @@ def _actual_submission_lookup(
     return lookup
 
 
-def _latest_risk_permission_row(frame: pl.DataFrame) -> dict[str, Any]:
-    if frame.is_empty():
-        return {}
-    rows = frame.to_dicts()
-    return max(
-        rows,
-        key=lambda row: (
-            _timestamp(row.get("as_of_ts") or row.get("created_at"))
-            or datetime.min.replace(tzinfo=UTC)
+def _risk_permission_at_decision(
+    raw: dict[str, Any],
+    payload: dict[str, Any],
+    risk_rows: list[dict[str, Any]],
+    *,
+    decision_ts: datetime | None,
+) -> dict[str, Any]:
+    signed = _signed_risk_permission_context(raw, payload)
+    if signed:
+        signed_as_of = _timestamp(
+            signed.get("as_of_ts")
+            or signed.get("risk_permission_as_of_ts")
+            or signed.get("generated_at")
+        )
+        if decision_ts is not None and (
+            signed_as_of is None or signed_as_of <= decision_ts
+        ):
+            return _normalized_risk_permission_context(
+                signed,
+                source="candidate_event_signed_context",
+                as_of_ts=signed_as_of,
+            )
+
+    eligible: list[tuple[datetime, dict[str, Any]]] = []
+    if decision_ts is not None:
+        for row in risk_rows:
+            as_of_ts = _timestamp(row.get("as_of_ts"))
+            if as_of_ts is not None and as_of_ts <= decision_ts:
+                eligible.append((as_of_ts, row))
+    if eligible:
+        as_of_ts, row = max(eligible, key=lambda item: item[0])
+        return _normalized_risk_permission_context(
+            row,
+            source="risk_permission_asof_join",
+            as_of_ts=as_of_ts,
+        )
+    return {
+        "permission": "UNKNOWN",
+        "permission_status": "MISSING",
+        "live_block_reasons": ["risk_permission_missing_at_decision"],
+        "allowed_live_modes": [],
+        "risk_permission_as_of_ts": None,
+        "risk_permission_source": "missing",
+        "risk_permission_status_at_decision": "MISSING",
+    }
+
+
+def _signed_risk_permission_context(
+    raw: dict[str, Any],
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    contexts: list[dict[str, Any]] = []
+    for source in (payload, raw):
+        for key in (
+            "risk_permission_context",
+            "quant_lab_permission_context",
+            "risk_permission",
+        ):
+            value = source.get(key)
+            if isinstance(value, dict):
+                contexts.append(value)
+        quant_lab = source.get("quant_lab")
+        if isinstance(quant_lab, dict):
+            nested = quant_lab.get("risk_permission")
+            if isinstance(nested, dict):
+                contexts.append(nested)
+            contexts.append(quant_lab)
+        if any(
+            key in source
+            for key in (
+                "quant_lab_permission",
+                "risk_permission_status",
+                "quant_lab_permission_status",
+            )
+        ):
+            contexts.append(source)
+    for context in contexts:
+        permission = _text(
+            context.get("permission")
+            or context.get("quant_lab_permission")
+            or context.get("risk_permission_value")
+        )
+        status = _text(
+            context.get("permission_status")
+            or context.get("risk_permission_status")
+            or context.get("quant_lab_permission_status")
+        )
+        if permission or status:
+            return context
+    return {}
+
+
+def _normalized_risk_permission_context(
+    context: dict[str, Any],
+    *,
+    source: str,
+    as_of_ts: datetime | None,
+) -> dict[str, Any]:
+    permission = _text(
+        context.get("permission")
+        or context.get("quant_lab_permission")
+        or context.get("risk_permission_value")
+    ).upper()
+    status = _text(
+        context.get("permission_status")
+        or context.get("risk_permission_status")
+        or context.get("quant_lab_permission_status")
+    ).upper()
+    return {
+        "permission": permission or "UNKNOWN",
+        "permission_status": status or "MISSING",
+        "live_block_reasons": (
+            context.get("live_block_reasons")
+            or context.get("quant_lab_live_block_reasons")
+            or []
         ),
-    )
+        "allowed_live_modes": context.get("allowed_live_modes") or [],
+        "risk_permission_as_of_ts": as_of_ts,
+        "risk_permission_source": source,
+        "risk_permission_status_at_decision": status or "MISSING",
+    }
 
 
 def _preferred_label_value(label: dict[str, Any]) -> tuple[float | None, int | None]:
@@ -1118,8 +1251,8 @@ def _sample_or_label_value(
 def _schema_version_for_dataset(dataset_name: str) -> str:
     return {
         "trade_opportunity_event": TRADE_OPPORTUNITY_EVENT_SCHEMA_VERSION,
-        "trade_opportunity_label": "trade_opportunity_label.v0.1",
-        "trade_level_similarity_outcome": "trade_level_similarity_outcome.v0.1",
+        "trade_opportunity_label": "trade_opportunity_label.v0.2",
+        "trade_level_similarity_outcome": "trade_level_similarity_outcome.v0.2",
         "trade_level_judgment": TRADE_LEVEL_SCHEMA_VERSION,
         "quant_lab_false_block_audit": FALSE_BLOCK_AUDIT_SCHEMA_VERSION,
         "v5_trade_learning_sample": V5_TRADE_LEARNING_SAMPLE_SCHEMA_VERSION,

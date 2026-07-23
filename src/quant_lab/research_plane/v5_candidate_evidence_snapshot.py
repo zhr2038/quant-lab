@@ -21,6 +21,8 @@ from quant_lab.research.candidate_labels import (
     LABEL_SCHEMA_VERSION,
     MARKET_BAR_DATASET,
     RUN_SUMMARY_DATASET,
+    candidate_event_symbol_expr,
+    run_summary_run_ids,
 )
 from quant_lab.research.strategy_evidence import EVIDENCE_VERSION
 from quant_lab.research_plane.signatures import (
@@ -33,7 +35,6 @@ from quant_lab.research_plane.snapshot_lock import snapshot_payload_lock
 from quant_lab.research_plane.status import ensure_research_queue_layout
 from quant_lab.research_plane.v5_candidate_evidence_contracts import (
     V5_CANDIDATE_EVIDENCE_HORIZONS,
-    V5_CANDIDATE_EVIDENCE_PROJECTION_VERSION,
     V5CandidateEvidenceInputFingerprint,
     V5CandidateEvidenceSnapshotFile,
     V5CandidateEvidenceSnapshotManifest,
@@ -58,6 +59,10 @@ _EVENT_MINIMAL_SCHEMA = {
     "run_id": pl.Utf8,
     "ts_utc": pl.Datetime(time_zone="UTC"),
     "symbol": pl.Utf8,
+    "normalized_symbol": pl.Utf8,
+    "inst_id": pl.Utf8,
+    "instId": pl.Utf8,
+    "raw_payload_json": pl.Utf8,
 }
 _MARKET_COLUMNS = ("symbol", "timeframe", "ts", "close", "high", "low", "is_closed")
 _MARKET_MINIMAL_SCHEMA = {
@@ -87,6 +92,7 @@ class V5CandidateEvidenceSnapshotPreflight:
     market_window_end: datetime
     candidate_symbols: tuple[str, ...]
     candidate_run_ids: tuple[str, ...]
+    run_summary_run_ids: tuple[str, ...]
     selected_timeframes: tuple[tuple[str, str], ...]
     source_files: tuple[V5CandidateEvidenceSourceFileIdentity, ...]
     input_fingerprint: V5CandidateEvidenceInputFingerprint
@@ -167,8 +173,8 @@ def preflight_v5_candidate_evidence_snapshot(
         run_sources,
         event_start,
         event_end,
-        run_ids=candidate_run_ids,
     )
+    summary_run_ids = _run_summary_run_ids(run_lazy)
     market_digest, market_rows, _, _ = _projection_digest(
         market_lazy,
         timestamp_column="ts",
@@ -185,7 +191,7 @@ def preflight_v5_candidate_evidence_snapshot(
         for name in V5_CANDIDATE_EVIDENCE_DATASET_NAMES
     }
     fingerprint_identity = {
-        "schema_version": "v5_candidate_evidence_input_identity.v1",
+        "schema_version": "v5_candidate_evidence_input_identity.v2",
         "quant_lab_commit": quant_lab_commit,
         "as_of_date": as_of_date,
         "mode": parameters.mode,
@@ -194,13 +200,14 @@ def preflight_v5_candidate_evidence_snapshot(
         "include_historical_outcomes": parameters.include_historical_outcomes,
         "candidate_label_schema_version": LABEL_SCHEMA_VERSION,
         "strategy_evidence_version": EVIDENCE_VERSION,
-        "projection_version": V5_CANDIDATE_EVIDENCE_PROJECTION_VERSION,
+        "projection_version": parameters.projection_version,
         "event_window_start": event_start,
         "event_window_end": event_end,
         "market_window_start": market_start,
         "market_window_end": market_end,
         "candidate_symbols": list(candidate_symbols),
         "candidate_run_ids": list(candidate_run_ids),
+        "run_summary_run_ids": list(summary_run_ids),
         "selected_timeframes": [list(item) for item in selected_timeframes],
         "candidate_event_digest": event_digest,
         "market_bar_digest": market_digest,
@@ -215,7 +222,7 @@ def preflight_v5_candidate_evidence_snapshot(
         horizon_hours=parameters.horizon_hours,
         candidate_label_schema_version=LABEL_SCHEMA_VERSION,
         strategy_evidence_version=EVIDENCE_VERSION,
-        projection_version=V5_CANDIDATE_EVIDENCE_PROJECTION_VERSION,
+        projection_version=parameters.projection_version,
         event_window_start=event_start,
         event_window_end=event_end,
         market_window_start=market_start,
@@ -233,9 +240,7 @@ def preflight_v5_candidate_evidence_snapshot(
         candidate_event_bytes=sum(
             item.size_bytes for item in source_by_dataset["silver/v5_candidate_event"]
         ),
-        market_bar_bytes=sum(
-            item.size_bytes for item in source_by_dataset["silver/market_bar"]
-        ),
+        market_bar_bytes=sum(item.size_bytes for item in source_by_dataset["silver/market_bar"]),
         run_summary_bytes=sum(
             item.size_bytes for item in source_by_dataset["silver/v5_run_summary"]
         ),
@@ -243,7 +248,7 @@ def preflight_v5_candidate_evidence_snapshot(
         observed_at=datetime.now(UTC),
     )
     identity_payload = {
-        "schema_version": "quant_lab_v5_candidate_evidence_snapshot_identity.v1",
+        "schema_version": "quant_lab_v5_candidate_evidence_snapshot_identity.v2",
         **fingerprint_identity,
         "input_fingerprint_digest": fingerprint_digest,
     }
@@ -260,6 +265,7 @@ def preflight_v5_candidate_evidence_snapshot(
         market_window_end=market_end,
         candidate_symbols=candidate_symbols,
         candidate_run_ids=candidate_run_ids,
+        run_summary_run_ids=summary_run_ids,
         selected_timeframes=selected_timeframes,
         source_files=source_files,
         input_fingerprint=input_fingerprint,
@@ -316,13 +322,15 @@ def materialize_v5_candidate_evidence_snapshot(
                 or retained_manifest.input_fingerprint_digest
                 != preflight.input_fingerprint.input_fingerprint_digest
             ):
-                raise RuntimeError(
-                    "v5_candidate_evidence_snapshot_rehydrate_identity_mismatch"
-                )
-        temporary = queue / "snapshots" / (
-            f".rehydrate.{preflight.snapshot_id}.{uuid.uuid4().hex}.partial"
-            if rehydrating
-            else f".sealing.{preflight.snapshot_id}.{uuid.uuid4().hex}.partial"
+                raise RuntimeError("v5_candidate_evidence_snapshot_rehydrate_identity_mismatch")
+        temporary = (
+            queue
+            / "snapshots"
+            / (
+                f".rehydrate.{preflight.snapshot_id}.{uuid.uuid4().hex}.partial"
+                if rehydrating
+                else f".sealing.{preflight.snapshot_id}.{uuid.uuid4().hex}.partial"
+            )
         )
         temporary.mkdir(parents=True, exist_ok=False)
         try:
@@ -330,9 +338,7 @@ def materialize_v5_candidate_evidence_snapshot(
                 atomic_write_json(
                     temporary / "REHYDRATE.json",
                     {
-                        "schema_version": (
-                            "quant_lab_v5_candidate_evidence_snapshot_rehydrate.v1"
-                        ),
+                        "schema_version": ("quant_lab_v5_candidate_evidence_snapshot_rehydrate.v1"),
                         "snapshot_id": retained_manifest.snapshot_id,
                         "manifest_sha256": retained_manifest.manifest_sha256,
                         "started_at": datetime.now(UTC).isoformat(),
@@ -422,6 +428,7 @@ def _build_signed_snapshot_manifest(
         include_historical_outcomes=parameters.include_historical_outcomes,
         candidate_label_schema_version=parameters.candidate_label_schema_version,
         strategy_evidence_version=parameters.strategy_evidence_version,
+        projection_version=parameters.projection_version,
         candidate_event_digest=preflight.input_fingerprint.candidate_event_digest,
         market_bar_digest=preflight.input_fingerprint.market_bar_digest,
         run_summary_digest=preflight.input_fingerprint.run_summary_digest,
@@ -434,6 +441,7 @@ def _build_signed_snapshot_manifest(
         max_event_ts=preflight.max_event_ts,
         candidate_symbols=preflight.candidate_symbols,
         candidate_run_ids=preflight.candidate_run_ids,
+        run_summary_run_ids=preflight.run_summary_run_ids,
         selected_timeframes=preflight.selected_timeframes,
         candidate_event_row_count=preflight.input_fingerprint.candidate_event_row_count,
         candidate_event_file_count=preflight.input_fingerprint.candidate_event_file_count,
@@ -482,9 +490,7 @@ def _verify_rehydrated_snapshot_files(
         raise RuntimeError("v5_candidate_evidence_snapshot_rehydrate_identity_mismatch")
     if retained.total_input_rows != sum(item.row_count for item in references):
         raise RuntimeError("v5_candidate_evidence_snapshot_rehydrate_identity_mismatch")
-    if retained.estimated_uncompressed_bytes != sum(
-        item.uncompressed_bytes for item in references
-    ):
+    if retained.estimated_uncompressed_bytes != sum(item.uncompressed_bytes for item in references):
         raise RuntimeError("v5_candidate_evidence_snapshot_rehydrate_identity_mismatch")
 
 
@@ -597,6 +603,9 @@ def verify_v5_candidate_evidence_snapshot_manifest(
     }
     if expected_paths != actual_paths:
         raise ValueError("v5_candidate_evidence_snapshot_file_set_mismatch")
+    observed_candidate_symbols: set[str] = set()
+    observed_candidate_run_ids: set[str] = set()
+    observed_summary_run_ids: set[str] = set()
     for item in manifest.files:
         path = final_root / "files" / item.relative_path
         resolved = path.resolve(strict=True)
@@ -624,6 +633,23 @@ def verify_v5_candidate_evidence_snapshot_manifest(
         }[item.dataset_name]
         if digest != expected_digest:
             raise ValueError("v5_candidate_evidence_snapshot_projection_digest_mismatch")
+        lazy = pl.scan_parquet(path)
+        if item.dataset_name == "silver/v5_candidate_event":
+            observed_candidate_symbols.update(_candidate_symbols(lazy))
+            observed_candidate_run_ids.update(_candidate_run_ids(lazy))
+        elif (
+            item.dataset_name == "silver/v5_run_summary"
+            and "run_id" in lazy.collect_schema().names()
+        ):
+            observed_summary_run_ids.update(
+                run_summary_run_ids(lazy.select("run_id").collect(engine="streaming"))
+            )
+    if tuple(sorted(observed_candidate_symbols)) != manifest.candidate_symbols:
+        raise ValueError("v5_candidate_evidence_snapshot_symbol_identity_mismatch")
+    if tuple(sorted(observed_candidate_run_ids)) != manifest.candidate_run_ids:
+        raise ValueError("v5_candidate_evidence_snapshot_candidate_run_identity_mismatch")
+    if tuple(sorted(observed_summary_run_ids)) != manifest.run_summary_run_ids:
+        raise ValueError("v5_candidate_evidence_snapshot_summary_run_identity_mismatch")
 
 
 def load_v5_candidate_evidence_generation_binding(
@@ -678,7 +704,6 @@ def _materialize_snapshot_files(
                 run_sources,
                 preflight.event_window_start,
                 preflight.event_window_end,
-                run_ids=preflight.candidate_run_ids,
             ),
             None,
         ),
@@ -725,7 +750,7 @@ def _event_projection(
     start: datetime,
     end: datetime,
 ) -> pl.LazyFrame:
-    lazy = _scan_sources(sources, _EVENT_MINIMAL_SCHEMA)
+    lazy = _scan_union_sources(sources, _EVENT_MINIMAL_SCHEMA)
     column = _first_column(lazy, ("ts_utc", "bundle_ts", "ingest_ts"))
     if column is None:
         return lazy
@@ -748,9 +773,7 @@ def _market_projection(
     if "is_closed" in columns:
         lazy = lazy.filter(pl.col("is_closed").cast(pl.Boolean, strict=False).fill_null(True))
     lazy = lazy.with_columns(
-        pl.col("symbol")
-        .map_elements(normalize_symbol, return_dtype=pl.Utf8)
-        .alias("symbol")
+        pl.col("symbol").map_elements(normalize_symbol, return_dtype=pl.Utf8).alias("symbol")
     )
     lazy = lazy.filter(_utc_expr("ts").is_between(start, end, closed="left"))
     if symbols:
@@ -770,31 +793,26 @@ def _run_summary_projection(
     sources: tuple[Path, ...],
     start: datetime,
     end: datetime,
-    *,
-    run_ids: tuple[str, ...],
 ) -> pl.LazyFrame:
     lazy = _scan_sources(sources, _RUN_SUMMARY_MINIMAL_SCHEMA)
     column = _first_column(lazy, ("bundle_ts", "ingest_ts", "created_at"))
     if column is None:
         return lazy
     lazy = lazy.filter(_utc_expr(column).is_between(start, end, closed="left"))
-    if "run_id" in lazy.collect_schema().names():
-        if not run_ids:
-            return lazy.head(0)
-        lazy = lazy.filter(pl.col("run_id").cast(pl.Utf8).is_in(run_ids))
     return lazy
 
 
 def _candidate_symbols(events: pl.LazyFrame) -> tuple[str, ...]:
-    if "symbol" not in events.collect_schema().names():
-        return ()
+    columns = events.collect_schema().names()
     values = (
-        events.select(pl.col("symbol").cast(pl.Utf8).drop_nulls().unique())
+        events.select(candidate_event_symbol_expr(columns).alias("_candidate_symbol"))
+        .filter(pl.col("_candidate_symbol") != "")
+        .unique()
         .collect(engine="streaming")
-        .get_column("symbol")
+        .get_column("_candidate_symbol")
         .to_list()
     )
-    return tuple(sorted({symbol for value in values if (symbol := normalize_symbol(value))}))
+    return tuple(sorted({str(value) for value in values if str(value)}))
 
 
 def _candidate_run_ids(events: pl.LazyFrame) -> tuple[str, ...]:
@@ -807,6 +825,11 @@ def _candidate_run_ids(events: pl.LazyFrame) -> tuple[str, ...]:
         .to_list()
     )
     return tuple(sorted({str(value).strip() for value in values if str(value).strip()}))
+
+
+def _run_summary_run_ids(run_summary: pl.LazyFrame) -> tuple[str, ...]:
+    frame = run_summary.collect(engine="streaming")
+    return tuple(sorted(run_summary_run_ids(frame)))
 
 
 def _selected_market_timeframes(
@@ -825,9 +848,7 @@ def _selected_market_timeframes(
     if "is_closed" in columns:
         lazy = lazy.filter(pl.col("is_closed").cast(pl.Boolean, strict=False).fill_null(True))
     lazy = lazy.with_columns(
-        pl.col("symbol")
-        .map_elements(normalize_symbol, return_dtype=pl.Utf8)
-        .alias("symbol")
+        pl.col("symbol").map_elements(normalize_symbol, return_dtype=pl.Utf8).alias("symbol")
     )
     available = (
         lazy.filter(
@@ -904,7 +925,7 @@ def _projection_digest(
         )
     frame = lazy.select(expressions).collect(engine="streaming")
     payload = {
-        "schema_version": "v5_candidate_evidence_projection_digest.v1",
+        "schema_version": "v5_candidate_evidence_projection_digest.v2",
         "schema": schema_payload,
         "row_count": int(frame.item(0, "row_count") or 0),
         "hash_sum_0": int(frame.item(0, "hash_sum_0") or 0) if columns else 0,
@@ -1001,6 +1022,18 @@ def _scan_sources(sources: tuple[Path, ...], empty_schema: dict[str, pl.DataType
         [str(path) for path in sources],
         missing_columns="insert",
         extra_columns="ignore",
+    )
+
+
+def _scan_union_sources(
+    sources: tuple[Path, ...],
+    empty_schema: dict[str, pl.DataType],
+) -> pl.LazyFrame:
+    if not sources:
+        return pl.DataFrame(schema=empty_schema).lazy()
+    return pl.concat(
+        [pl.scan_parquet(str(path)) for path in sources],
+        how="diagonal_relaxed",
     )
 
 

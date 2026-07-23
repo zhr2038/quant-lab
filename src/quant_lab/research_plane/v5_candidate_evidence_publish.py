@@ -18,11 +18,15 @@ from quant_lab.research.candidate_labels import (
     CANDIDATE_LABEL_DATASET,
     CANDIDATE_OUTCOME_SUMMARY_DATASET,
     CANDIDATE_QUALITY_DATASET,
+    LABEL_SCHEMA,
     derive_candidate_outcome_summary,
     derive_candidate_quality,
 )
 from quant_lab.research.candidate_labels import (
     SOURCE_NAME as CANDIDATE_LABEL_SOURCE,
+)
+from quant_lab.research.strategy_evidence import (
+    QUALITY_SCHEMA as STRATEGY_QUALITY_SCHEMA,
 )
 from quant_lab.research.strategy_evidence import (
     SAMPLE_SCHEMA,
@@ -44,14 +48,15 @@ from quant_lab.research_plane.atomic_publish import (
     recover_atomic_research_generation,
 )
 from quant_lab.research_plane.signatures import model_content_sha256
+from quant_lab.research_plane.v5_candidate_evidence_contracts import (
+    V5_CANDIDATE_EVIDENCE_PROJECTION_VERSION,
+)
 from quant_lab.research_plane.v5_candidate_evidence_result import (
     ValidatedV5CandidateEvidenceResult,
 )
 
-V5_CANDIDATE_EVIDENCE_GENERATION_POINTER = (
-    Path("gold") / "v5_candidate_evidence_generation.json"
-)
-V5_CANDIDATE_EVIDENCE_GENERATION_SCHEMA = "v5_candidate_evidence_generation.v1"
+V5_CANDIDATE_EVIDENCE_GENERATION_POINTER = Path("gold") / "v5_candidate_evidence_generation.json"
+V5_CANDIDATE_EVIDENCE_GENERATION_SCHEMA = "v5_candidate_evidence_generation.v2"
 V5_CANDIDATE_EVIDENCE_TRANSACTION_NAME = "v5_candidate_evidence"
 V5_CANDIDATE_EVIDENCE_SIDECAR = "_v5_candidate_evidence_generation.json"
 V5_CANDIDATE_EVIDENCE_DATASETS = {
@@ -212,14 +217,20 @@ def publish_v5_candidate_evidence_generation(
             "v5_candidate_label": list(validated.label_paths),
             "strategy_evidence_sample": list(validated.sample_paths),
         }
+        managed_columns = {
+            "v5_candidate_label": list(LABEL_SCHEMA),
+            "v5_candidate_quality_daily": candidate_quality.columns,
+            "v5_candidate_outcome_summary": candidate_outcome.columns,
+            "strategy_evidence_sample": list(SAMPLE_SCHEMA),
+            "strategy_evidence": list(SUMMARY_SCHEMA),
+            "strategy_evidence_quality": list(STRATEGY_QUALITY_SCHEMA),
+        }
         for name, frame in incoming_frames.items():
             path = staging_root / f"incoming-{name}.parquet"
             frame.write_parquet(path, compression="zstd")
             incoming_paths[name] = [path]
 
-        for index, (dataset_name, target) in enumerate(
-            V5_CANDIDATE_EVIDENCE_DATASETS.items()
-        ):
+        for index, (dataset_name, target) in enumerate(V5_CANDIDATE_EVIDENCE_DATASETS.items()):
             if dataset_name == "strategy_evidence_sample":
                 staged = sample_staged
             else:
@@ -253,22 +264,28 @@ def publish_v5_candidate_evidence_generation(
             for name in V5_CANDIDATE_EVIDENCE_DATASETS
         }
         dataset_hashes = {
-            name: _managed_dataset_digest(staged_by_dataset[name], name)
+            name: _managed_dataset_digest(
+                staged_by_dataset[name],
+                name,
+                managed_columns=managed_columns[name],
+            )
             for name in V5_CANDIDATE_EVIDENCE_DATASETS
         }
         generation_digest = model_content_sha256(
             {
-                "schema_version": "v5_candidate_evidence_generation_digest.v1",
+                "schema_version": "v5_candidate_evidence_generation_digest.v2",
                 "task_id": manifest.task_id,
                 "snapshot_id": manifest.snapshot_id,
                 "previous_generation_id": manifest.previous_generation_id,
                 "previous_generation_digest": manifest.previous_generation_digest,
+                "projection_version": manifest.projection_version,
                 "result_outputs": [
                     [item.relative_path, item.sha256]
                     for item in sorted(manifest.outputs, key=lambda item: item.relative_path)
                 ],
                 "dataset_hashes": dataset_hashes,
                 "managed_row_counts": managed_row_counts,
+                "managed_columns": managed_columns,
             }
         )
         generation_payload = {
@@ -291,12 +308,13 @@ def publish_v5_candidate_evidence_generation(
             "horizon_hours": list(manifest.horizon_hours),
             "candidate_label_schema_version": manifest.candidate_label_schema_version,
             "strategy_evidence_version": manifest.strategy_evidence_version,
+            "projection_version": manifest.projection_version,
             "datasets": list(V5_CANDIDATE_EVIDENCE_DATASETS),
             "row_counts": managed_row_counts,
             "dataset_hashes": dataset_hashes,
+            "managed_columns": managed_columns,
             "primary_keys": {
-                name: list(keys)
-                for name, keys in V5_CANDIDATE_EVIDENCE_PRIMARY_KEYS.items()
+                name: list(keys) for name, keys in V5_CANDIDATE_EVIDENCE_PRIMARY_KEYS.items()
             },
             "published_at": datetime.now(UTC).isoformat(),
             "diagnostic_only": True,
@@ -312,6 +330,7 @@ def publish_v5_candidate_evidence_generation(
                 generation_payload=generation_payload,
                 managed_row_count=managed_row_counts[dataset_name],
                 managed_dataset_hash=dataset_hashes[dataset_name],
+                managed_columns=managed_columns[dataset_name],
             )
 
         commit_atomic_research_generation(
@@ -351,14 +370,17 @@ def verify_v5_candidate_evidence_generation_fast(
         raise RuntimeError("v5_candidate_evidence_generation_pointer_invalid") from exc
     if pointer.get("schema_version") != V5_CANDIDATE_EVIDENCE_GENERATION_SCHEMA:
         raise RuntimeError("v5_candidate_evidence_generation_pointer_schema_mismatch")
+    if pointer.get("projection_version") != V5_CANDIDATE_EVIDENCE_PROJECTION_VERSION:
+        raise RuntimeError("v5_candidate_evidence_generation_projection_mismatch")
     if pointer.get("generation_id") != generation_id:
         raise RuntimeError("v5_candidate_evidence_generation_pointer_mismatch")
     digest = str(pointer.get("generation_digest") or "")
     if len(digest) != 64:
         raise RuntimeError("v5_candidate_evidence_generation_digest_invalid")
-    if expected_input_fingerprint is not None and pointer.get(
-        "input_fingerprint_digest"
-    ) != expected_input_fingerprint:
+    if (
+        expected_input_fingerprint is not None
+        and pointer.get("input_fingerprint_digest") != expected_input_fingerprint
+    ):
         raise RuntimeError("v5_candidate_evidence_generation_fingerprint_mismatch")
     if (
         pointer.get("diagnostic_only") is not True
@@ -372,27 +394,31 @@ def verify_v5_candidate_evidence_generation_fast(
         str(name): int(value) for name, value in dict(pointer.get("row_counts") or {}).items()
     }
     dataset_hashes = {
-        str(name): str(value)
-        for name, value in dict(pointer.get("dataset_hashes") or {}).items()
+        str(name): str(value) for name, value in dict(pointer.get("dataset_hashes") or {}).items()
     }
     primary_keys = {
-        str(name): tuple(value)
-        for name, value in dict(pointer.get("primary_keys") or {}).items()
+        str(name): tuple(value) for name, value in dict(pointer.get("primary_keys") or {}).items()
+    }
+    managed_columns = {
+        str(name): tuple(str(column) for column in value)
+        for name, value in dict(pointer.get("managed_columns") or {}).items()
     }
     expected_names = set(V5_CANDIDATE_EVIDENCE_DATASETS)
     if (
         set(pointer.get("datasets") or []) != expected_names
         or set(row_counts) != expected_names
         or set(dataset_hashes) != expected_names
+        or set(managed_columns) != expected_names
         or primary_keys != V5_CANDIDATE_EVIDENCE_PRIMARY_KEYS
+        or any(
+            not columns or len(columns) != len(set(columns)) for columns in managed_columns.values()
+        )
     ):
         raise RuntimeError("v5_candidate_evidence_generation_dataset_set_mismatch")
     for dataset_name, target in V5_CANDIDATE_EVIDENCE_DATASETS.items():
         dataset_root = root / target
         if not dataset_root.is_dir():
-            raise RuntimeError(
-                f"v5_candidate_evidence_generation_dataset_missing:{dataset_name}"
-            )
+            raise RuntimeError(f"v5_candidate_evidence_generation_dataset_missing:{dataset_name}")
         sidecar_path = dataset_root / V5_CANDIDATE_EVIDENCE_SIDECAR
         try:
             sidecar = json.loads(sidecar_path.read_text("utf-8"))
@@ -408,10 +434,9 @@ def verify_v5_candidate_evidence_generation_fast(
             or sidecar.get("row_count") != row_counts[dataset_name]
             or tuple(sidecar.get("primary_keys") or ())
             != V5_CANDIDATE_EVIDENCE_PRIMARY_KEYS[dataset_name]
+            or tuple(sidecar.get("managed_columns") or ()) != managed_columns[dataset_name]
         ):
-            raise RuntimeError(
-                f"v5_candidate_evidence_generation_sidecar_mismatch:{dataset_name}"
-            )
+            raise RuntimeError(f"v5_candidate_evidence_generation_sidecar_mismatch:{dataset_name}")
         _validate_staged_dataset(
             dataset_root,
             dataset_name=dataset_name,
@@ -422,7 +447,14 @@ def verify_v5_candidate_evidence_generation_fast(
             raise RuntimeError(
                 f"v5_candidate_evidence_generation_row_count_mismatch:{dataset_name}"
             )
-        if _managed_dataset_digest(dataset_root, dataset_name) != dataset_hashes[dataset_name]:
+        if (
+            _managed_dataset_digest(
+                dataset_root,
+                dataset_name,
+                managed_columns=managed_columns[dataset_name],
+            )
+            != dataset_hashes[dataset_name]
+        ):
             raise RuntimeError(
                 f"v5_candidate_evidence_generation_dataset_hash_mismatch:{dataset_name}"
             )
@@ -474,7 +506,9 @@ def _recent_managed_samples(
     filtered = lazy.filter(
         (pl.col("strategy") == "v5")
         & (pl.col("source") == STRATEGY_EVIDENCE_SOURCE)
-        & pl.col("ts_utc").cast(pl.Datetime(time_zone="UTC"), strict=False).is_between(
+        & pl.col("ts_utc")
+        .cast(pl.Datetime(time_zone="UTC"), strict=False)
+        .is_between(
             start,
             end,
             closed="left",
@@ -574,9 +608,7 @@ def _validate_staged_dataset(
     files = _parquet_files(dataset_root)
     if not files:
         raise ValueError(f"v5_candidate_evidence_publish_dataset_missing:{dataset_name}")
-    temporary = Path(
-        tempfile.mkdtemp(prefix=f"quant-lab-v5-{dataset_name}-validate-")
-    )
+    temporary = Path(tempfile.mkdtemp(prefix=f"quant-lab-v5-{dataset_name}-validate-"))
     connection: duckdb.DuckDBPyConnection | None = None
     try:
         _require_writable_spill_directory(temporary)
@@ -590,19 +622,14 @@ def _validate_staged_dataset(
                 f"v5_candidate_evidence_publish_primary_key_missing:{dataset_name}:"
                 + ",".join(missing)
             )
-        managed_source = (
-            f"SELECT * FROM ({source}) WHERE {_scope_sql(managed_scope)}"
-        )
+        managed_source = f"SELECT * FROM ({source}) WHERE {_scope_sql(managed_scope)}"
         key_sql = ",".join(_identifier(column) for column in key_columns)
         duplicate = connection.execute(
-            f"SELECT 1 FROM ({managed_source}) "
-            f"GROUP BY {key_sql} HAVING COUNT(*) > 1 LIMIT 1"
+            f"SELECT 1 FROM ({managed_source}) GROUP BY {key_sql} HAVING COUNT(*) > 1 LIMIT 1"
         ).fetchone()
         if duplicate is not None:
             raise ValueError(f"v5_candidate_evidence_publish_duplicate_key:{dataset_name}")
-        null_predicate = " OR ".join(
-            f"{_identifier(column)} IS NULL" for column in key_columns
-        )
+        null_predicate = " OR ".join(f"{_identifier(column)} IS NULL" for column in key_columns)
         if connection.execute(
             f"SELECT 1 FROM ({managed_source}) WHERE {null_predicate} LIMIT 1"
         ).fetchone():
@@ -621,25 +648,42 @@ def _managed_row_count(dataset_root: Path, dataset_name: str) -> int:
     predicate = _scope_sql(V5_CANDIDATE_EVIDENCE_MANAGED_SCOPES[dataset_name])
     connection = duckdb.connect(database=":memory:")
     try:
-        row = connection.execute(
-            f"SELECT COUNT(*) FROM ({source}) WHERE {predicate}"
-        ).fetchone()
+        row = connection.execute(f"SELECT COUNT(*) FROM ({source}) WHERE {predicate}").fetchone()
         return int(row[0])
     finally:
         connection.close()
 
 
-def _managed_dataset_digest(dataset_root: Path, dataset_name: str) -> str:
+def _managed_dataset_digest(
+    dataset_root: Path,
+    dataset_name: str,
+    *,
+    managed_columns: tuple[str, ...] | list[str] | None = None,
+) -> str:
     files = _parquet_files(dataset_root)
     if not files:
-        return model_content_sha256({"dataset_name": dataset_name, "schema": [], "rows": 0})
+        return model_content_sha256(
+            {
+                "schema_version": "v5_candidate_evidence_managed_dataset_digest.v2",
+                "dataset_name": dataset_name,
+                "managed_columns": sorted(managed_columns or ()),
+                "schema": [],
+                "rows": 0,
+            }
+        )
     source = _read_parquet_sql(files)
     predicate = _scope_sql(V5_CANDIDATE_EVIDENCE_MANAGED_SCOPES[dataset_name])
     connection = duckdb.connect(database=":memory:")
     try:
         description = connection.execute(f"DESCRIBE {source}").fetchall()
-        columns = [str(row[0]) for row in description]
-        schema = [(str(row[0]), str(row[1])) for row in description]
+        schema_by_column = {str(row[0]): str(row[1]) for row in description}
+        columns = sorted(managed_columns or schema_by_column)
+        missing = sorted(set(columns) - set(schema_by_column))
+        if missing:
+            raise RuntimeError(
+                f"v5_candidate_evidence_managed_columns_missing:{dataset_name}:{','.join(missing)}"
+            )
+        schema = [(column, schema_by_column[column]) for column in columns]
         hash_sql = "hash(" + ",".join(_identifier(column) for column in columns) + ")"
         row = connection.execute(
             "SELECT COUNT(*), "
@@ -652,7 +696,7 @@ def _managed_dataset_digest(dataset_root: Path, dataset_name: str) -> str:
         connection.close()
     return model_content_sha256(
         {
-            "schema_version": "v5_candidate_evidence_managed_dataset_digest.v1",
+            "schema_version": "v5_candidate_evidence_managed_dataset_digest.v2",
             "dataset_name": dataset_name,
             "scope": V5_CANDIDATE_EVIDENCE_MANAGED_SCOPES[dataset_name],
             "schema": schema,
@@ -672,6 +716,7 @@ def _write_generation_sidecars(
     generation_payload: dict[str, Any],
     managed_row_count: int,
     managed_dataset_hash: str,
+    managed_columns: list[str],
 ) -> None:
     atomic_write_json(
         staged / V5_CANDIDATE_EVIDENCE_SIDECAR,
@@ -685,6 +730,7 @@ def _write_generation_sidecars(
             "dataset_hash": managed_dataset_hash,
             "row_count": managed_row_count,
             "primary_keys": generation_payload["primary_keys"][dataset_name],
+            "managed_columns": managed_columns,
             "managed_scope": V5_CANDIDATE_EVIDENCE_MANAGED_SCOPES[dataset_name],
             "research_only": True,
             "live_order_effect": "none_read_only_research",
@@ -771,10 +817,7 @@ def _parquet_files(root: Path) -> list[Path]:
 
 def _read_parquet_sql(paths: list[Path]) -> str:
     values = ",".join(_sql_literal(path) for path in paths)
-    return (
-        f"SELECT * FROM read_parquet([{values}], union_by_name=true, "
-        "hive_partitioning=false)"
-    )
+    return f"SELECT * FROM read_parquet([{values}], union_by_name=true, hive_partitioning=false)"
 
 
 def _scope_sql(scope: dict[str, object]) -> str:

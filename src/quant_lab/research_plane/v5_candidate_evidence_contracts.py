@@ -7,12 +7,12 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 V5_CANDIDATE_EVIDENCE_TASK_TYPE = "v5_candidate_evidence"
-V5_CANDIDATE_EVIDENCE_TASK_SCHEMA = "quant_lab_v5_candidate_evidence_task.v1"
-V5_CANDIDATE_EVIDENCE_SNAPSHOT_SCHEMA = "quant_lab_v5_candidate_evidence_snapshot.v1"
-V5_CANDIDATE_EVIDENCE_RESULT_SCHEMA = "quant_lab_v5_candidate_evidence_result.v1"
-V5_CANDIDATE_EVIDENCE_RECEIPT_SCHEMA = "quant_lab_v5_candidate_evidence_receipt.v1"
-V5_CANDIDATE_EVIDENCE_FINGERPRINT_SCHEMA = "v5_candidate_evidence_input_fingerprint.v1"
-V5_CANDIDATE_EVIDENCE_PROJECTION_VERSION = "v5_candidate_evidence_projection.v1"
+V5_CANDIDATE_EVIDENCE_TASK_SCHEMA = "quant_lab_v5_candidate_evidence_task.v2"
+V5_CANDIDATE_EVIDENCE_SNAPSHOT_SCHEMA = "quant_lab_v5_candidate_evidence_snapshot.v2"
+V5_CANDIDATE_EVIDENCE_RESULT_SCHEMA = "quant_lab_v5_candidate_evidence_result.v2"
+V5_CANDIDATE_EVIDENCE_RECEIPT_SCHEMA = "quant_lab_v5_candidate_evidence_receipt.v2"
+V5_CANDIDATE_EVIDENCE_FINGERPRINT_SCHEMA = "v5_candidate_evidence_input_fingerprint.v2"
+V5_CANDIDATE_EVIDENCE_PROJECTION_VERSION = "v5_candidate_evidence_projection.v2"
 V5_CANDIDATE_EVIDENCE_HORIZONS = (4, 8, 12, 24, 48, 72, 120)
 
 DEFAULT_V5_CANDIDATE_EVIDENCE_MAX_SNAPSHOT_BYTES = 512 * 1024**2
@@ -49,11 +49,10 @@ class V5CandidateEvidenceTaskPayload(_StrictModel):
     lookback_days: Literal[8] = 8
     horizon_hours: tuple[int, ...] = V5_CANDIDATE_EVIDENCE_HORIZONS
     include_historical_outcomes: Literal[False] = False
-    candidate_label_schema_version: Literal["v5.candidate_label.v1"] = (
-        "v5.candidate_label.v1"
-    )
-    strategy_evidence_version: Literal["strategy-evidence-v0.1"] = (
-        "strategy-evidence-v0.1"
+    candidate_label_schema_version: Literal["v5.candidate_label.v1"] = "v5.candidate_label.v1"
+    strategy_evidence_version: Literal["strategy-evidence-v0.1"] = "strategy-evidence-v0.1"
+    projection_version: Literal["v5_candidate_evidence_projection.v2"] = (
+        V5_CANDIDATE_EVIDENCE_PROJECTION_VERSION
     )
 
     @model_validator(mode="after")
@@ -88,7 +87,7 @@ class V5CandidateEvidenceSourceFileIdentity(_StrictModel):
 
 
 class V5CandidateEvidenceInputFingerprint(_StrictModel):
-    schema_version: Literal["v5_candidate_evidence_input_fingerprint.v1"] = (
+    schema_version: Literal["v5_candidate_evidence_input_fingerprint.v2"] = (
         V5_CANDIDATE_EVIDENCE_FINGERPRINT_SCHEMA
     )
     quant_lab_commit: str = Field(min_length=40, max_length=40)
@@ -96,13 +95,9 @@ class V5CandidateEvidenceInputFingerprint(_StrictModel):
     mode: Literal["incremental"] = "incremental"
     lookback_days: Literal[8] = 8
     horizon_hours: tuple[int, ...] = V5_CANDIDATE_EVIDENCE_HORIZONS
-    candidate_label_schema_version: Literal["v5.candidate_label.v1"] = (
-        "v5.candidate_label.v1"
-    )
-    strategy_evidence_version: Literal["strategy-evidence-v0.1"] = (
-        "strategy-evidence-v0.1"
-    )
-    projection_version: Literal["v5_candidate_evidence_projection.v1"] = (
+    candidate_label_schema_version: Literal["v5.candidate_label.v1"] = "v5.candidate_label.v1"
+    strategy_evidence_version: Literal["strategy-evidence-v0.1"] = "strategy-evidence-v0.1"
+    projection_version: Literal["v5_candidate_evidence_projection.v2"] = (
         V5_CANDIDATE_EVIDENCE_PROJECTION_VERSION
     )
     event_window_start: datetime
@@ -177,7 +172,7 @@ class V5CandidateEvidenceSnapshotFile(_StrictModel):
 
 
 class V5CandidateEvidenceSnapshotManifest(_StrictModel):
-    schema_version: Literal["quant_lab_v5_candidate_evidence_snapshot.v1"] = (
+    schema_version: Literal["quant_lab_v5_candidate_evidence_snapshot.v2"] = (
         V5_CANDIDATE_EVIDENCE_SNAPSHOT_SCHEMA
     )
     task_type: Literal["v5_candidate_evidence"] = V5_CANDIDATE_EVIDENCE_TASK_TYPE
@@ -189,13 +184,9 @@ class V5CandidateEvidenceSnapshotManifest(_StrictModel):
     lookback_days: Literal[8] = 8
     horizon_hours: tuple[int, ...] = V5_CANDIDATE_EVIDENCE_HORIZONS
     include_historical_outcomes: Literal[False] = False
-    candidate_label_schema_version: Literal["v5.candidate_label.v1"] = (
-        "v5.candidate_label.v1"
-    )
-    strategy_evidence_version: Literal["strategy-evidence-v0.1"] = (
-        "strategy-evidence-v0.1"
-    )
-    projection_version: Literal["v5_candidate_evidence_projection.v1"] = (
+    candidate_label_schema_version: Literal["v5.candidate_label.v1"] = "v5.candidate_label.v1"
+    strategy_evidence_version: Literal["strategy-evidence-v0.1"] = "strategy-evidence-v0.1"
+    projection_version: Literal["v5_candidate_evidence_projection.v2"] = (
         V5_CANDIDATE_EVIDENCE_PROJECTION_VERSION
     )
     candidate_event_digest: str = Field(min_length=64, max_length=64)
@@ -210,6 +201,7 @@ class V5CandidateEvidenceSnapshotManifest(_StrictModel):
     max_event_ts: datetime | None = None
     candidate_symbols: tuple[str, ...] = ()
     candidate_run_ids: tuple[str, ...] = ()
+    run_summary_run_ids: tuple[str, ...] = ()
     selected_timeframes: tuple[tuple[str, str], ...] = ()
     candidate_event_row_count: int = Field(ge=0)
     candidate_event_file_count: int = Field(ge=0)
@@ -257,6 +249,8 @@ class V5CandidateEvidenceSnapshotManifest(_StrictModel):
             raise ValueError("v5 candidate evidence symbols must be sorted and unique")
         if self.candidate_run_ids != tuple(sorted(set(self.candidate_run_ids))):
             raise ValueError("v5 candidate evidence run ids must be sorted and unique")
+        if self.run_summary_run_ids != tuple(sorted(set(self.run_summary_run_ids))):
+            raise ValueError("v5 candidate evidence summary run ids must be sorted and unique")
         if self.selected_timeframes != tuple(sorted(set(self.selected_timeframes))):
             raise ValueError("v5 candidate evidence timeframes must be sorted and unique")
         if any(symbol not in self.candidate_symbols for symbol, _ in self.selected_timeframes):
@@ -272,9 +266,7 @@ class V5CandidateEvidenceSnapshotManifest(_StrictModel):
             raise ValueError("v5 candidate evidence snapshot byte count mismatch")
         if self.total_input_rows != sum(item.row_count for item in self.files):
             raise ValueError("v5 candidate evidence snapshot row count mismatch")
-        if self.estimated_uncompressed_bytes != sum(
-            item.uncompressed_bytes for item in self.files
-        ):
+        if self.estimated_uncompressed_bytes != sum(item.uncompressed_bytes for item in self.files):
             raise ValueError("v5 candidate evidence snapshot uncompressed count mismatch")
         paths = [item.relative_path for item in self.files]
         if len(paths) != len(set(paths)):
@@ -283,7 +275,7 @@ class V5CandidateEvidenceSnapshotManifest(_StrictModel):
 
 
 class V5CandidateEvidenceTask(V5CandidateEvidenceTaskPayload):
-    schema_version: Literal["quant_lab_v5_candidate_evidence_task.v1"] = (
+    schema_version: Literal["quant_lab_v5_candidate_evidence_task.v2"] = (
         V5_CANDIDATE_EVIDENCE_TASK_SCHEMA
     )
     task_type: Literal["v5_candidate_evidence"] = V5_CANDIDATE_EVIDENCE_TASK_TYPE
@@ -330,6 +322,7 @@ class V5CandidateEvidenceTask(V5CandidateEvidenceTaskPayload):
             include_historical_outcomes=self.include_historical_outcomes,
             candidate_label_schema_version=self.candidate_label_schema_version,
             strategy_evidence_version=self.strategy_evidence_version,
+            projection_version=self.projection_version,
         )
 
 
@@ -362,15 +355,11 @@ class V5CandidateEvidenceOutputDataset(_StrictModel):
         _require_optional_bounds(self.min_ts, self.max_ts, "result partition")
         expected_keys = {
             "v5_candidate_label_delta": V5_CANDIDATE_LABEL_DELTA_PRIMARY_KEYS,
-            "strategy_evidence_sample_delta": (
-                V5_STRATEGY_EVIDENCE_SAMPLE_DELTA_PRIMARY_KEYS
-            ),
+            "strategy_evidence_sample_delta": (V5_STRATEGY_EVIDENCE_SAMPLE_DELTA_PRIMARY_KEYS),
         }
         if self.primary_keys != expected_keys[self.dataset_name]:
             raise ValueError(f"{self.dataset_name} primary keys mismatch")
-        prefix = (
-            f"outputs/{self.dataset_name}/date={self.partition_date.isoformat()}/"
-        )
+        prefix = f"outputs/{self.dataset_name}/date={self.partition_date.isoformat()}/"
         if not self.relative_path.startswith(prefix):
             raise ValueError(f"{self.dataset_name} partition path mismatch")
         if self.row_count == 0 and (self.min_ts is not None or self.max_ts is not None):
@@ -408,7 +397,7 @@ class V5CandidateEvidenceAntiLeakageCheck(_StrictModel):
 
 
 class V5CandidateEvidenceResultManifest(_StrictModel):
-    schema_version: Literal["quant_lab_v5_candidate_evidence_result.v1"] = (
+    schema_version: Literal["quant_lab_v5_candidate_evidence_result.v2"] = (
         V5_CANDIDATE_EVIDENCE_RESULT_SCHEMA
     )
     task_type: Literal["v5_candidate_evidence"] = V5_CANDIDATE_EVIDENCE_TASK_TYPE
@@ -428,20 +417,17 @@ class V5CandidateEvidenceResultManifest(_StrictModel):
     lookback_days: Literal[8] = 8
     horizon_hours: tuple[int, ...] = V5_CANDIDATE_EVIDENCE_HORIZONS
     include_historical_outcomes: Literal[False] = False
-    candidate_label_schema_version: Literal["v5.candidate_label.v1"] = (
-        "v5.candidate_label.v1"
-    )
-    strategy_evidence_version: Literal["strategy-evidence-v0.1"] = (
-        "strategy-evidence-v0.1"
+    candidate_label_schema_version: Literal["v5.candidate_label.v1"] = "v5.candidate_label.v1"
+    strategy_evidence_version: Literal["strategy-evidence-v0.1"] = "strategy-evidence-v0.1"
+    projection_version: Literal["v5_candidate_evidence_projection.v2"] = (
+        V5_CANDIDATE_EVIDENCE_PROJECTION_VERSION
     )
     generation_id: str = Field(min_length=1, max_length=180)
     generated_at: datetime
     completed_at: datetime
     outputs: tuple[V5CandidateEvidenceOutputDataset, ...] = Field(min_length=2)
     reports: tuple[V5CandidateEvidenceReportFile, ...] = Field(min_length=2, max_length=2)
-    anti_leakage_checks: tuple[V5CandidateEvidenceAntiLeakageCheck, ...] = Field(
-        min_length=28
-    )
+    anti_leakage_checks: tuple[V5CandidateEvidenceAntiLeakageCheck, ...] = Field(min_length=30)
     anti_leakage_status: Literal["PASS"] = "PASS"
     anti_leakage_violation_count: Literal[0] = 0
     warnings: tuple[str, ...] = ()
@@ -519,7 +505,7 @@ class V5CandidateEvidenceResultManifest(_StrictModel):
 
 
 class V5CandidateEvidenceWorkerReceipt(_StrictModel):
-    schema_version: Literal["quant_lab_v5_candidate_evidence_receipt.v1"] = (
+    schema_version: Literal["quant_lab_v5_candidate_evidence_receipt.v2"] = (
         V5_CANDIDATE_EVIDENCE_RECEIPT_SCHEMA
     )
     task_type: Literal["v5_candidate_evidence"] = V5_CANDIDATE_EVIDENCE_TASK_TYPE

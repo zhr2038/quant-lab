@@ -9,6 +9,7 @@ from quant_lab.research_plane.contracts import (
     RESEARCH_RESULT_ADAPTER,
     RESEARCH_SNAPSHOT_ADAPTER,
     RESEARCH_TASK_ADAPTER,
+    V5_CANDIDATE_EVIDENCE_FINGERPRINT_SCHEMA,
     FactorFactoryResultManifest,
     FactorFactorySnapshotManifest,
     FactorFactoryTask,
@@ -220,9 +221,7 @@ def _research_plane_status_for_type(
         if task_type == "factor_factory":
             selected_payload.update(_factor_factory_status_details(queue_root, selected))
         elif task_type == "v5_candidate_evidence":
-            selected_payload.update(
-                _v5_candidate_evidence_status_details(queue_root, selected)
-            )
+            selected_payload.update(_v5_candidate_evidence_status_details(queue_root, selected))
     state = selected.state.value if selected else "idle"
     snapshot_root = queue_root / "snapshots"
     transient_snapshot_task = task_type in {"factor_factory", "v5_candidate_evidence"}
@@ -328,9 +327,7 @@ def _research_plane_status_for_type(
                 ),
                 "last_completed_at": completed_at.isoformat() if completed_at else None,
                 "input_fingerprint": request.get("input_fingerprint"),
-                "pending_running_state": (
-                    active.state.value if active is not None else None
-                ),
+                "pending_running_state": (active.state.value if active is not None else None),
                 "fingerprint_matches_generation": bool(
                     request.get("fingerprint_matches_generation", False)
                 ),
@@ -500,11 +497,7 @@ def _v5_candidate_evidence_status_details(
             if isinstance(snapshot, V5CandidateEvidenceSnapshotManifest):
                 snapshot_root = queue_root / "snapshots" / task.snapshot_id
                 payload_state = "sealed"
-                if any(
-                    (queue_root / "snapshots").glob(
-                        f".rehydrate.{task.snapshot_id}.*.partial"
-                    )
-                ):
+                if any((queue_root / "snapshots").glob(f".rehydrate.{task.snapshot_id}.*.partial")):
                     payload_state = "rehydrating"
                 elif (snapshot_root / "FILES_RELEASED.json").is_file():
                     payload_state = "released"
@@ -515,7 +508,7 @@ def _v5_candidate_evidence_status_details(
                 details.update(
                     {
                         "input_fingerprint": {
-                            "schema_version": "v5_candidate_evidence_input_fingerprint.v1",
+                            "schema_version": V5_CANDIDATE_EVIDENCE_FINGERPRINT_SCHEMA,
                             "projection_version": snapshot.projection_version,
                             "input_fingerprint_digest": snapshot.input_fingerprint_digest,
                             "candidate_event_digest": snapshot.candidate_event_digest,
@@ -524,6 +517,7 @@ def _v5_candidate_evidence_status_details(
                             "candidate_event_row_count": snapshot.candidate_event_row_count,
                             "market_bar_row_count": snapshot.market_bar_row_count,
                             "run_summary_row_count": snapshot.run_summary_row_count,
+                            "run_summary_run_ids": list(snapshot.run_summary_run_ids),
                         },
                         "snapshot_payload_state": payload_state,
                         "compressed_input_bytes": snapshot.total_input_bytes,

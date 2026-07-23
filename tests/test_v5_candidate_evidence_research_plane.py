@@ -5,7 +5,7 @@ import os
 import shutil
 import subprocess
 import tempfile
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -20,15 +20,18 @@ from quant_lab import cli as cli_module
 from quant_lab.cli import app
 from quant_lab.data.lake import read_parquet_dataset
 from quant_lab.research.candidate_labels import LABEL_SCHEMA, build_and_publish_candidate_labels
+from quant_lab.research.expanded_universe import build_and_publish_expanded_crypto_universe_shadow
 from quant_lab.research.strategy_evidence import (
     SAMPLE_SCHEMA,
     SUMMARY_SCHEMA,
     build_and_publish_strategy_evidence,
+    summarize_strategy_evidence,
 )
 from quant_lab.research_plane import importer as importer_module
 from quant_lab.research_plane import queue as queue_module
 from quant_lab.research_plane import v5_candidate_evidence_publish as publish_module
 from quant_lab.research_plane import v5_candidate_evidence_result as result_module
+from quant_lab.research_plane.contracts import RESEARCH_TASK_ADAPTER
 from quant_lab.research_plane.importer import (
     import_entry_quality_history_result,
     validate_entry_quality_history_result_for_import,
@@ -43,6 +46,7 @@ from quant_lab.research_plane.snapshot_gc import release_snapshot_payload
 from quant_lab.research_plane.status import research_plane_status
 from quant_lab.research_plane.v5_candidate_evidence_contracts import (
     V5_CANDIDATE_EVIDENCE_HORIZONS,
+    V5_CANDIDATE_EVIDENCE_PROJECTION_VERSION,
     V5CandidateEvidenceSnapshotManifest,
     V5CandidateEvidenceTask,
     V5CandidateEvidenceTaskPayload,
@@ -80,6 +84,8 @@ def test_v5_candidate_evidence_contract_is_strict() -> None:
     assert payload.lookback_days == 8
     assert payload.horizon_hours == V5_CANDIDATE_EVIDENCE_HORIZONS
     assert payload.include_historical_outcomes is False
+    assert payload.projection_version == V5_CANDIDATE_EVIDENCE_PROJECTION_VERSION
+    assert payload.projection_version.endswith(".v2")
 
     with pytest.raises(ValueError, match="horizons must match"):
         V5CandidateEvidenceTaskPayload(
@@ -215,6 +221,7 @@ def test_v5_candidate_evidence_fingerprint_is_projection_scoped(tmp_path: Path) 
     )
     assert original.candidate_symbols == ("BTC-USDT-SWAP",)
     assert original.candidate_run_ids == ("run-1",)
+    assert original.run_summary_run_ids == ("run-1", "run-2")
     assert original.selected_timeframes == (("BTC-USDT-SWAP", "1H"),)
     assert original.market_window_start == datetime(2026, 7, 9, 0, 30, tzinfo=UTC)
 
@@ -275,11 +282,31 @@ def test_v5_candidate_evidence_fingerprint_is_projection_scoped(tmp_path: Path) 
         as_of_date=date(2026, 7, 10),
         quant_lab_commit=COMMIT,
     )
-    assert unrelated_run.snapshot_id == original.snapshot_id
-
-    relevant_event_path = (
-        lake / "silver" / "v5_candidate_event" / "new-relevant-event.parquet"
+    assert unrelated_run.snapshot_id != original.snapshot_id
+    assert unrelated_run.input_fingerprint.run_summary_digest != (
+        original.input_fingerprint.run_summary_digest
     )
+    assert unrelated_run.run_summary_run_ids == ("run-1", "run-2", "run-unrelated")
+
+    _write_rows(
+        lake / "silver" / "v5_run_summary" / "outside-window.parquet",
+        [
+            {
+                "run_id": "run-outside-window",
+                "bundle_ts": datetime(2026, 6, 1, tzinfo=UTC),
+                "block_reason": "outside-window",
+            }
+        ],
+    )
+    outside_window_run = preflight_v5_candidate_evidence_snapshot(
+        lake,
+        queue,
+        as_of_date=date(2026, 7, 10),
+        quant_lab_commit=COMMIT,
+    )
+    assert outside_window_run.snapshot_id == unrelated_run.snapshot_id
+
+    relevant_event_path = lake / "silver" / "v5_candidate_event" / "new-relevant-event.parquet"
     _write_rows(
         relevant_event_path,
         [
@@ -451,6 +478,23 @@ def test_v5_candidate_evidence_task_signature_and_snapshot_bindings_are_strict(
     snapshot = V5CandidateEvidenceSnapshotManifest.model_validate_json(
         (snapshot_root / "manifest.json").read_text("utf-8")
     )
+    assert task.schema_version.endswith(".v2")
+    assert snapshot.schema_version.endswith(".v2")
+    assert task.projection_version == snapshot.projection_version
+    with pytest.raises(ValueError):
+        RESEARCH_TASK_ADAPTER.validate_python(
+            {
+                **task.model_dump(mode="json"),
+                "schema_version": "quant_lab_v5_candidate_evidence_task.v1",
+            }
+        )
+    with pytest.raises(ValueError):
+        V5CandidateEvidenceSnapshotManifest.model_validate(
+            {
+                **snapshot.model_dump(mode="json"),
+                "schema_version": "quant_lab_v5_candidate_evidence_snapshot.v1",
+            }
+        )
     validate_research_task_snapshot(
         task,
         snapshot,
@@ -590,9 +634,7 @@ def test_v5_candidate_evidence_stale_rehydrate_partial_cleanup(tmp_path: Path) -
     (partial / "REHYDRATE.json").write_text(
         json.dumps(
             {
-                "schema_version": (
-                    "quant_lab_v5_candidate_evidence_snapshot_rehydrate.v1"
-                ),
+                "schema_version": ("quant_lab_v5_candidate_evidence_snapshot_rehydrate.v1"),
                 "snapshot_id": "v5-test",
                 "manifest_sha256": "a" * 64,
                 "started_at": datetime(2026, 7, 10, tzinfo=UTC).isoformat(),
@@ -668,17 +710,11 @@ def test_v5_candidate_evidence_worker_is_symbol_staged_and_decision_free(
     assert labels.get_column("horizon_hours").sort().to_list() == list(
         V5_CANDIDATE_EVIDENCE_HORIZONS
     )
-    assert labels.get_column("strategy_candidate").unique().to_list() == [
-        "alt_impulse_shadow"
-    ]
-    assert samples.get_column("strategy_candidate").unique().to_list() == [
-        "v5.alt_impulse_shadow"
-    ]
+    assert labels.get_column("strategy_candidate").unique().to_list() == ["alt_impulse_shadow"]
+    assert samples.get_column("strategy_candidate").unique().to_list() == ["v5.alt_impulse_shadow"]
     assert "decision" not in samples.columns
     assert compute.anti_leakage["status"] == "PASS"
-    assert len(compute.anti_leakage["checks"]) == len(
-        V5_CANDIDATE_EVIDENCE_ANTI_LEAKAGE_CHECKS
-    )
+    assert len(compute.anti_leakage["checks"]) == len(V5_CANDIDATE_EVIDENCE_ANTI_LEAKAGE_CHECKS)
     assert all(item["violation_count"] == 0 for item in compute.anti_leakage["checks"])
 
     worker_key = Ed25519PrivateKey.generate()
@@ -828,18 +864,67 @@ def test_v5_candidate_evidence_worker_is_symbol_staged_and_decision_free(
     shared_summary = pl.read_parquet(lake / "gold" / "strategy_evidence" / "data.parquet")
     assert shared_sample.filter(pl.col("source") == "research.alpha_factory.test").height == 2
     assert shared_summary.filter(pl.col("source") == "research.alpha_factory.test").height == 1
-    assert shared_summary.filter(
+    assert (
+        shared_summary.filter(pl.col("source") == "research.strategy_evidence.v0.1")
+        .get_column("decision")
+        .is_in(
+            [
+                "RESEARCH_ONLY",
+                "KEEP_SHADOW",
+                "REGIME_SHADOW",
+                "KILL",
+                "PAPER_READY",
+                "LIVE_SMALL_READY",
+            ]
+        )
+        .all()
+    )
+    managed_summary_before = shared_summary.filter(
         pl.col("source") == "research.strategy_evidence.v0.1"
-    ).get_column("decision").is_in(
-        [
-            "RESEARCH_ONLY",
-            "KEEP_SHADOW",
-            "REGIME_SHADOW",
-            "KILL",
-            "PAPER_READY",
-            "LIVE_SMALL_READY",
-        ]
-    ).all()
+    )
+    generation_pointer = json.loads(
+        (lake / "gold" / "v5_candidate_evidence_generation.json").read_text("utf-8")
+    )
+    managed_summary_columns = generation_pointer["managed_columns"]["strategy_evidence"]
+    managed_summary_before = managed_summary_before.select(managed_summary_columns)
+    managed_summary_hash = publish_module._managed_dataset_digest(
+        lake / "gold" / "strategy_evidence",
+        "strategy_evidence",
+        managed_columns=managed_summary_columns,
+    )
+    expanded = build_and_publish_expanded_crypto_universe_shadow(
+        lake,
+        as_of_date="2026-07-10",
+        min_quote_volume_24h=0.0,
+        max_spread_bps=1_000_000.0,
+        min_coverage_bars=1,
+        min_price=0.0,
+    )
+    assert expanded.strategy_evidence_rows > 0
+    managed_summary_after = (
+        read_parquet_dataset(lake / "gold" / "strategy_evidence")
+        .filter(pl.col("source") == "research.strategy_evidence.v0.1")
+        .select(managed_summary_columns)
+    )
+    assert_frame_equal(
+        managed_summary_after,
+        managed_summary_before,
+        check_row_order=False,
+        check_column_order=False,
+    )
+    assert (
+        publish_module._managed_dataset_digest(
+            lake / "gold" / "strategy_evidence",
+            "strategy_evidence",
+            managed_columns=managed_summary_columns,
+        )
+        == managed_summary_hash
+    )
+    verify_v5_candidate_evidence_generation_fast(
+        lake,
+        manifest.generation_id,
+        expected_input_fingerprint=manifest.input_fingerprint_digest,
+    )
 
     def materializer_must_not_run(*_args: object, **_kwargs: object) -> None:
         raise AssertionError("snapshot materializer ran on no-change fast path")
@@ -869,9 +954,7 @@ def test_v5_candidate_evidence_worker_is_symbol_staged_and_decision_free(
     assert no_change.snapshot_materialized is False
 
     label_path = lake / "gold" / "v5_candidate_label" / "data.parquet"
-    damaged = pl.read_parquet(label_path).with_columns(
-        (pl.col("cost_bps") + 1.0).alias("cost_bps")
-    )
+    damaged = pl.read_parquet(label_path).with_columns((pl.col("cost_bps") + 1.0).alias("cost_bps"))
     damaged.write_parquet(label_path)
     with pytest.raises(RuntimeError, match="dataset_hash_mismatch"):
         verify_v5_candidate_evidence_generation_fast(lake, manifest.generation_id)
@@ -890,6 +973,228 @@ def test_v5_candidate_evidence_worker_is_symbol_staged_and_decision_free(
     assert integrity_failure.task_created is False
 
 
+def test_v5_candidate_evidence_snapshot_worker_and_labels_share_symbol_fallback(
+    tmp_path: Path,
+) -> None:
+    lake = tmp_path / "lake"
+    queue = tmp_path / "queue"
+    event_ts = datetime(2026, 7, 9, 0, 30, tzinfo=UTC)
+    symbol_cases = [
+        ("candidate-btc", "run-btc", "btc/usdt", "ETH-USDT", None, None, "{}"),
+        ("candidate-eth", "run-eth", "null", "eth_usdt", None, None, "{}"),
+        ("candidate-sol", "run-sol", None, None, "sol-usdt", None, "{}"),
+        ("candidate-bnb", "run-bnb", "", None, "na", "bnb/usdt", "{}"),
+        (
+            "candidate-xrp",
+            "run-xrp",
+            None,
+            None,
+            None,
+            None,
+            json.dumps({"instId": "xrp_usdt"}),
+        ),
+    ]
+    event_rows = [
+        {
+            "strategy": "v5",
+            "candidate_id": candidate_id,
+            "run_id": run_id,
+            "ts_utc": event_ts,
+            "symbol": symbol,
+            "normalized_symbol": normalized_symbol,
+            "inst_id": inst_id,
+            "instId": inst_id_camel,
+            "raw_payload_json": raw_payload_json,
+            "strategy_candidate": "v5.alt_impulse_shadow",
+            "cost_bps": 8.0,
+            "cost_source": "global_default",
+            "bundle_sha256": "b" * 64,
+            "source_path_inside_bundle": "candidate/events.json",
+        }
+        for (
+            candidate_id,
+            run_id,
+            symbol,
+            normalized_symbol,
+            inst_id,
+            inst_id_camel,
+            raw_payload_json,
+        ) in symbol_cases
+    ]
+    primary_row = {
+        key: value
+        for key, value in event_rows[0].items()
+        if key not in {"normalized_symbol", "inst_id", "instId", "raw_payload_json"}
+    }
+    _write_rows(
+        lake / "silver" / "v5_candidate_event" / "00-primary.parquet",
+        [primary_row],
+    )
+    _write_rows(
+        lake / "silver" / "v5_candidate_event" / "01-fallbacks.parquet",
+        event_rows[1:],
+    )
+    canonical_symbols = ("BNB-USDT", "BTC-USDT", "ETH-USDT", "SOL-USDT", "XRP-USDT")
+    market_rows: list[dict[str, object]] = []
+    for symbol in canonical_symbols:
+        hours = 130 if symbol == "BTC-USDT" else 2
+        market_rows.extend(
+            _market_row(
+                symbol=symbol,
+                timeframe="1H",
+                ts=datetime(2026, 7, 9, hour=1, tzinfo=UTC) + timedelta(hours=index),
+                close=100.0 + index,
+            )
+            for index in range(hours)
+        )
+    _write_rows(lake / "silver" / "market_bar" / "bars.parquet", market_rows)
+    _write_rows(
+        lake / "silver" / "v5_run_summary" / "runs.parquet",
+        [
+            {
+                "run_id": run_id,
+                "bundle_ts": datetime(2026, 7, 9, index, tzinfo=UTC),
+            }
+            for index, (_, run_id, *_rest) in enumerate(symbol_cases)
+        ],
+    )
+
+    key = Ed25519PrivateKey.generate()
+    preflight = preflight_v5_candidate_evidence_snapshot(
+        lake,
+        queue,
+        as_of_date=date(2026, 7, 10),
+        quant_lab_commit=COMMIT,
+    )
+    assert preflight.candidate_symbols == canonical_symbols
+    assert tuple(symbol for symbol, _ in preflight.selected_timeframes) == canonical_symbols
+    created = materialize_v5_candidate_evidence_snapshot(
+        preflight,
+        signing_key=key,
+        signature_key_id="test-cloud-key",
+        max_input_bytes=10 * 1024 * 1024,
+        max_input_uncompressed_bytes=10 * 1024 * 1024,
+        max_input_rows=10_000,
+    )
+    task = V5CandidateEvidenceTask(
+        task_id="v5-candidate-evidence-symbol-fallback",
+        snapshot_id=created.manifest.snapshot_id,
+        input_fingerprint_digest=created.manifest.input_fingerprint_digest,
+        quant_lab_commit=COMMIT,
+        snapshot_manifest_sha256=created.manifest.manifest_sha256,
+        as_of_date=date(2026, 7, 10),
+        requested_at=datetime(2026, 7, 10, 12, tzinfo=UTC),
+        signature_key_id="test-cloud-key",
+        signature="test-signature",
+    )
+    compute = compute_v5_candidate_evidence_result(
+        queue / "snapshots" / created.manifest.snapshot_id,
+        created.manifest,
+        task,
+        max_snapshot_bytes=10 * 1024 * 1024,
+        max_input_uncompressed_bytes=10 * 1024 * 1024,
+        max_input_rows=10_000,
+        min_free_disk_bytes=0,
+        work_dir=tmp_path / "worker-fallback",
+    )
+    labels = compute.labels.collect(LABEL_SCHEMA)
+    samples = compute.samples.collect(SAMPLE_SCHEMA)
+    symbol_by_candidate = {
+        row["candidate_id"]: row["symbol"]
+        for row in labels.unique(subset=["candidate_id"]).to_dicts()
+    }
+    assert symbol_by_candidate == {
+        "candidate-bnb": "BNB-USDT",
+        "candidate-btc": "BTC-USDT",
+        "candidate-eth": "ETH-USDT",
+        "candidate-sol": "SOL-USDT",
+        "candidate-xrp": "XRP-USDT",
+    }
+    assert set(
+        labels.filter(pl.col("candidate_id") == "candidate-btc")["label_status"].to_list()
+    ) == {"complete"}
+    assert "partial" in set(
+        labels.filter(pl.col("candidate_id") == "candidate-eth")["label_status"].to_list()
+    )
+    checks = {item["check_name"]: item for item in compute.anti_leakage["checks"]}
+    assert checks["candidate_event_symbol_fallback_matches_label"]["status"] == "PASS"
+    assert checks["worker_symbol_groups_match_snapshot_manifest"]["status"] == "PASS"
+
+    _write_rows(
+        lake / "silver" / "market_bar" / "eth-future-bars.parquet",
+        [
+            _market_row(
+                symbol="ETH-USDT",
+                timeframe="1H",
+                ts=datetime(2026, 7, 9, 3, tzinfo=UTC) + timedelta(hours=index),
+                close=102.0 + index,
+            )
+            for index in range(128)
+        ],
+    )
+    refreshed_preflight = preflight_v5_candidate_evidence_snapshot(
+        lake,
+        queue,
+        as_of_date=date(2026, 7, 10),
+        quant_lab_commit=COMMIT,
+    )
+    assert refreshed_preflight.snapshot_id != preflight.snapshot_id
+    assert refreshed_preflight.input_fingerprint.market_bar_digest != (
+        preflight.input_fingerprint.market_bar_digest
+    )
+    refreshed = materialize_v5_candidate_evidence_snapshot(
+        refreshed_preflight,
+        signing_key=key,
+        signature_key_id="test-cloud-key",
+        max_input_bytes=10 * 1024 * 1024,
+        max_input_uncompressed_bytes=10 * 1024 * 1024,
+        max_input_rows=10_000,
+    )
+    refreshed_task = V5CandidateEvidenceTask(
+        task_id="v5-candidate-evidence-symbol-fallback-refresh",
+        snapshot_id=refreshed.manifest.snapshot_id,
+        input_fingerprint_digest=refreshed.manifest.input_fingerprint_digest,
+        quant_lab_commit=COMMIT,
+        snapshot_manifest_sha256=refreshed.manifest.manifest_sha256,
+        as_of_date=date(2026, 7, 10),
+        requested_at=datetime(2026, 7, 10, 13, tzinfo=UTC),
+        signature_key_id="test-cloud-key",
+        signature="test-signature",
+    )
+    refreshed_compute = compute_v5_candidate_evidence_result(
+        queue / "snapshots" / refreshed.manifest.snapshot_id,
+        refreshed.manifest,
+        refreshed_task,
+        max_snapshot_bytes=10 * 1024 * 1024,
+        max_input_uncompressed_bytes=10 * 1024 * 1024,
+        max_input_rows=10_000,
+        min_free_disk_bytes=0,
+        work_dir=tmp_path / "worker-fallback-refresh",
+    )
+    refreshed_labels = refreshed_compute.labels.collect(LABEL_SCHEMA).filter(
+        pl.col("candidate_id") == "candidate-eth"
+    )
+    refreshed_samples = refreshed_compute.samples.collect(SAMPLE_SCHEMA).filter(
+        pl.col("candidate_id") == "candidate-eth"
+    )
+    first_eth_keys = set(
+        samples.filter(pl.col("candidate_id") == "candidate-eth")
+        .select(["strategy", "candidate_id", "horizon_hours"])
+        .iter_rows()
+    )
+    assert (
+        set(refreshed_labels.select(["strategy", "candidate_id", "horizon_hours"]).iter_rows())
+        == first_eth_keys
+    )
+    assert set(refreshed_labels["label_status"].to_list()) == {"complete"}
+    assert set(refreshed_samples["label_status"].to_list()) == {"complete"}
+    refreshed_summary = summarize_strategy_evidence(
+        refreshed_samples,
+        as_of_date=date(2026, 7, 10),
+    )
+    assert all(row["complete_sample_count"] == 1 for row in refreshed_summary)
+
+
 def test_v5_candidate_evidence_six_gold_tables_match_legacy_fixed_fixture(
     tmp_path: Path,
 ) -> None:
@@ -898,6 +1203,7 @@ def test_v5_candidate_evidence_six_gold_tables_match_legacy_fixed_fixture(
     plane_lake = tmp_path / "plane-lake"
     queue = tmp_path / "queue"
     _seed_snapshot_sources(source)
+    _extend_parity_fallback_sources(source)
     shutil.copytree(source, legacy_lake)
     shutil.copytree(source, plane_lake)
 
@@ -930,9 +1236,7 @@ def test_v5_candidate_evidence_six_gold_tables_match_legacy_fixed_fixture(
     )
     assert created.task is not None
     snapshot = V5CandidateEvidenceSnapshotManifest.model_validate_json(
-        (
-            queue / "snapshots" / created.snapshot_id / "manifest.json"
-        ).read_text("utf-8")
+        (queue / "snapshots" / created.snapshot_id / "manifest.json").read_text("utf-8")
     )
     compute = compute_v5_candidate_evidence_result(
         queue / "snapshots" / created.snapshot_id,
@@ -984,6 +1288,40 @@ def test_v5_candidate_evidence_six_gold_tables_match_legacy_fixed_fixture(
         validated,
         snapshot_root=queue / "snapshots" / created.snapshot_id,
     )
+
+    candidate_quality = read_parquet_dataset(
+        plane_lake / "gold" / "v5_candidate_quality_daily"
+    ).to_dicts()[0]
+    assert snapshot.run_summary_run_ids == (
+        "run-1",
+        "run-2",
+        "run-inst-id",
+        "run-instId",
+        "run-normalized",
+    )
+    assert candidate_quality["run_count"] == 5
+    assert candidate_quality["runs_with_candidate_event"] == 4
+    assert candidate_quality["runs_without_candidate_event"] == 1
+    assert json.loads(candidate_quality["runs_without_candidate_event_json"]) == ["run-2"]
+    assert candidate_quality["status"] == "WARN"
+    assert "runs_without_candidate_event" in candidate_quality["warnings_json"]
+    labels = read_parquet_dataset(plane_lake / "gold" / "v5_candidate_label")
+    assert {
+        row["candidate_id"]: row["symbol"]
+        for row in labels.unique(subset=["candidate_id"]).to_dicts()
+    } == {
+        "candidate-1": "BTC-USDT-SWAP",
+        "candidate-inst-id": "SOL-USDT-SWAP",
+        "candidate-instId": "BNB-USDT-SWAP",
+        "candidate-normalized": "ETH-USDT-SWAP",
+    }
+    assert set(
+        labels.filter(pl.col("candidate_id") == "candidate-normalized")["label_status"].to_list()
+    ) == {"complete"}
+    assert "partial" in set(
+        labels.filter(pl.col("candidate_id") == "candidate-inst-id")["label_status"].to_list()
+    )
+    assert compute.anti_leakage["status"] == "PASS"
 
     for dataset_name, relative_path in V5_CANDIDATE_EVIDENCE_DATASETS.items():
         legacy = _normalized_parity_frame(
@@ -1202,9 +1540,7 @@ def test_v5_candidate_evidence_running_gets_one_successor_and_late_result_is_rej
     task = first.task
     os.replace(queue / "pending" / task.task_id, queue / "running" / task.task_id)
     snapshot = V5CandidateEvidenceSnapshotManifest.model_validate_json(
-        (
-            queue / "snapshots" / task.snapshot_id / "manifest.json"
-        ).read_text("utf-8")
+        (queue / "snapshots" / task.snapshot_id / "manifest.json").read_text("utf-8")
     )
     compute = compute_v5_candidate_evidence_result(
         queue / "snapshots" / task.snapshot_id,
@@ -1271,9 +1607,7 @@ def test_v5_candidate_evidence_running_gets_one_successor_and_late_result_is_rej
             v5_candidate_evidence_max_partition_uncompressed_bytes=5 * 1024 * 1024,
             v5_candidate_evidence_max_file_count=100,
         )
-    assert not (
-        lake / "gold" / "v5_candidate_evidence_generation.json"
-    ).exists()
+    assert not (lake / "gold" / "v5_candidate_evidence_generation.json").exists()
     assert (queue / "results" / "rejected" / task.task_id).is_dir()
     assert (queue / "failed" / task.task_id).is_dir()
 
@@ -1318,6 +1652,18 @@ def _seed_snapshot_sources(lake: Path) -> None:
                 ts=datetime(2026, 7, 9, 1, tzinfo=UTC),
                 close=99.0,
             ),
+            _market_row(
+                symbol="BTC-USDT",
+                timeframe="1H",
+                ts=datetime(2026, 7, 9, 1, tzinfo=UTC),
+                close=100.0,
+            ),
+            _market_row(
+                symbol="BTC-USDT",
+                timeframe="1H",
+                ts=datetime(2026, 7, 9, 2, tzinfo=UTC),
+                close=101.0,
+            ),
         ],
     )
     _write_rows(
@@ -1327,9 +1673,113 @@ def _seed_snapshot_sources(lake: Path) -> None:
                 "run_id": "run-1",
                 "bundle_ts": datetime(2026, 7, 9, 0, tzinfo=UTC),
                 "block_reason": "none",
-            }
+            },
+            {
+                "run_id": "run-2",
+                "bundle_ts": datetime(2026, 7, 9, 1, tzinfo=UTC),
+                "block_reason": "no_candidate_event",
+            },
         ],
     )
+
+
+def _extend_parity_fallback_sources(lake: Path) -> None:
+    event_path = lake / "silver" / "v5_candidate_event" / "events.parquet"
+    event_ts = datetime(2026, 7, 9, 0, 30, tzinfo=UTC)
+    fallback_events = pl.DataFrame(
+        [
+            {
+                "strategy": "v5",
+                "candidate_id": "candidate-normalized",
+                "run_id": "run-normalized",
+                "ts_utc": event_ts,
+                "symbol": None,
+                "normalized_symbol": "ETH-USDT-SWAP",
+                "inst_id": None,
+                "instId": None,
+                "strategy_candidate": "v5.alt_impulse_shadow",
+                "cost_bps": 8.0,
+                "cost_source": "global_default",
+                "bundle_sha256": "c" * 64,
+                "source_path_inside_bundle": "candidate/normalized.json",
+            },
+            {
+                "strategy": "v5",
+                "candidate_id": "candidate-inst-id",
+                "run_id": "run-inst-id",
+                "ts_utc": event_ts,
+                "symbol": None,
+                "normalized_symbol": None,
+                "inst_id": "SOL-USDT-SWAP",
+                "instId": None,
+                "strategy_candidate": "v5.alt_impulse_shadow",
+                "cost_bps": 8.0,
+                "cost_source": "global_default",
+                "bundle_sha256": "d" * 64,
+                "source_path_inside_bundle": "candidate/inst-id.json",
+            },
+            {
+                "strategy": "v5",
+                "candidate_id": "candidate-instId",
+                "run_id": "run-instId",
+                "ts_utc": event_ts,
+                "symbol": "",
+                "normalized_symbol": "null",
+                "inst_id": "na",
+                "instId": "BNB-USDT-SWAP",
+                "strategy_candidate": "v5.alt_impulse_shadow",
+                "cost_bps": 8.0,
+                "cost_source": "global_default",
+                "bundle_sha256": "e" * 64,
+                "source_path_inside_bundle": "candidate/instId.json",
+            },
+        ],
+        infer_schema_length=None,
+    )
+    pl.concat(
+        [pl.read_parquet(event_path), fallback_events],
+        how="diagonal_relaxed",
+    ).write_parquet(event_path)
+
+    market_path = lake / "silver" / "market_bar" / "bars.parquet"
+    fallback_market: list[dict[str, object]] = []
+    for symbol, hours in (
+        ("ETH-USDT-SWAP", 130),
+        ("SOL-USDT-SWAP", 2),
+        ("BNB-USDT-SWAP", 10),
+    ):
+        fallback_market.extend(
+            _market_row(
+                symbol=symbol,
+                timeframe="1H",
+                ts=datetime(2026, 7, 9, 1, tzinfo=UTC) + timedelta(hours=index),
+                close=100.0 + index,
+            )
+            for index in range(hours)
+        )
+    pl.concat(
+        [pl.read_parquet(market_path), pl.DataFrame(fallback_market)],
+        how="diagonal_relaxed",
+    ).write_parquet(market_path)
+
+    run_path = lake / "silver" / "v5_run_summary" / "runs.parquet"
+    fallback_runs = pl.DataFrame(
+        [
+            {
+                "run_id": run_id,
+                "bundle_ts": datetime(2026, 7, 9, hour, tzinfo=UTC),
+                "block_reason": "none",
+            }
+            for hour, run_id in enumerate(
+                ("run-normalized", "run-inst-id", "run-instId"),
+                start=2,
+            )
+        ]
+    )
+    pl.concat(
+        [pl.read_parquet(run_path), fallback_runs],
+        how="diagonal_relaxed",
+    ).write_parquet(run_path)
 
 
 def _market_row(
@@ -1344,9 +1794,12 @@ def _market_row(
         "symbol": symbol,
         "timeframe": timeframe,
         "ts": ts,
+        "open": close,
         "close": close,
         "high": close + 1.0,
         "low": close - 1.0,
+        "volume": 100.0,
+        "quote_volume": close * 100.0,
         "is_closed": is_closed,
     }
 
@@ -1371,18 +1824,23 @@ def _normalized_parity_frame(
 
 
 def _seed_other_strategy_evidence_source(lake: Path, samples: pl.DataFrame) -> None:
-    sample = samples.head(1).with_columns(
-        [
-            pl.lit("alpha").alias("strategy"),
-            pl.lit("alpha-candidate-1").alias("candidate_id"),
-            pl.lit("alpha-run-1").alias("run_id"),
-            pl.lit("alpha.strategy").alias("strategy_candidate"),
-            pl.lit("alpha.strategy").alias("candidate_name"),
-            pl.lit("alpha_factory").alias("source_type"),
-            pl.lit("alpha-event-1").alias("source_event_key"),
-            pl.lit("research.alpha_factory.test").alias("source"),
-        ]
-    ).select(list(SAMPLE_SCHEMA)).cast(SAMPLE_SCHEMA, strict=True)
+    sample = (
+        samples.head(1)
+        .with_columns(
+            [
+                pl.lit("alpha").alias("strategy"),
+                pl.lit("alpha-candidate-1").alias("candidate_id"),
+                pl.lit("alpha-run-1").alias("run_id"),
+                pl.lit("alpha.strategy").alias("strategy_candidate"),
+                pl.lit("alpha.strategy").alias("candidate_name"),
+                pl.lit("alpha_factory").alias("source_type"),
+                pl.lit("alpha-event-1").alias("source_event_key"),
+                pl.lit("research.alpha_factory.test").alias("source"),
+            ]
+        )
+        .select(list(SAMPLE_SCHEMA))
+        .cast(SAMPLE_SCHEMA, strict=True)
+    )
     sample_path = lake / "gold" / "strategy_evidence_sample" / "data.parquet"
     sample_path.parent.mkdir(parents=True, exist_ok=True)
     pl.concat([sample, sample]).write_parquet(sample_path)

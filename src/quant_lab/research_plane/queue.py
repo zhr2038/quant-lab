@@ -226,9 +226,7 @@ def create_v5_candidate_evidence_task(
             verify_v5_candidate_evidence_generation_fast(
                 lake,
                 current_generation_id,
-                expected_input_fingerprint=(
-                    preflight.input_fingerprint.input_fingerprint_digest
-                ),
+                expected_input_fingerprint=(preflight.input_fingerprint.input_fingerprint_digest),
             )
         except Exception as exc:
             result = V5CandidateEvidenceTaskRequestResult(
@@ -276,6 +274,7 @@ def create_v5_candidate_evidence_task(
         lookback_days=lookback_days,
         horizon_hours=horizon_hours,
         include_historical_outcomes=include_historical_outcomes,
+        projection_version=preflight.input_fingerprint.projection_version,
         quant_lab_commit=quant_lab_commit,
         signature_key_id=signature_key_id,
     )
@@ -356,6 +355,7 @@ def create_v5_candidate_evidence_task(
         lookback_days=lookback_days,
         horizon_hours=horizon_hours,
         include_historical_outcomes=include_historical_outcomes,
+        projection_version=snapshot.projection_version,
         requested_at=requested_at,
         lease_seconds=lease_seconds,
         max_attempts=max_attempts,
@@ -816,8 +816,7 @@ def _v5_candidate_evidence_pointer_matches_preflight(
     return bool(pointer) and (
         pointer.get("snapshot_id") == preflight.snapshot_id
         and pointer.get("quant_lab_commit") == fingerprint.quant_lab_commit
-        and pointer.get("input_fingerprint_digest")
-        == fingerprint.input_fingerprint_digest
+        and pointer.get("input_fingerprint_digest") == fingerprint.input_fingerprint_digest
         and pointer.get("candidate_event_digest") == fingerprint.candidate_event_digest
         and pointer.get("market_bar_digest") == fingerprint.market_bar_digest
         and pointer.get("run_summary_digest") == fingerprint.run_summary_digest
@@ -828,6 +827,7 @@ def _v5_candidate_evidence_pointer_matches_preflight(
         and pointer.get("candidate_label_schema_version")
         == fingerprint.candidate_label_schema_version
         and pointer.get("strategy_evidence_version") == fingerprint.strategy_evidence_version
+        and pointer.get("projection_version") == fingerprint.projection_version
     )
 
 
@@ -841,12 +841,13 @@ def _v5_candidate_evidence_task_id(
     lookback_days: int,
     horizon_hours: tuple[int, ...],
     include_historical_outcomes: bool,
+    projection_version: str,
     quant_lab_commit: str,
     signature_key_id: str,
 ) -> str:
     seed = model_content_sha256(
         {
-            "schema_version": "quant_lab_v5_candidate_evidence_task_identity.v1",
+            "schema_version": "quant_lab_v5_candidate_evidence_task_identity.v2",
             "task_type": V5_CANDIDATE_EVIDENCE_TASK_TYPE,
             "snapshot_id": snapshot_id,
             "previous_generation_id": previous_generation_id,
@@ -859,6 +860,7 @@ def _v5_candidate_evidence_task_id(
                 "include_historical_outcomes": include_historical_outcomes,
                 "candidate_label_schema_version": "v5.candidate_label.v1",
                 "strategy_evidence_version": "strategy-evidence-v0.1",
+                "projection_version": projection_version,
             },
             "quant_lab_commit": quant_lab_commit,
             "signature_key_id": signature_key_id,
@@ -877,9 +879,7 @@ def _matching_v5_candidate_evidence_active_task(
     for state in ("running", "pending"):
         for task_path in sorted((queue / state).glob("*/task.json")):
             try:
-                task = V5CandidateEvidenceTask.model_validate_json(
-                    task_path.read_text("utf-8")
-                )
+                task = V5CandidateEvidenceTask.model_validate_json(task_path.read_text("utf-8"))
                 status = ResearchTaskStatus.model_validate_json(
                     (queue / "status" / f"{task.task_id}.json").read_text("utf-8")
                 )
@@ -889,12 +889,19 @@ def _matching_v5_candidate_evidence_active_task(
                 task.input_fingerprint_digest == input_fingerprint_digest
                 and task.previous_generation_id == previous_generation_id
                 and task.previous_generation_digest == previous_generation_digest
-                and status.state in {ResearchTaskState.PENDING, ResearchTaskState.CLAIMED,
-                    ResearchTaskState.SYNCING, ResearchTaskState.COMPUTING,
+                and status.state
+                in {
+                    ResearchTaskState.PENDING,
+                    ResearchTaskState.CLAIMED,
+                    ResearchTaskState.SYNCING,
+                    ResearchTaskState.COMPUTING,
                     ResearchTaskState.COMPUTING_LABELS,
                     ResearchTaskState.COMPUTING_SAMPLES,
-                    ResearchTaskState.VALIDATING_ON_NAS, ResearchTaskState.UPLOADING,
-                    ResearchTaskState.VALIDATING_ON_CLOUD, ResearchTaskState.PUBLISHING}
+                    ResearchTaskState.VALIDATING_ON_NAS,
+                    ResearchTaskState.UPLOADING,
+                    ResearchTaskState.VALIDATING_ON_CLOUD,
+                    ResearchTaskState.PUBLISHING,
+                }
             ):
                 return task, status
     return None
@@ -951,9 +958,7 @@ def _write_v5_candidate_evidence_request_result(
                 for key, value in result.model_dump().items()
                 if key not in {"task", "status"}
             },
-            "health_state": (
-                "up_to_date" if result.state == "already_current" else result.state
-            ),
+            "health_state": ("up_to_date" if result.state == "already_current" else result.state),
             "request_outcome": result.state,
             "pending_running_state": active_state,
             "snapshot_payload_state": _v5_candidate_evidence_snapshot_payload_state(
@@ -961,9 +966,7 @@ def _write_v5_candidate_evidence_request_result(
                 result,
             ),
             "already_current_at": (
-                datetime.now(UTC).isoformat()
-                if result.state == "already_current"
-                else None
+                datetime.now(UTC).isoformat() if result.state == "already_current" else None
             ),
             "observed_at": datetime.now(UTC).isoformat(),
         },

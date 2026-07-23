@@ -5,6 +5,7 @@ import json
 import math
 import statistics
 from collections import Counter, defaultdict
+from collections.abc import Collection, Mapping
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any
@@ -23,6 +24,7 @@ QUALITY_SCHEMA_VERSION = "v5.candidate_quality.v1"
 SUMMARY_SCHEMA_VERSION = "v5.candidate_outcome_summary.v1"
 HORIZON_HOURS = (4, 8, 12, 24, 48, 72, 120)
 DEFAULT_INCREMENTAL_LOOKBACK_DAYS = 8
+CANDIDATE_EVENT_SYMBOL_FIELDS = ("symbol", "normalized_symbol", "inst_id", "instId")
 
 CANDIDATE_EVENT_DATASET = Path("silver") / "v5_candidate_event"
 MARKET_BAR_DATASET = Path("silver") / "market_bar"
@@ -240,11 +242,9 @@ def derive_candidate_quality(
     created = created_at or datetime.now(UTC)
     event_rows = events.to_dicts() if not events.is_empty() else []
     label_rows = labels.to_dicts() if not labels.is_empty() else []
-    summary_runs = _run_ids_from_summary(run_summary)
+    summary_runs = run_summary_run_ids(run_summary)
     event_run_ids = {
-        _clean_text(row.get("run_id"))
-        for row in event_rows
-        if _clean_text(row.get("run_id"))
+        _clean_text(row.get("run_id")) for row in event_rows if _clean_text(row.get("run_id"))
     }
     rows_by_run: Counter[str] = Counter()
     symbol_rows_by_run: dict[str, Counter[str]] = defaultdict(Counter)
@@ -261,17 +261,13 @@ def derive_candidate_quality(
     missing_runs = sorted(summary_runs_in_candidate_window - event_run_ids)
     feature_rows, no_signal_context_rows = _candidate_feature_denominator_rows(event_rows)
     feature_by_field = _feature_completeness_by_field(feature_rows)
-    feature_completeness = (
-        statistics.fmean(feature_by_field.values()) if feature_by_field else 0.0
-    )
+    feature_completeness = statistics.fmean(feature_by_field.values()) if feature_by_field else 0.0
     required_feature_by_field = _feature_completeness_by_field(
         feature_rows,
         fields=CANDIDATE_REQUIRED_FEATURE_FIELDS,
     )
     required_feature_completeness = (
-        statistics.fmean(required_feature_by_field.values())
-        if required_feature_by_field
-        else 0.0
+        statistics.fmean(required_feature_by_field.values()) if required_feature_by_field else 0.0
     )
     expected_labels = len(event_rows) * len(HORIZON_HOURS)
     complete_labels = sum(1 for row in label_rows if row.get("label_status") == "complete")
@@ -532,9 +528,7 @@ def _base_label_row(
             _first_value(event, payload, ["strategy_candidate", "candidate_name", "candidate"])
         ),
         "block_reason": _clean_text(_first_value(event, payload, ["block_reason", "reason"])),
-        "final_decision": _clean_text(
-            _first_value(event, payload, ["final_decision", "decision"])
-        ),
+        "final_decision": _clean_text(_first_value(event, payload, ["final_decision", "decision"])),
         "cost_bps": abs(_finite_float(_first_value(event, payload, ["cost_bps", "cost"])) or 0.0),
         "cost_source": _clean_text(_first_value(event, payload, ["cost_source"])),
         "alpha6_side": _clean_text(_first_value(event, payload, ["alpha6_side"])),
@@ -680,7 +674,7 @@ def _timeframe_minutes(value: str) -> int | None:
     return None
 
 
-def _run_ids_from_summary(run_summary: pl.DataFrame) -> set[str]:
+def run_summary_run_ids(run_summary: pl.DataFrame) -> set[str]:
     if run_summary.is_empty():
         return set()
     run_ids: set[str] = set()
@@ -703,11 +697,7 @@ def _summary_runs_in_candidate_window(
         return summary_runs
     first_candidate_run = min(event_run_ids, key=_run_id_sort_key)
     first_candidate_key = _run_id_sort_key(first_candidate_run)
-    return {
-        run_id
-        for run_id in summary_runs
-        if _run_id_sort_key(run_id) >= first_candidate_key
-    }
+    return {run_id for run_id in summary_runs if _run_id_sort_key(run_id) >= first_candidate_key}
 
 
 def _run_id_sort_key(run_id: str) -> tuple[int, str, str]:
@@ -772,10 +762,39 @@ def _candidate_row_needs_feature_coverage(row: dict[str, Any]) -> bool:
 
 
 def _symbol(row: dict[str, Any], payload: dict[str, Any]) -> str:
-    value = _clean_text(
-        _first_value(row, payload, ["symbol", "normalized_symbol", "inst_id", "instId"])
+    return candidate_event_symbol(row, payload)
+
+
+def candidate_event_symbol(
+    row: Mapping[str, Any],
+    payload: Mapping[str, Any] | None = None,
+) -> str:
+    """Resolve one Candidate Event symbol with the signed, legacy-compatible order."""
+
+    resolved_payload: Mapping[str, Any] = payload if payload is not None else _payload(dict(row))
+    for field in CANDIDATE_EVENT_SYMBOL_FIELDS:
+        for value in (row.get(field), _nested_value(dict(resolved_payload), field)):
+            cleaned = _clean_text(value)
+            if not cleaned:
+                continue
+            normalized = normalize_symbol(cleaned)
+            if normalized:
+                return normalized
+    return ""
+
+
+def candidate_event_symbol_expr(columns: Collection[str]) -> pl.Expr:
+    """Return the same Candidate Event symbol resolver for lazy Snapshot/Worker plans."""
+
+    available = [
+        field for field in (*CANDIDATE_EVENT_SYMBOL_FIELDS, "raw_payload_json") if field in columns
+    ]
+    if not available:
+        return pl.lit("", dtype=pl.Utf8)
+    return pl.struct(available).map_elements(
+        candidate_event_symbol,
+        return_dtype=pl.Utf8,
     )
-    return normalize_symbol(value) if value else ""
 
 
 def _direction_multiplier(row: dict[str, Any], payload: dict[str, Any]) -> int:

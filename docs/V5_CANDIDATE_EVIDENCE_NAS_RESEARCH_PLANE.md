@@ -47,7 +47,7 @@ qyun2 request service
 NAS worker
   -> computing_labels
   -> computing_samples
-  -> strict 28-check anti-leakage report
+  -> strict 30-check anti-leakage report
   -> signed sharded result and receipt
 qyun2 importer
   -> capacity gates before global scans
@@ -86,14 +86,22 @@ The fingerprint includes only the signed projection that can affect this task:
 - Candidate Events in the eight-day event window;
 - closed Market Bars for Candidate symbols, using the selected timeframe and
   extending far enough for the 120-hour horizon;
-- Run Summary rows for Candidate run IDs;
+- all Run Summary rows in the same event window, including runs that have no
+  Candidate Event;
 - exact parameters, schema versions, projection version, and full commit SHA.
 
-Unrelated dates, symbols, timeframes, and run IDs do not change identity. The
-snapshot stores projected file hashes, schemas, row counts, timestamp bounds,
-compressed and Parquet-uncompressed sizes. Rehydrate reproduces the same file
-identity and preserves the original manifest bytes, signature, and seal; a
-source change rejects rehydrate.
+Candidate Event run IDs and sealed Run Summary run IDs are recorded
+independently in the v2 manifest. Any Run Summary change inside the event
+window changes identity even when that run has no Candidate Event; only
+out-of-window Run Summary rows remain projection-irrelevant. Unrelated event
+dates, market symbols, timeframes, and unclosed bars do not change identity.
+The snapshot stores projected file hashes, schemas, row counts, timestamp
+bounds, compressed and Parquet-uncompressed sizes. Rehydrate reproduces the
+same file identity and preserves the original manifest bytes, signature, and
+seal; a source change rejects rehydrate. New work uses
+`v5_candidate_evidence_projection.v2` and
+`quant_lab_v5_candidate_evidence_snapshot.v2`; v1 snapshots remain auditable
+but cannot be executed silently with v2 worker semantics.
 
 Default independent limits are:
 
@@ -163,7 +171,7 @@ run both writers concurrently.
 1. Deploy one exact commit to qyun2 and the NAS image.
 2. Run the NAS worker once with `RUN_ONCE=true` while the request timer remains
    disabled.
-3. Run the importer with `--validate-only` and confirm 28 PASS/0 checks.
+3. Run the importer with `--validate-only` and confirm 30 PASS/0 checks.
 4. Compare all six normalized Gold tables with the legacy fixed fixture and a
    production shadow; ignore only generation/host/audit identity and
    `created_at`.

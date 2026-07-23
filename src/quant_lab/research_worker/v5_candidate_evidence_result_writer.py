@@ -192,6 +192,7 @@ def write_v5_candidate_evidence_result_bundle(
             include_historical_outcomes=task.include_historical_outcomes,
             candidate_label_schema_version=task.candidate_label_schema_version,
             strategy_evidence_version=task.strategy_evidence_version,
+            projection_version=task.projection_version,
             generation_id=generation_id,
             generated_at=compute.generated_at,
             completed_at=completed_at,
@@ -315,17 +316,13 @@ def _write_bounded_frame(
     normalized = frame.select(list(schema)).cast(schema, strict=True)
     part_number = len(references)
     relative_path = (
-        f"outputs/{dataset_name}/date={partition_date.isoformat()}/"
-        f"part-{part_number:05d}.parquet"
+        f"outputs/{dataset_name}/date={partition_date.isoformat()}/part-{part_number:05d}.parquet"
     )
     path = outputs_root.parent / relative_path
     path.parent.mkdir(parents=True, exist_ok=True)
     normalized.write_parquet(path, compression="zstd")
     uncompressed = _parquet_uncompressed_bytes(path)
-    if (
-        path.stat().st_size > max_partition_bytes
-        or uncompressed > max_partition_uncompressed_bytes
-    ):
+    if path.stat().st_size > max_partition_bytes or uncompressed > max_partition_uncompressed_bytes:
         path.unlink()
         if normalized.height <= 1:
             raise RuntimeError("v5_candidate_evidence_partition_size_limit_exceeded")

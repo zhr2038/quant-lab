@@ -61,6 +61,7 @@ class TradeLevelLegacyShadowResult(BaseModel):
     lake_root: str
     as_of_date: str
     history_generation_id: str
+    history_candidate_binding_status: str
     status: str
     report_path: str
     legacy_event_rows: int = Field(ge=0)
@@ -95,19 +96,47 @@ def build_and_publish_trade_level_legacy_control_shadow(
         raise RuntimeError(
             "trade_level_shadow_history_generation_missing"
         )
-    verify_trade_level_history_generation_fast(
-        root,
-        generation_id,
-        expected_input_fingerprint=str(
-            pointer.get("input_fingerprint_digest") or ""
-        ),
-        expected_candidate_generation_id=str(
-            pointer.get("candidate_evidence_generation_id") or ""
-        ),
-        expected_candidate_generation_digest=str(
-            pointer.get("candidate_evidence_generation_digest") or ""
-        ),
-    )
+    history_candidate_binding_status = "CURRENT"
+    try:
+        verify_trade_level_history_generation_fast(
+            root,
+            generation_id,
+            expected_input_fingerprint=str(
+                pointer.get("input_fingerprint_digest") or ""
+            ),
+            expected_candidate_generation_id=str(
+                pointer.get("candidate_evidence_generation_id") or ""
+            ),
+            expected_candidate_generation_digest=str(
+                pointer.get("candidate_evidence_generation_digest") or ""
+            ),
+        )
+    except RuntimeError as exc:
+        if str(exc) != (
+            "trade_level_history_generation_candidate_binding_mismatch"
+        ):
+            raise
+        # Candidate Evidence advances independently while the Trade-Level
+        # request timer remains intentionally disabled during Shadow. Keep
+        # validating the immutable history generation itself, then compare it
+        # diagnostically while the legacy cloud path remains authoritative.
+        verify_trade_level_history_generation_fast(
+            root,
+            generation_id,
+            expected_input_fingerprint=str(
+                pointer.get("input_fingerprint_digest") or ""
+            ),
+            expected_candidate_generation_id=str(
+                pointer.get("candidate_evidence_generation_id") or ""
+            ),
+            expected_candidate_generation_digest=str(
+                pointer.get("candidate_evidence_generation_digest") or ""
+            ),
+            require_current_candidate_binding=False,
+        )
+        history_candidate_binding_status = (
+            "STALE_CANDIDATE_GENERATION"
+        )
 
     risk_permissions = read_parquet_dataset(
         root / RISK_PERMISSION_DATASET
@@ -331,6 +360,12 @@ def build_and_publish_trade_level_legacy_control_shadow(
         "history_input_fingerprint": pointer.get(
             "input_fingerprint_digest"
         ),
+        "history_candidate_binding_status": (
+            history_candidate_binding_status
+        ),
+        "history_candidate_generation_id": pointer.get(
+            "candidate_evidence_generation_id"
+        ),
         "legacy_history": {
             "event_rows": legacy_events.height,
             "label_rows": legacy_labels.height,
@@ -381,6 +416,9 @@ def build_and_publish_trade_level_legacy_control_shadow(
         lake_root=str(root),
         as_of_date=day.isoformat(),
         history_generation_id=generation_id,
+        history_candidate_binding_status=(
+            history_candidate_binding_status
+        ),
         status="PASS",
         report_path=str(report_path),
         legacy_event_rows=legacy_events.height,

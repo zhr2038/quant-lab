@@ -366,12 +366,20 @@ def test_trade_level_history_queue_import_and_no_change(
             "v5_candidate_label": candidate_labels.height
         },
     )
+    verified_candidate_generation_ids: list[str] = []
+
+    def _verify_candidate_generation(
+        _lake_root: Path,
+        generation_id: str,
+        **_kwargs: object,
+    ) -> dict[str, int]:
+        verified_candidate_generation_ids.append(generation_id)
+        return {"v5_candidate_label": candidate_labels.height}
+
     monkeypatch.setattr(
         "quant_lab.research_plane.trade_level_history_publish."
         "verify_v5_candidate_evidence_generation_fast",
-        lambda *_args, **_kwargs: {
-            "v5_candidate_label": candidate_labels.height
-        },
+        _verify_candidate_generation,
     )
 
     request = create_trade_level_history_task(
@@ -491,6 +499,65 @@ def test_trade_level_history_queue_import_and_no_change(
     assert shadow_report[
         "policy_order_limit_increase_bucket_keys"
     ] == []
+    assert shadow_report["history_candidate_binding_status"] == "CURRENT"
+
+    candidate_pointer_path = (
+        lake / "gold" / "v5_candidate_evidence_generation.json"
+    )
+    candidate_pointer = json.loads(
+        candidate_pointer_path.read_text("utf-8")
+    )
+    candidate_pointer["generation_id"] = "candidate-generation-new"
+    candidate_pointer["generation_digest"] = "d" * 64
+    candidate_pointer["input_fingerprint_digest"] = "e" * 64
+    candidate_pointer_path.write_text(
+        json.dumps(candidate_pointer),
+        encoding="utf-8",
+    )
+    with pytest.raises(
+        RuntimeError,
+        match="trade_level_history_generation_candidate_binding_mismatch",
+    ):
+        verify_trade_level_history_generation_fast(
+            lake,
+            str(imported.generation_id),
+        )
+    stale_binding_shadow = (
+        build_and_publish_trade_level_legacy_control_shadow(
+            lake,
+            tmp_path / "shadow-reports-stale-binding",
+            as_of_date=date(2026, 1, 2),
+        )
+    )
+    assert stale_binding_shadow.status == "PASS"
+    assert stale_binding_shadow.history_candidate_binding_status == (
+        "STALE_CANDIDATE_GENERATION"
+    )
+    assert verified_candidate_generation_ids[-1] == (
+        "candidate-generation-new"
+    )
+    assert stale_binding_shadow.published_new_micro_canary_allow_count == 0
+    assert stale_binding_shadow.risk_permission_unchanged is True
+    stale_binding_report = json.loads(
+        Path(stale_binding_shadow.report_path).read_text("utf-8")
+    )
+    assert stale_binding_report[
+        "history_candidate_binding_status"
+    ] == "STALE_CANDIDATE_GENERATION"
+    assert stale_binding_report[
+        "published_new_micro_canary_allow_event_ids"
+    ] == []
+    assert stale_binding_report[
+        "judgment_order_limit_increase_event_ids"
+    ] == []
+    assert stale_binding_report[
+        "policy_order_limit_increase_bucket_keys"
+    ] == []
+    _write_candidate_pointer(
+        lake,
+        candidate_label_rows=candidate_labels.height,
+        managed_columns=list(LABEL_SCHEMA),
+    )
 
     current_control = build_and_publish_trade_level_control(
         lake,

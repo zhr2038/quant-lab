@@ -505,6 +505,8 @@ def test_trade_level_history_uses_bounded_nas_request_and_shadow_control():
         in nas_env
     )
     assert "repository_git:ro" in nas_compose
+    assert "--git-dir=/run/provenance/repository_git" in nas_compose
+    assert "repository == image" in nas_compose
     assert "NAS_RESEARCH_IMAGE_GIT_COMMIT" in nas_compose
     assert (
         "QUANT_RESEARCH_WORKER_COMMIT="

@@ -34,7 +34,7 @@ services:
         - CMD
         - python
         - -c
-        - "import os,pathlib; image=pathlib.Path('/app/BUILD_GIT_COMMIT').read_text().strip(); assert pathlib.Path('/data').is_dir(); assert len(image) == 40; assert os.environ['BUILD_GIT_COMMIT'] == image; assert os.environ['QUANT_RESEARCH_WORKER_COMMIT'] == image; assert pathlib.Path('/run/provenance/repository_git').is_dir(); assert os.environ.get('QUANT_RESEARCH_FACTOR_FACTORY_ENABLED', '0') in {'0', '1'}; assert os.environ.get('QUANT_RESEARCH_V5_CANDIDATE_EVIDENCE_ENABLED', '0') in {'0', '1'}; assert os.environ.get('QUANT_RESEARCH_TRADE_LEVEL_HISTORY_ENABLED', '0') in {'0', '1'}"
+        - "import os,pathlib,subprocess; image=pathlib.Path('/app/BUILD_GIT_COMMIT').read_text().strip(); repository=subprocess.check_output(['git','--git-dir=/run/provenance/repository_git','rev-parse','--verify','HEAD'],text=True,timeout=10).strip(); assert pathlib.Path('/data').is_dir(); assert len(image) == 40; assert os.environ['BUILD_GIT_COMMIT'] == image; assert os.environ['QUANT_RESEARCH_WORKER_COMMIT'] == image; assert repository == image; assert os.environ.get('QUANT_RESEARCH_FACTOR_FACTORY_ENABLED', '0') in {'0', '1'}; assert os.environ.get('QUANT_RESEARCH_V5_CANDIDATE_EVIDENCE_ENABLED', '0') in {'0', '1'}; assert os.environ.get('QUANT_RESEARCH_TRADE_LEVEL_HISTORY_ENABLED', '0') in {'0', '1'}"
       interval: 30s
       timeout: 5s
       retries: 3

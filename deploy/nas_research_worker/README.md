@@ -25,6 +25,12 @@ install -d -m 2770 -o 10002 -g 10002 /volume1/docker/quant-runtime
 touch /volume1/docker/quant-runtime/heavy-job.lock
 chown 10002:10002 /volume1/docker/quant-runtime/heavy-job.lock
 chmod 0660 /volume1/docker/quant-runtime/heavy-job.lock
+
+# The worker reads repository identity only; it does not need the worktree.
+find /volume1/docker/quant-research/repo/.git -type d \
+  -exec setfacl -m u:10004:rx,d:u:10004:rx {} +
+find /volume1/docker/quant-research/repo/.git -type f \
+  -exec setfacl -m u:10004:r {} +
 ```
 
 Install these files under `secrets/` with mode `0400` and ownership readable by
@@ -42,7 +48,9 @@ directory above, set `NAS_RESEARCH_IMAGE_GIT_COMMIT` to the exact deployed
 directory of that exact checked-out repository. Do not add a runtime
 `QUANT_RESEARCH_WORKER_COMMIT` override. The worker compares the immutable image
 commit file, both image-provided commit environment values, and repository HEAD
-before it polls or claims any task. Then:
+before it polls or claims any task. The repository ACL above is read-only for
+UID 10004 and its default directory entries keep future Git objects readable;
+do not grant the worker write access to the repository. Then:
 
 ```bash
 docker compose build --pull

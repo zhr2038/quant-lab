@@ -74,10 +74,18 @@ _MARKET_MINIMAL_SCHEMA = {
     "low": pl.Float64,
     "is_closed": pl.Boolean,
 }
-_RUN_SUMMARY_MINIMAL_SCHEMA = {
+_RUN_SUMMARY_SEMANTIC_SCHEMA = {
     "run_id": pl.Utf8,
+    "runId": pl.Utf8,
+    "run": pl.Utf8,
     "bundle_ts": pl.Datetime(time_zone="UTC"),
+    "ingest_ts": pl.Datetime(time_zone="UTC"),
+    "created_at": pl.Datetime(time_zone="UTC"),
+    "source_path_inside_bundle": pl.Utf8,
+    "raw_payload_json": pl.Utf8,
 }
+_RUN_SUMMARY_SEMANTIC_COLUMNS = tuple(_RUN_SUMMARY_SEMANTIC_SCHEMA)
+_RUN_SUMMARY_TIMESTAMP_COLUMNS = ("bundle_ts", "ingest_ts", "created_at")
 
 
 @dataclass(frozen=True)
@@ -181,10 +189,7 @@ def preflight_v5_candidate_evidence_snapshot(
     )
     run_digest, run_rows, _, _ = _projection_digest(
         run_lazy,
-        timestamp_column=_first_column(
-            run_lazy,
-            ("bundle_ts", "ingest_ts", "created_at"),
-        ),
+        timestamp_column=_RUN_SUMMARY_TIMESTAMP_COLUMNS,
     )
     source_by_dataset = {
         name: [item for item in source_files if item.dataset_name == name]
@@ -637,13 +642,8 @@ def verify_v5_candidate_evidence_snapshot_manifest(
         if item.dataset_name == "silver/v5_candidate_event":
             observed_candidate_symbols.update(_candidate_symbols(lazy))
             observed_candidate_run_ids.update(_candidate_run_ids(lazy))
-        elif (
-            item.dataset_name == "silver/v5_run_summary"
-            and "run_id" in lazy.collect_schema().names()
-        ):
-            observed_summary_run_ids.update(
-                run_summary_run_ids(lazy.select("run_id").collect(engine="streaming"))
-            )
+        elif item.dataset_name == "silver/v5_run_summary":
+            observed_summary_run_ids.update(_run_summary_run_ids(lazy))
     if tuple(sorted(observed_candidate_symbols)) != manifest.candidate_symbols:
         raise ValueError("v5_candidate_evidence_snapshot_symbol_identity_mismatch")
     if tuple(sorted(observed_candidate_run_ids)) != manifest.candidate_run_ids:
@@ -794,11 +794,25 @@ def _run_summary_projection(
     start: datetime,
     end: datetime,
 ) -> pl.LazyFrame:
-    lazy = _scan_sources(sources, _RUN_SUMMARY_MINIMAL_SCHEMA)
-    column = _first_column(lazy, ("bundle_ts", "ingest_ts", "created_at"))
-    if column is None:
-        return lazy
-    lazy = lazy.filter(_utc_expr(column).is_between(start, end, closed="left"))
+    lazy = _scan_union_sources(sources, _RUN_SUMMARY_SEMANTIC_SCHEMA)
+    columns = set(lazy.collect_schema().names())
+    semantic_projection = [
+        (
+            _utc_expr(column)
+            if column in _RUN_SUMMARY_TIMESTAMP_COLUMNS
+            else pl.col(column).cast(dtype, strict=False)
+        ).alias(column)
+        if column in columns
+        else pl.lit(None, dtype=dtype).alias(column)
+        for column, dtype in _RUN_SUMMARY_SEMANTIC_SCHEMA.items()
+    ]
+    lazy = lazy.select(semantic_projection)
+    observed_at = pl.coalesce(
+        [_utc_expr(column) for column in _RUN_SUMMARY_TIMESTAMP_COLUMNS]
+    )
+    lazy = lazy.filter(
+        observed_at.is_null() | observed_at.is_between(start, end, closed="left")
+    )
     return lazy
 
 
@@ -828,7 +842,11 @@ def _candidate_run_ids(events: pl.LazyFrame) -> tuple[str, ...]:
 
 
 def _run_summary_run_ids(run_summary: pl.LazyFrame) -> tuple[str, ...]:
-    frame = run_summary.collect(engine="streaming")
+    columns = run_summary.collect_schema().names()
+    semantic_columns = [
+        column for column in _RUN_SUMMARY_SEMANTIC_COLUMNS if column in columns
+    ]
+    frame = run_summary.select(semantic_columns).collect(engine="streaming")
     return tuple(sorted(run_summary_run_ids(frame)))
 
 
@@ -900,7 +918,7 @@ def _timeframe_minutes(value: str) -> int | None:
 def _projection_digest(
     lazy: pl.LazyFrame,
     *,
-    timestamp_column: str | None,
+    timestamp_column: str | tuple[str, ...] | None,
 ) -> tuple[str, int, datetime | None, datetime | None]:
     schema = lazy.collect_schema()
     columns = sorted(schema.names())
@@ -916,11 +934,20 @@ def _projection_digest(
                 row.hash(seed=3).max().alias("hash_max"),
             ]
         )
-    if timestamp_column and timestamp_column in columns:
+    timestamp_columns = (
+        (timestamp_column,)
+        if isinstance(timestamp_column, str)
+        else tuple(timestamp_column or ())
+    )
+    timestamp_columns = tuple(
+        column for column in timestamp_columns if column in columns
+    )
+    if timestamp_columns:
+        observed_at = pl.coalesce([_utc_expr(column) for column in timestamp_columns])
         expressions.extend(
             [
-                _utc_expr(timestamp_column).min().alias("min_ts"),
-                _utc_expr(timestamp_column).max().alias("max_ts"),
+                observed_at.min().alias("min_ts"),
+                observed_at.max().alias("max_ts"),
             ]
         )
     frame = lazy.select(expressions).collect(engine="streaming")
@@ -1042,14 +1069,20 @@ def _first_column(lazy: pl.LazyFrame, candidates: tuple[str, ...]) -> str | None
     return next((column for column in candidates if column in columns), None)
 
 
-def _timestamp_column_for_dataset(dataset_name: str, path: Path) -> str | None:
+def _timestamp_column_for_dataset(
+    dataset_name: str,
+    path: Path,
+) -> str | tuple[str, ...] | None:
     schema = pl.read_parquet_schema(path)
     candidates = {
         "silver/v5_candidate_event": ("ts_utc", "bundle_ts", "ingest_ts"),
         "silver/market_bar": ("ts",),
-        "silver/v5_run_summary": ("bundle_ts", "ingest_ts", "created_at"),
+        "silver/v5_run_summary": _RUN_SUMMARY_TIMESTAMP_COLUMNS,
     }[dataset_name]
-    return next((column for column in candidates if column in schema), None)
+    existing = tuple(column for column in candidates if column in schema)
+    if dataset_name == "silver/v5_run_summary":
+        return existing
+    return existing[0] if existing else None
 
 
 def _utc_expr(column: str) -> pl.Expr:

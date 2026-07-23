@@ -320,8 +320,16 @@ def verify_trade_level_history_generation_fast(
     expected_input_fingerprint: str | None = None,
     expected_candidate_generation_id: str | None = None,
     expected_candidate_generation_digest: str | None = None,
+    require_current_candidate_binding: bool = True,
 ) -> dict[str, int]:
-    """Read-only integrity verification of the pointer and all three Golds."""
+    """Read-only integrity verification of the pointer and all three Golds.
+
+    ``require_current_candidate_binding=False`` is reserved for the legacy
+    read-only Shadow path. It permits integrity-checking an immutable history
+    generation after the independently scheduled Candidate Evidence pointer
+    has advanced; all publication and No-Change callers retain the strict
+    default.
+    """
 
     root = Path(lake_root).resolve(strict=True)
     pointer = _read_pointer(root / TRADE_LEVEL_HISTORY_GENERATION_POINTER)
@@ -479,26 +487,27 @@ def verify_trade_level_history_generation_fast(
     candidate_pointer = _read_pointer(
         root / V5_CANDIDATE_EVIDENCE_GENERATION_POINTER
     )
-    if (
-        candidate_pointer.get("generation_id")
-        != pointer.get("candidate_evidence_generation_id")
-        or candidate_pointer.get("generation_digest")
-        != pointer.get("candidate_evidence_generation_digest")
-        or candidate_pointer.get("input_fingerprint_digest")
-        != pointer.get("candidate_evidence_input_fingerprint")
-        or dict(candidate_pointer.get("dataset_hashes") or {}).get(
-            "v5_candidate_label"
-        )
-        != pointer.get("candidate_label_dataset_hash")
-    ):
-        raise RuntimeError(
-            "trade_level_history_generation_candidate_binding_mismatch"
-        )
+    if require_current_candidate_binding:
+        if (
+            candidate_pointer.get("generation_id")
+            != pointer.get("candidate_evidence_generation_id")
+            or candidate_pointer.get("generation_digest")
+            != pointer.get("candidate_evidence_generation_digest")
+            or candidate_pointer.get("input_fingerprint_digest")
+            != pointer.get("candidate_evidence_input_fingerprint")
+            or dict(candidate_pointer.get("dataset_hashes") or {}).get(
+                "v5_candidate_label"
+            )
+            != pointer.get("candidate_label_dataset_hash")
+        ):
+            raise RuntimeError(
+                "trade_level_history_generation_candidate_binding_mismatch"
+            )
     verify_v5_candidate_evidence_generation_fast(
         root,
-        str(pointer["candidate_evidence_generation_id"]),
+        str(candidate_pointer["generation_id"]),
         expected_input_fingerprint=str(
-            pointer["candidate_evidence_input_fingerprint"]
+            candidate_pointer["input_fingerprint_digest"]
         ),
     )
 

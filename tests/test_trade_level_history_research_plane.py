@@ -102,6 +102,8 @@ def test_trade_level_history_worker_result_and_atomic_publish(
         peak_rss_bytes=0,
         compute_duration_seconds=1.0,
     )
+    handoff_marker = bundle / ".HANDOFF_READY"
+    handoff_marker.touch()
     validated = validate_trade_level_history_result_bundle(
         bundle,
         manifest=manifest,
@@ -112,6 +114,39 @@ def test_trade_level_history_worker_result_and_atomic_publish(
         worker_public_key=worker_key.public_key(),
         expected_worker_key_id="worker-key-test",
     )
+    handoff_marker.write_text("not-empty", encoding="utf-8")
+    with pytest.raises(
+        ValueError,
+        match="trade_level_history_result_handoff_marker_invalid",
+    ):
+        validate_trade_level_history_result_bundle(
+            bundle,
+            manifest=manifest,
+            receipt=receipt,
+            task=task,
+            snapshot=snapshot,
+            snapshot_root=snapshot_root,
+            worker_public_key=worker_key.public_key(),
+            expected_worker_key_id="worker-key-test",
+        )
+    handoff_marker.unlink()
+    handoff_marker.mkdir()
+    with pytest.raises(
+        ValueError,
+        match="trade_level_history_result_handoff_marker_invalid",
+    ):
+        validate_trade_level_history_result_bundle(
+            bundle,
+            manifest=manifest,
+            receipt=receipt,
+            task=task,
+            snapshot=snapshot,
+            snapshot_root=snapshot_root,
+            worker_public_key=worker_key.public_key(),
+            expected_worker_key_id="worker-key-test",
+        )
+    handoff_marker.rmdir()
+    handoff_marker.write_bytes(b"")
     assert {item.dataset_name for item in manifest.outputs} == {
         "trade_opportunity_label",
         "trade_level_similarity_outcome",

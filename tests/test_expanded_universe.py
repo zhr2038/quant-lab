@@ -234,11 +234,16 @@ def test_expanded_universe_automation_builds_events_labels_and_promotion(tmp_pat
     )
     strategy_evidence_root = lake_root / "gold" / "strategy_evidence"
     strategy_evidence_root.mkdir(parents=True)
-    candidate_generation_sidecar = (
-        strategy_evidence_root / "_v5_candidate_evidence_generation.json"
-    )
-    sidecar_bytes = b'{"generation_id":"v5-candidate-generation"}\n'
-    candidate_generation_sidecar.write_bytes(sidecar_bytes)
+    generation_sidecars = {
+        strategy_evidence_root
+        / "_research_generation.json": b'{"generation_id":"alpha-generation"}\n',
+        strategy_evidence_root
+        / "_v5_candidate_evidence_generation.json": (
+            b'{"generation_id":"v5-candidate-generation"}\n'
+        ),
+    }
+    for sidecar, payload in generation_sidecars.items():
+        sidecar.write_bytes(payload)
 
     result = build_and_publish_expanded_crypto_universe_shadow(
         lake_root,
@@ -264,7 +269,8 @@ def test_expanded_universe_automation_builds_events_labels_and_promotion(tmp_pat
     evidence = read_parquet_dataset(lake_root / "gold" / "strategy_evidence")
     expanded = evidence.filter(pl.col("universe_type") == "expanded_paper")
     assert not expanded.is_empty()
-    assert candidate_generation_sidecar.read_bytes() == sidecar_bytes
+    for sidecar, payload in generation_sidecars.items():
+        assert sidecar.read_bytes() == payload
 
     queue = read_parquet_dataset(lake_root / "gold" / "expanded_universe_promotion_queue")
     assert not queue.is_empty()

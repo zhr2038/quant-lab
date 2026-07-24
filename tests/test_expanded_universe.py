@@ -3,7 +3,10 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import polars as pl
+import pytest
 
+import quant_lab.research.expanded_universe as expanded_universe_module
+from quant_lab.data.file_index import build_lake_file_index
 from quant_lab.data.lake import (
     read_parquet_dataset,
     upsert_parquet_dataset,
@@ -124,7 +127,9 @@ def test_symbol_quality_uses_rest_candidate_spread_when_orderbook_missing():
 
 def test_recent_orderbook_reader_parses_production_string_timestamps(tmp_path):
     lake_root = tmp_path / "lake"
-    orderbooks = _orderbook_frame({"BTC-USDT": 5.0}).with_columns(
+    orderbooks = pl.concat(
+        [_orderbook_frame({"BTC-USDT": 5.0}) for _ in range(100)]
+    ).with_columns(
         [
             pl.col("ts").dt.to_string("%Y-%m-%dT%H:%M:%S%.fZ"),
             pl.col("ingest_ts").dt.to_string("%Y-%m-%dT%H:%M:%S%.fZ"),
@@ -142,6 +147,48 @@ def test_recent_orderbook_reader_parses_production_string_timestamps(tmp_path):
 
     assert recent.height == 1
     assert recent.item(0, "symbol") == "BTC-USDT"
+    assert recent.item(0, "spread_sample_count") == 100
+    assert recent.item(0, "avg_spread_bps") == pytest.approx(5.0)
+
+
+def test_recent_orderbook_reader_uses_index_to_skip_old_files(tmp_path, monkeypatch):
+    lake_root = tmp_path / "lake"
+    dataset_path = lake_root / "silver" / "orderbook_snapshot"
+    dataset_path.mkdir(parents=True)
+    old = _orderbook_frame({"ETH-USDT": 7.0}).with_columns(
+        [
+            pl.lit(datetime(2026, 5, 19, tzinfo=UTC)).alias("ts"),
+            pl.lit(datetime(2026, 5, 19, tzinfo=UTC)).alias("ingest_ts"),
+        ]
+    )
+    recent = _orderbook_frame({"BTC-USDT": 5.0})
+    old.write_parquet(dataset_path / "old.parquet")
+    recent.write_parquet(dataset_path / "recent.parquet")
+    build_lake_file_index(
+        lake_root,
+        ["silver/orderbook_snapshot"],
+        content_identity=False,
+    )
+    scanned_paths: list[Path] = []
+    real_scan = expanded_universe_module._scan_parquet_files
+
+    def capture_scan(paths):
+        scanned_paths.extend(paths)
+        return real_scan(paths)
+
+    monkeypatch.setattr(
+        expanded_universe_module,
+        "_scan_parquet_files",
+        capture_scan,
+    )
+
+    frame = _read_recent_orderbook_snapshots(
+        lake_root,
+        since=datetime(2026, 5, 20, 6, tzinfo=UTC),
+    )
+
+    assert scanned_paths == [dataset_path / "recent.parquet"]
+    assert frame.get_column("symbol").to_list() == ["BTC-USDT"]
 
 
 def test_web_strategy_page_reads_expanded_universe(tmp_path):

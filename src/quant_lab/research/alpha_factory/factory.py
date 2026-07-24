@@ -32,6 +32,9 @@ from quant_lab.research.second_stage_alpha_factory import (
     build_and_publish_second_stage_alpha_factory,
     compute_second_stage_alpha_factory,
 )
+from quant_lab.research.second_stage_alpha_factory import (
+    SOURCE_NAME as SECOND_STAGE_SOURCE_NAME,
+)
 from quant_lab.research.strategy_evidence import (
     SAMPLE_SCHEMA,
     STRATEGY_EVIDENCE_SAMPLE_DATASET,
@@ -472,15 +475,18 @@ def merge_alpha_factory_managed_evidence(
 ) -> pl.DataFrame:
     """Replace only one day's Alpha-managed evidence and preserve every other producer."""
     schema = SAMPLE_SCHEMA if sample else SUMMARY_SCHEMA
+    managed_source = SECOND_STAGE_SOURCE_NAME if sample else SOURCE_NAME
     retained = existing
     if not retained.is_empty() and {
         "as_of_date",
         "strategy_candidate",
+        "source",
     }.issubset(retained.columns):
         retained = retained.filter(
             ~(
                 (pl.col("as_of_date").cast(pl.Utf8) == as_of_date.isoformat())
                 & _alpha_factory_managed_candidate_expr(pl.col("strategy_candidate"))
+                & (pl.col("source").cast(pl.Utf8, strict=False) == managed_source)
             )
         )
     frames = [
@@ -1227,11 +1233,12 @@ def _publish_alpha_factory_results_to_strategy_evidence(
         write_parquet_dataset(summary, dataset)
         return summary.height
     retained = existing
-    if "as_of_date" in retained.columns and "strategy_candidate" in retained.columns:
+    if {"as_of_date", "strategy_candidate", "source"}.issubset(retained.columns):
         retained = retained.filter(
             ~(
                 (pl.col("as_of_date").cast(pl.Utf8) == day.isoformat())
                 & _alpha_factory_managed_candidate_expr(pl.col("strategy_candidate"))
+                & (pl.col("source").cast(pl.Utf8, strict=False) == SOURCE_NAME)
             )
         )
     combined = pl.concat([retained, summary], how="diagonal_relaxed")

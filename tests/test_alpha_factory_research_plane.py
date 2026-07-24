@@ -22,8 +22,22 @@ from quant_lab.research.alpha_factory.factory import (
     merge_alpha_factory_managed_evidence,
     prepare_alpha_factory_control_state,
 )
-from quant_lab.research.second_stage_alpha_factory import EXPANDED_QUALITY_DATASET
-from quant_lab.research.strategy_evidence import SAMPLE_SCHEMA, SUMMARY_SCHEMA
+from quant_lab.research.alpha_factory.factory import (
+    SOURCE_NAME as ALPHA_FACTORY_SOURCE_NAME,
+)
+from quant_lab.research.second_stage_alpha_factory import (
+    EXPANDED_QUALITY_DATASET,
+)
+from quant_lab.research.second_stage_alpha_factory import (
+    SOURCE_NAME as SECOND_STAGE_SOURCE_NAME,
+)
+from quant_lab.research.strategy_evidence import (
+    SAMPLE_SCHEMA,
+    SUMMARY_SCHEMA,
+)
+from quant_lab.research.strategy_evidence import (
+    SOURCE_NAME as V5_EVIDENCE_SOURCE_NAME,
+)
 from quant_lab.research_plane.alpha_factory_publish import (
     ALPHA_FACTORY_GENERATION_POINTER,
     verify_alpha_factory_generation,
@@ -845,18 +859,28 @@ def test_alpha_factory_evidence_merge_preserves_other_producers_and_dates() -> N
                 "as_of_date": day.isoformat(),
                 "strategy_candidate": "manual.research_candidate",
                 "decision": "RESEARCH",
+                "source": "manual.research",
             },
             {
                 "as_of_date": day.isoformat(),
                 "strategy_candidate": "v5.alt_impulse_shadow",
                 "decision": "KEEP_SHADOW",
                 "sample_count": 10,
+                "source": ALPHA_FACTORY_SOURCE_NAME,
+            },
+            {
+                "as_of_date": day.isoformat(),
+                "strategy_candidate": "v5.alt_impulse_shadow",
+                "decision": "KEEP_SHADOW",
+                "sample_count": 99,
+                "source": V5_EVIDENCE_SOURCE_NAME,
             },
             {
                 "as_of_date": "2026-07-17",
                 "strategy_candidate": "v5.alt_impulse_shadow",
                 "decision": "KEEP_SHADOW",
                 "sample_count": 8,
+                "source": ALPHA_FACTORY_SOURCE_NAME,
             },
         ],
     )
@@ -868,6 +892,7 @@ def test_alpha_factory_evidence_merge_preserves_other_producers_and_dates() -> N
                 "strategy_candidate": "v5.alt_impulse_shadow",
                 "decision": "RESEARCH",
                 "sample_count": 12,
+                "source": ALPHA_FACTORY_SOURCE_NAME,
             }
         ],
     )
@@ -889,9 +914,17 @@ def test_alpha_factory_evidence_merge_preserves_other_producers_and_dates() -> N
     current = merged.filter(
         (pl.col("as_of_date") == day.isoformat())
         & (pl.col("strategy_candidate") == "v5.alt_impulse_shadow")
+        & (pl.col("source") == ALPHA_FACTORY_SOURCE_NAME)
     )
     assert current.height == 1
     assert current["sample_count"][0] == 12
+    preserved_v5 = merged.filter(
+        (pl.col("as_of_date") == day.isoformat())
+        & (pl.col("strategy_candidate") == "v5.alt_impulse_shadow")
+        & (pl.col("source") == V5_EVIDENCE_SOURCE_NAME)
+    )
+    assert preserved_v5.height == 1
+    assert preserved_v5["sample_count"][0] == 99
 
     existing_samples = _typed_rows(
         SAMPLE_SCHEMA,
@@ -900,11 +933,19 @@ def test_alpha_factory_evidence_merge_preserves_other_producers_and_dates() -> N
                 "as_of_date": day.isoformat(),
                 "strategy_candidate": "manual.research_candidate",
                 "candidate_id": "manual-1",
+                "source": "manual.research",
             },
             {
                 "as_of_date": day.isoformat(),
                 "strategy_candidate": "v5.alt_impulse_shadow",
                 "candidate_id": "stale-alpha-1",
+                "source": SECOND_STAGE_SOURCE_NAME,
+            },
+            {
+                "as_of_date": day.isoformat(),
+                "strategy_candidate": "v5.alt_impulse_shadow",
+                "candidate_id": "v5-1",
+                "source": V5_EVIDENCE_SOURCE_NAME,
             },
         ],
     )
@@ -917,9 +958,8 @@ def test_alpha_factory_evidence_merge_preserves_other_producers_and_dates() -> N
     assert cleared.filter(
         pl.col("strategy_candidate") == "manual.research_candidate"
     ).height == 1
-    assert cleared.filter(
-        pl.col("strategy_candidate") == "v5.alt_impulse_shadow"
-    ).is_empty()
+    assert cleared.filter(pl.col("candidate_id") == "stale-alpha-1").is_empty()
+    assert cleared.filter(pl.col("candidate_id") == "v5-1").height == 1
 
 
 def _typed_rows(

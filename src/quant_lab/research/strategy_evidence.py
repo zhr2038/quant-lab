@@ -911,6 +911,7 @@ def normalize_strategy_evidence_decisions(evidence: pl.DataFrame) -> pl.DataFram
     keys = [
         column
         for column in [
+            "source",
             "strategy",
             "evidence_version",
             "as_of_date",

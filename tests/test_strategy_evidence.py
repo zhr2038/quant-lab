@@ -329,6 +329,45 @@ def test_strategy_evidence_normalizes_stale_low_complete_decision():
     assert "insufficient_complete_samples" in json.loads(row["decision_reasons"])
 
 
+def test_strategy_evidence_normalization_preserves_distinct_producers():
+    base = {
+        "strategy": "v5",
+        "evidence_version": "strategy-evidence-v0.1",
+        "as_of_date": "2026-07-24",
+        "strategy_candidate": "v5.alt_impulse_shadow",
+        "candidate_name": "v5.alt_impulse_shadow",
+        "symbol": "BTC-USDT",
+        "regime_state": "trend",
+        "horizon_hours": 4,
+        "sample_count": 12,
+        "complete_sample_count": 2,
+        "avg_net_bps": -50.0,
+        "median_net_bps": -50.0,
+        "p25_net_bps": -70.0,
+        "win_rate": 0.0,
+        "cost_source_mix": '{"local_estimate":12}',
+        "decision": "RESEARCH_ONLY",
+        "decision_reasons": "[]",
+        "start_ts": datetime(2026, 7, 24, tzinfo=UTC),
+        "end_ts": datetime(2026, 7, 24, tzinfo=UTC),
+        "created_at": datetime(2026, 7, 24, tzinfo=UTC),
+    }
+    evidence = pl.DataFrame(
+        [
+            {**base, "source": "research.strategy_evidence.v0.1"},
+            {**base, "source": "research.alpha_factory.v0.1"},
+        ]
+    )
+
+    normalized = normalize_strategy_evidence_decisions(evidence)
+
+    assert normalized.height == 2
+    assert set(normalized["source"]) == {
+        "research.strategy_evidence.v0.1",
+        "research.alpha_factory.v0.1",
+    }
+
+
 def test_strategy_evidence_builds_candidate_board_without_broad_btc_mixing(tmp_path):
     lake = tmp_path / "lake"
     _write_market_bars(lake)

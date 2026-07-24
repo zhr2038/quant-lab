@@ -343,6 +343,8 @@ def test_alpha_factory_nas_request_replaces_scheduled_local_compute():
         in importer
     )
     assert "SKIP_RESEARCH_RESULT_IMPORT_LOCK_BUSY" in importer
+    assert 'if [ "$${code}" = "75" ]' in importer
+    assert 'exit "$${code}"' in importer
     assert (
         "ReadWritePaths=/var/lib/quant-lab/lake /var/lib/quant-lab/research_queue "
         "/var/lock/quant-lab-heavy.lock /var/lock/quant-lab-v5-research.lock"

@@ -334,8 +334,8 @@ def verify_alpha_factory_generation(
         if metadata.get("generation_id") != generation_id:
             raise RuntimeError(f"alpha_factory_dataset_generation_mismatch:{target}")
         if dataset_name in ALPHA_FACTORY_SHARED_MANAGED_SCOPES:
-            managed = _alpha_factory_managed_shared_frame(
-                read_parquet_dataset(root / target),
+            managed = _read_alpha_factory_managed_shared_dataset(
+                root / target,
                 dataset_name,
             )
             actual_rows = managed.height
@@ -388,6 +388,42 @@ def _alpha_factory_managed_shared_frame(
         )
         .select(list(schema))
         .cast(schema, strict=False)
+    )
+
+
+def _read_alpha_factory_managed_shared_dataset(
+    dataset_root: Path,
+    dataset_name: str,
+) -> pl.DataFrame:
+    """Read only Alpha-owned rows when verifying a shared evidence dataset."""
+    try:
+        scope = ALPHA_FACTORY_SHARED_MANAGED_SCOPES[dataset_name]
+    except KeyError as exc:
+        raise ValueError(
+            f"alpha_factory_unknown_shared_dataset:{dataset_name}"
+        ) from exc
+    schema = SAMPLE_SCHEMA if dataset_name == "strategy_evidence_sample" else SUMMARY_SCHEMA
+    files = sorted(path for path in dataset_root.rglob("*.parquet") if path.is_file())
+    if not files:
+        return pl.DataFrame(schema=schema)
+    lazy = pl.scan_parquet([str(path) for path in files], extra_columns="ignore")
+    missing = sorted(set(schema) - set(lazy.collect_schema().names()))
+    if missing:
+        raise RuntimeError(
+            f"alpha_factory_shared_dataset_columns_missing:{dataset_name}:"
+            + ",".join(missing)
+        )
+    return (
+        lazy.filter(
+            pl.col("source").cast(pl.Utf8, strict=False) == scope["source"]
+        )
+        .select(
+            [
+                pl.col(column).cast(dtype, strict=False).alias(column)
+                for column, dtype in schema.items()
+            ]
+        )
+        .collect(engine="streaming")
     )
 
 

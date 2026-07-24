@@ -11,6 +11,7 @@ import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from pydantic import ValidationError
 
+import quant_lab.research_plane.alpha_factory_publish as alpha_factory_publish_module
 import quant_lab.research_plane.importer as importer_module
 from quant_lab.data.lake import read_parquet_dataset, write_parquet_dataset
 from quant_lab.research.alpha_factory.factory import (
@@ -383,6 +384,7 @@ def test_alpha_factory_empty_result_cloud_derivation_and_import(tmp_path: Path) 
 
 def test_alpha_factory_generation_scopes_shared_verification_to_managed_source(
     tmp_path: Path,
+    monkeypatch,
 ) -> None:
     lake, queue, task, task_key, worker_key = _stage_empty_alpha_result(tmp_path)
     previous_day = "2026-07-17"
@@ -497,6 +499,18 @@ def test_alpha_factory_generation_scopes_shared_verification_to_managed_source(
     for path, payload in sidecars.items():
         (path / "_research_generation.json").write_bytes(payload)
 
+    original_reader = alpha_factory_publish_module.read_parquet_dataset
+
+    def reject_full_shared_read(path: str | Path) -> pl.DataFrame:
+        if Path(path) in {sample_path, summary_path}:
+            raise AssertionError("shared evidence verification must use a filtered lazy scan")
+        return original_reader(path)
+
+    monkeypatch.setattr(
+        alpha_factory_publish_module,
+        "read_parquet_dataset",
+        reject_full_shared_read,
+    )
     assert verify_alpha_factory_generation(lake, pointer["generation_id"]) == pointer[
         "row_counts"
     ]

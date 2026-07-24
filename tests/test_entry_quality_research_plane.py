@@ -2040,6 +2040,44 @@ def test_control_plane_poll_classifies_only_transport_failures(
     )
 
 
+@pytest.mark.parametrize(
+    "operation",
+    [
+        lambda config: runner_module._remote_exists(config, "/queue/results/inbox/task"),
+        lambda config: runner_module._list_result_partials(config, "task"),
+        lambda config: runner_module._read_remote_claim_epoch(config, "task"),
+        lambda config: runner_module._conditional_remote_transition(
+            config,
+            task_id="task",
+            expected_status_sha="a" * 64,
+            destination_state="pending",
+        ),
+    ],
+)
+def test_lease_recovery_classifies_transport_failures(
+    tmp_path: Path,
+    monkeypatch,
+    operation,
+) -> None:
+    config = _research_worker_config(tmp_path)
+    monkeypatch.setattr(
+        runner_module,
+        "_ssh",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            ["ssh"],
+            255,
+            "",
+            "Connection timed out during banner exchange",
+        ),
+    )
+
+    with pytest.raises(
+        runner_module._ControlPlaneTransportError,
+        match="Connection timed out",
+    ):
+        operation(config)
+
+
 def test_continuous_worker_retries_transient_control_plane_poll(
     tmp_path: Path,
     monkeypatch,

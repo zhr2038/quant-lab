@@ -535,6 +535,7 @@ def compute_alpha_factory(
             root / STRATEGY_EVIDENCE_DATASET,
             day,
             candidates=("v5.alt_impulse_shadow",),
+            excluded_sources=(SOURCE_NAME,),
         ),
         "gold/strategy_evidence",
     )
@@ -1780,6 +1781,7 @@ def _alpha_factory_source_summary(root: Path, day: date) -> pl.DataFrame:
         root / STRATEGY_EVIDENCE_DATASET,
         day,
         candidates=("v5.alt_impulse_shadow",),
+        excluded_sources=(SOURCE_NAME,),
     )
     alt_impulse = _with_source_dataset(alt_impulse, "gold/strategy_evidence")
     factor_bridge = _factor_bridge_source_summary(root, day)
@@ -1899,6 +1901,7 @@ def _read_candidate_rows_for_day(
     day: date,
     *,
     candidates: tuple[str, ...],
+    excluded_sources: tuple[str, ...] = (),
 ) -> pl.DataFrame:
     try:
         lazy = read_parquet_lazy(dataset)
@@ -1907,11 +1910,18 @@ def _read_candidate_rows_for_day(
         return pl.DataFrame()
     if "as_of_date" not in columns or "strategy_candidate" not in columns:
         return pl.DataFrame()
+    if excluded_sources and "source" not in columns:
+        raise ValueError("alpha_factory_source_filter_column_missing")
+    predicate = (
+        (pl.col("as_of_date").cast(pl.Utf8).str.slice(0, 10) == day.isoformat())
+        & pl.col("strategy_candidate").cast(pl.Utf8).is_in(candidates)
+    )
+    if excluded_sources:
+        predicate &= ~pl.col("source").cast(pl.Utf8, strict=False).is_in(
+            excluded_sources
+        )
     try:
-        return lazy.filter(
-            (pl.col("as_of_date").cast(pl.Utf8).str.slice(0, 10) == day.isoformat())
-            & pl.col("strategy_candidate").cast(pl.Utf8).is_in(candidates)
-        ).collect()
+        return lazy.filter(predicate).collect()
     except Exception:
         return pl.DataFrame()
 

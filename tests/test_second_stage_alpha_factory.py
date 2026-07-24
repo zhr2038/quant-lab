@@ -342,6 +342,7 @@ def test_alpha_factory_outputs_candidates_results_and_queue_without_live(tmp_pat
     _write_expanded_labels(lake)
     _write_exit_policy_inputs(lake)
     _write_alt_impulse_evidence(lake)
+    _append_alpha_factory_feedback_evidence(lake)
 
     result = build_and_publish_alpha_factory(
         lake,
@@ -373,6 +374,18 @@ def test_alpha_factory_outputs_candidates_results_and_queue_without_live(tmp_pat
     assert "max_live_notional_usdt" in expanded_space
     assert set(results["strategy_candidate"].to_list()).issubset(ALPHA_FACTORY_CANDIDATES)
     assert "v5.alt_impulse_shadow" in set(results["strategy_candidate"].to_list())
+    assert candidates.select(["as_of_date", "candidate_id"]).unique().height == (
+        candidates.height
+    )
+    assert results.select(["as_of_date", "candidate_id"]).unique().height == results.height
+    alt_impulse = results.filter(
+        (pl.col("strategy_candidate") == "v5.alt_impulse_shadow")
+        & (pl.col("symbol") == "SOL-USDT")
+        & (pl.col("regime_state") == "ALT_IMPULSE")
+        & (pl.col("horizon_hours") == 24)
+    )
+    assert alt_impulse.height == 1
+    assert alt_impulse["sample_count"][0] == 35
     assert set(candidates["max_live_notional_usdt"].to_list()) == {0.0}
     assert set(results["max_live_notional_usdt"].to_list()) == {0.0}
     assert set(promotion["max_live_notional_usdt"].to_list()) == {0.0}
@@ -1443,11 +1456,27 @@ def _write_alt_impulse_evidence(lake) -> None:
                     "start_ts": datetime(2026, 5, 20, tzinfo=UTC),
                     "end_ts": datetime(2026, 5, 24, tzinfo=UTC),
                     "created_at": datetime(2026, 5, 24, tzinfo=UTC),
-                    "source": "test",
+                    "source": "research.expanded_crypto_universe_automation.v0.1",
                 }
             ]
         ),
         lake / "gold" / "strategy_evidence",
+    )
+
+
+def _append_alpha_factory_feedback_evidence(lake) -> None:
+    path = lake / "gold" / "strategy_evidence"
+    upstream = read_parquet_dataset(path)
+    feedback = upstream.with_columns(
+        [
+            pl.lit(999).cast(pl.Int64).alias("sample_count"),
+            pl.lit(999).cast(pl.Int64).alias("complete_sample_count"),
+            pl.lit(alpha_factory_module.SOURCE_NAME).alias("source"),
+        ]
+    )
+    write_parquet_dataset(
+        pl.concat([upstream, feedback], how="vertical_relaxed"),
+        path,
     )
 
 

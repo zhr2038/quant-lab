@@ -1990,6 +1990,174 @@ def test_run_once_returns_nonzero_when_claimed_task_fails(
     assert isinstance(handled[0][1], RuntimeError)
 
 
+@pytest.mark.parametrize("failure", ["ssh_exit_255", "ssh_timeout"])
+def test_control_plane_poll_classifies_only_transport_failures(
+    tmp_path: Path,
+    monkeypatch,
+    failure: str,
+) -> None:
+    config = _research_worker_config(tmp_path)
+    if failure == "ssh_timeout":
+        monkeypatch.setattr(
+            runner_module,
+            "_ssh",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                RuntimeError("ssh_timeout")
+            ),
+        )
+    else:
+        monkeypatch.setattr(
+            runner_module,
+            "_ssh",
+            lambda *_args, **_kwargs: subprocess.CompletedProcess(
+                ["ssh"],
+                255,
+                "",
+                "Connection closed by cloud port 22",
+            ),
+        )
+
+    with pytest.raises(
+        runner_module._ControlPlaneTransportError,
+        match="ssh_timeout|Connection closed",
+    ):
+        runner_module._poll_control_plane_ssh(config, "true")
+
+    remote_failure = subprocess.CompletedProcess(
+        ["ssh"],
+        1,
+        "",
+        "permission denied",
+    )
+    monkeypatch.setattr(
+        runner_module,
+        "_ssh",
+        lambda *_args, **_kwargs: remote_failure,
+    )
+    assert (
+        runner_module._poll_control_plane_ssh(config, "false")
+        is remote_failure
+    )
+
+
+def test_continuous_worker_retries_transient_control_plane_poll(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config = replace(
+        _research_worker_config(tmp_path),
+        run_once=False,
+        poll_seconds=7,
+    )
+    waits: list[float] = []
+    runner_module.STOP.clear()
+    monkeypatch.setattr(runner_module.signal, "signal", lambda *_args: None)
+    monkeypatch.setattr(
+        runner_module.Config,
+        "from_env",
+        classmethod(lambda _cls: config),
+    )
+    monkeypatch.setattr(runner_module, "_validate_config", lambda _config: None)
+    monkeypatch.setattr(
+        runner_module,
+        "recover_expired_leases",
+        lambda _config: (_ for _ in ()).throw(
+            runner_module._ControlPlaneTransportError(
+                "Connection closed by cloud port 22"
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        runner_module,
+        "claim_next_task",
+        lambda _config: (_ for _ in ()).throw(
+            AssertionError("claim must not run after recovery transport failure")
+        ),
+    )
+
+    def stop_after_wait(seconds: float) -> bool:
+        waits.append(seconds)
+        runner_module.STOP.set()
+        return True
+
+    monkeypatch.setattr(runner_module.STOP, "wait", stop_after_wait)
+    try:
+        assert runner_module.main() == 0
+    finally:
+        runner_module.STOP.clear()
+    assert waits == [7]
+
+
+def test_run_once_returns_nonzero_on_control_plane_transport_failure(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config = _research_worker_config(tmp_path)
+    runner_module.STOP.clear()
+    monkeypatch.setattr(runner_module.signal, "signal", lambda *_args: None)
+    monkeypatch.setattr(
+        runner_module.Config,
+        "from_env",
+        classmethod(lambda _cls: config),
+    )
+    monkeypatch.setattr(runner_module, "_validate_config", lambda _config: None)
+    monkeypatch.setattr(
+        runner_module,
+        "recover_expired_leases",
+        lambda _config: (_ for _ in ()).throw(
+            runner_module._ControlPlaneTransportError("ssh_timeout")
+        ),
+    )
+    monkeypatch.setattr(
+        runner_module,
+        "claim_next_task",
+        lambda _config: (_ for _ in ()).throw(
+            AssertionError("claim must not run after recovery transport failure")
+        ),
+    )
+    try:
+        assert runner_module.main() == 1
+    finally:
+        runner_module.STOP.clear()
+
+
+def test_continuous_worker_does_not_hide_nontransport_poll_failure(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config = replace(_research_worker_config(tmp_path), run_once=False)
+    runner_module.STOP.clear()
+    monkeypatch.setattr(runner_module.signal, "signal", lambda *_args: None)
+    monkeypatch.setattr(
+        runner_module.Config,
+        "from_env",
+        classmethod(lambda _cls: config),
+    )
+    monkeypatch.setattr(runner_module, "_validate_config", lambda _config: None)
+    monkeypatch.setattr(
+        runner_module,
+        "recover_expired_leases",
+        lambda _config: (_ for _ in ()).throw(
+            RuntimeError("research_running_scan_failed:permission denied")
+        ),
+    )
+    monkeypatch.setattr(
+        runner_module.STOP,
+        "wait",
+        lambda _seconds: (_ for _ in ()).throw(
+            AssertionError("nontransport failures must not be retried")
+        ),
+    )
+    try:
+        with pytest.raises(
+            RuntimeError,
+            match="research_running_scan_failed:permission denied",
+        ):
+            runner_module.main()
+    finally:
+        runner_module.STOP.clear()
+
+
 def _research_worker_config(tmp_path: Path) -> Config:
     return Config(
         cloud_host="cloud",

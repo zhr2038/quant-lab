@@ -102,6 +102,10 @@ _IMAGE_BUILD_COMMIT_PATH = Path("/app/BUILD_GIT_COMMIT")
 _REPOSITORY_GIT_PATH = Path("/run/provenance/repository_git")
 
 
+class _ControlPlaneTransportError(RuntimeError):
+    """Transient SSH transport failure while polling the cloud queue."""
+
+
 @dataclass(frozen=True)
 class Config:
     cloud_host: str
@@ -402,8 +406,20 @@ def main() -> int:
     )
     _validate_config(config)
     while not STOP.is_set():
-        recover_expired_leases(config)
-        task_id = claim_next_task(config)
+        try:
+            recover_expired_leases(config)
+            task_id = claim_next_task(config)
+        except _ControlPlaneTransportError as exc:
+            LOG.warning(
+                "research control-plane poll unavailable error=%s "
+                "retry_seconds=%s",
+                exc,
+                config.poll_seconds,
+            )
+            if config.run_once:
+                return 1
+            STOP.wait(config.poll_seconds)
+            continue
         if task_id is None:
             if config.run_once:
                 return 0
@@ -460,7 +476,7 @@ def claim_next_task(config: Config) -> str | None:
         f"printf '%s' {shlex.quote(config.worker_id)} > \"$root/running/$task/.lease_worker\"; "
         "printf '%s' \"$task\""
     )
-    result = _ssh(config, script, check=False)
+    result = _poll_control_plane_ssh(config, script)
     if result.returncode == 44:
         return None
     if result.returncode != 0:
@@ -474,11 +490,10 @@ def recover_expired_leases(config: Config, *, now: datetime | None = None) -> in
     """Recover abandoned running tasks without racing a live heartbeat."""
     current_time = now or datetime.now(UTC)
     root = shlex.quote(config.cloud_queue_root)
-    result = _ssh(
+    result = _poll_control_plane_ssh(
         config,
         f"find {root}/running -mindepth 1 -maxdepth 1 -type d "
         "-printf '%f\\n' 2>/dev/null | LC_ALL=C sort",
-        check=False,
     )
     if result.returncode != 0:
         raise RuntimeError(f"research_running_scan_failed:{_tail(result.stderr)}")
@@ -1723,6 +1738,24 @@ def _ssh(config: Config, command: str, *, check: bool = True) -> subprocess.Comp
         raise RuntimeError("ssh_timeout") from exc
     if check and result.returncode != 0:
         raise RuntimeError(f"ssh_failed:{_tail(result.stderr)}")
+    return result
+
+
+def _poll_control_plane_ssh(
+    config: Config,
+    command: str,
+) -> subprocess.CompletedProcess[str]:
+    """Run a queue poll without hiding remote script or permission failures."""
+
+    try:
+        result = _ssh(config, command, check=False)
+    except RuntimeError as exc:
+        if str(exc) == "ssh_timeout":
+            raise _ControlPlaneTransportError("ssh_timeout") from exc
+        raise
+    if result.returncode == 255 or result.returncode < 0:
+        detail = _tail(result.stderr) or f"ssh_exit_{result.returncode}"
+        raise _ControlPlaneTransportError(detail)
     return result
 
 

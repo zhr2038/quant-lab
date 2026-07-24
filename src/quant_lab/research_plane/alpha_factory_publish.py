@@ -1,16 +1,17 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 
+import duckdb
 import polars as pl
 
 from quant_lab.data.lake import (
     count_parquet_rows,
-    read_parquet_dataset,
     write_parquet_dataset,
     write_snapshot_meta,
 )
@@ -22,7 +23,6 @@ from quant_lab.research.alpha_factory.factory import (
     SCHEMA_VERSION,
     STRATEGY_EVIDENCE_DATASET,
     derive_alpha_factory_cloud_outputs,
-    merge_alpha_factory_managed_evidence,
 )
 from quant_lab.research.alpha_factory.factory import (
     SOURCE_NAME as ALPHA_FACTORY_SOURCE_NAME,
@@ -34,6 +34,7 @@ from quant_lab.research.strategy_evidence import (
     SAMPLE_SCHEMA,
     STRATEGY_EVIDENCE_SAMPLE_DATASET,
     SUMMARY_SCHEMA,
+    normalize_strategy_evidence_decisions,
 )
 from quant_lab.research_plane.atomic_publish import (
     AtomicPublishItem,
@@ -65,6 +66,7 @@ def publish_alpha_factory_generation(
     """Derive cloud-owned outputs and atomically publish one Alpha generation."""
     root = Path(lake_root)
     recover_alpha_factory_publication(root)
+    _remove_orphan_alpha_factory_staging(root)
     manifest = validated.manifest
     result = pl.read_parquet(validated.output_paths["alpha_factory_result"])
     second_stage_samples = pl.read_parquet(
@@ -77,23 +79,6 @@ def publish_alpha_factory_generation(
     )
     del result
     del second_stage_samples
-
-    existing_sample = read_parquet_dataset(root / STRATEGY_EVIDENCE_SAMPLE_DATASET)
-    merged_sample = merge_alpha_factory_managed_evidence(
-        existing_sample,
-        derivations.strategy_evidence_sample,
-        as_of_date=manifest.as_of_date,
-        sample=True,
-    )
-    del existing_sample
-    existing_summary = read_parquet_dataset(root / STRATEGY_EVIDENCE_DATASET)
-    merged_summary = merge_alpha_factory_managed_evidence(
-        existing_summary,
-        derivations.strategy_evidence,
-        as_of_date=manifest.as_of_date,
-        sample=False,
-    )
-    del existing_summary
 
     transaction_id = uuid.uuid4().hex
     staging_root = root / "gold" / f".__alpha_factory_stage_{transaction_id[:8]}"
@@ -183,16 +168,30 @@ def publish_alpha_factory_generation(
             (
                 "strategy_evidence_sample",
                 STRATEGY_EVIDENCE_SAMPLE_DATASET,
-                merged_sample,
+                derivations.strategy_evidence_sample,
             ),
-            ("strategy_evidence", STRATEGY_EVIDENCE_DATASET, merged_summary),
+            (
+                "strategy_evidence",
+                STRATEGY_EVIDENCE_DATASET,
+                normalize_strategy_evidence_decisions(derivations.strategy_evidence),
+            ),
         ):
+            schema = SAMPLE_SCHEMA if name == "strategy_evidence_sample" else SUMMARY_SCHEMA
+            incoming = frame.select(list(schema)).cast(schema, strict=False)
+            incoming_path = staging_root / f"incoming-{name}.parquet"
+            incoming.write_parquet(incoming_path, compression="zstd")
             staged = staging_root / name
-            write_parquet_dataset(frame, staged)
-            write_snapshot_meta(
+            total_rows = _stage_alpha_factory_shared_evidence(
+                root / target,
+                incoming_path,
                 staged,
                 dataset_name=name,
-                frame=frame,
+                as_of_date=manifest.as_of_date.isoformat(),
+            )
+            _write_streaming_snapshot_meta(
+                staged,
+                dataset_name=name,
+                row_count=total_rows,
                 schema_version=SCHEMA_VERSION,
                 generated_at=manifest.generated_at,
             )
@@ -205,12 +204,12 @@ def publish_alpha_factory_generation(
                     candidate_evidence_sidecar,
                     staged / candidate_evidence_sidecar.name,
                 )
-            managed = _alpha_factory_managed_shared_frame(frame, name)
-            row_counts[name] = managed.height
-            managed_dataset_hashes[name] = _alpha_factory_managed_shared_digest(
+            managed_rows, managed_digest = _alpha_factory_managed_shared_metrics(
+                staged,
                 name,
-                managed,
             )
+            row_counts[name] = managed_rows
+            managed_dataset_hashes[name] = managed_digest
             items.append(
                 AtomicPublishItem(
                     target=target,
@@ -266,6 +265,123 @@ def recover_alpha_factory_publication(lake_root: str | Path) -> bool:
         transaction_name=ALPHA_FACTORY_TRANSACTION_NAME,
         pointer_path=ALPHA_FACTORY_GENERATION_POINTER,
     )
+
+
+def _remove_orphan_alpha_factory_staging(root: Path) -> None:
+    gold = root / "gold"
+    if not gold.is_dir():
+        return
+    for candidate in gold.glob(".__alpha_factory_stage_*"):
+        if candidate.is_dir() and not candidate.is_symlink():
+            shutil.rmtree(candidate, ignore_errors=True)
+
+
+def _stage_alpha_factory_shared_evidence(
+    existing_root: Path,
+    incoming_path: Path,
+    staged_root: Path,
+    *,
+    dataset_name: str,
+    as_of_date: str,
+) -> int:
+    """Replace one Alpha-owned day with a bounded-memory DuckDB copy."""
+    try:
+        managed_source = ALPHA_FACTORY_SHARED_MANAGED_SCOPES[dataset_name]["source"]
+    except KeyError as exc:
+        raise ValueError(
+            f"alpha_factory_unknown_shared_dataset:{dataset_name}"
+        ) from exc
+    schema = SAMPLE_SCHEMA if dataset_name == "strategy_evidence_sample" else SUMMARY_SCHEMA
+    staged_root.mkdir(parents=True, exist_ok=False)
+    output_path = staged_root / "data.parquet"
+    spill = staged_root / ".duckdb_tmp"
+    spill.mkdir(parents=True, exist_ok=False)
+    existing_files = _alpha_factory_parquet_files(existing_root)
+    columns = ",".join(_sql_identifier(column) for column in schema)
+    incoming_sql = (
+        f"SELECT {columns} FROM read_parquet("
+        f"{_sql_literal(incoming_path)}, hive_partitioning=false)"
+    )
+    if existing_files:
+        existing_sql = (
+            f"SELECT {columns} FROM read_parquet("
+            f"[{','.join(_sql_literal(path) for path in existing_files)}], "
+            "union_by_name=true, hive_partitioning=false)"
+        )
+        replace_predicate = (
+            f"{_sql_identifier('source')} = {_sql_literal(managed_source)} "
+            f"AND CAST({_sql_identifier('as_of_date')} AS VARCHAR) = "
+            f"{_sql_literal(as_of_date)}"
+        )
+        query = (
+            f"SELECT * FROM ({existing_sql}) WHERE NOT ({replace_predicate}) "
+            f"UNION ALL BY NAME SELECT * FROM ({incoming_sql})"
+        )
+    else:
+        query = incoming_sql
+    connection = duckdb.connect(database=":memory:", read_only=False)
+    try:
+        connection.execute("SET threads = 1")
+        connection.execute("SET preserve_insertion_order = false")
+        connection.execute("SET memory_limit = '512MB'")
+        connection.execute(f"SET temp_directory = {_sql_literal(spill)}")
+        connection.execute(
+            f"COPY ({query}) TO {_sql_literal(output_path)} "
+            "(FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE 100000)"
+        )
+    finally:
+        connection.close()
+        shutil.rmtree(spill, ignore_errors=True)
+    return count_parquet_rows(staged_root)
+
+
+def _write_streaming_snapshot_meta(
+    staged_root: Path,
+    *,
+    dataset_name: str,
+    row_count: int,
+    schema_version: str,
+    generated_at: datetime,
+) -> None:
+    files = _alpha_factory_parquet_files(staged_root)
+    digest = hashlib.sha256()
+    for path in files:
+        digest.update(path.name.encode("utf-8"))
+        with path.open("rb") as handle:
+            while chunk := handle.read(1024 * 1024):
+                digest.update(chunk)
+    atomic_write_json(
+        staged_root / "_snapshot_meta.json",
+        {
+            "dataset": dataset_name,
+            "generated_at": generated_at.isoformat(),
+            "expires_at": None,
+            "row_count": row_count,
+            "source_sha": digest.hexdigest(),
+            "file_count": len(files),
+            "schema_version": schema_version,
+            "created_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+        },
+    )
+
+
+def _alpha_factory_parquet_files(root: Path) -> list[Path]:
+    if not root.is_dir():
+        return []
+    return sorted(
+        path
+        for path in root.rglob("*.parquet")
+        if path.is_file()
+        and all(not part.startswith((".", "__")) for part in path.relative_to(root).parts)
+    )
+
+
+def _sql_literal(value: str | Path) -> str:
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+def _sql_identifier(value: str) -> str:
+    return '"' + value.replace('"', '""') + '"'
 
 
 def verify_alpha_factory_generation(
@@ -334,20 +450,18 @@ def verify_alpha_factory_generation(
         if metadata.get("generation_id") != generation_id:
             raise RuntimeError(f"alpha_factory_dataset_generation_mismatch:{target}")
         if dataset_name in ALPHA_FACTORY_SHARED_MANAGED_SCOPES:
-            managed = _read_alpha_factory_managed_shared_dataset(
+            actual_rows, actual_digest = _alpha_factory_managed_shared_metrics(
                 root / target,
                 dataset_name,
             )
-            actual_rows = managed.height
         else:
-            managed = None
             actual_rows = count_parquet_rows(root / target)
+            actual_digest = None
         if actual_rows != rows[dataset_name]:
             raise RuntimeError(f"alpha_factory_dataset_row_count_mismatch:{target}")
         if (
-            managed is not None
-            and _alpha_factory_managed_shared_digest(dataset_name, managed)
-            != managed_dataset_hashes[dataset_name]
+            actual_digest is not None
+            and actual_digest != managed_dataset_hashes[dataset_name]
         ):
             raise RuntimeError(f"alpha_factory_dataset_managed_hash_mismatch:{target}")
     return rows
@@ -391,11 +505,11 @@ def _alpha_factory_managed_shared_frame(
     )
 
 
-def _read_alpha_factory_managed_shared_dataset(
+def _alpha_factory_managed_shared_metrics(
     dataset_root: Path,
     dataset_name: str,
-) -> pl.DataFrame:
-    """Read only Alpha-owned rows when verifying a shared evidence dataset."""
+) -> tuple[int, str]:
+    """Stream aggregate Alpha-owned rows without materializing shared history."""
     try:
         scope = ALPHA_FACTORY_SHARED_MANAGED_SCOPES[dataset_name]
     except KeyError as exc:
@@ -405,7 +519,8 @@ def _read_alpha_factory_managed_shared_dataset(
     schema = SAMPLE_SCHEMA if dataset_name == "strategy_evidence_sample" else SUMMARY_SCHEMA
     files = sorted(path for path in dataset_root.rglob("*.parquet") if path.is_file())
     if not files:
-        return pl.DataFrame(schema=schema)
+        empty = pl.DataFrame(schema=schema)
+        return 0, _alpha_factory_managed_shared_digest(dataset_name, empty)
     lazy = pl.scan_parquet([str(path) for path in files], extra_columns="ignore")
     missing = sorted(set(schema) - set(lazy.collect_schema().names()))
     if missing:
@@ -413,7 +528,7 @@ def _read_alpha_factory_managed_shared_dataset(
             f"alpha_factory_shared_dataset_columns_missing:{dataset_name}:"
             + ",".join(missing)
         )
-    return (
+    managed = (
         lazy.filter(
             pl.col("source").cast(pl.Utf8, strict=False) == scope["source"]
         )
@@ -423,8 +538,33 @@ def _read_alpha_factory_managed_shared_dataset(
                 for column, dtype in schema.items()
             ]
         )
-        .collect(engine="streaming")
     )
+    columns = sorted(schema)
+    row = pl.struct(columns)
+    values = (
+        managed.select(
+            [
+                pl.len().alias("row_count"),
+                row.hash(seed=0).sum().alias("hash_sum_0"),
+                row.hash(seed=1).sum().alias("hash_sum_1"),
+                row.hash(seed=2).min().alias("hash_min"),
+                row.hash(seed=3).max().alias("hash_max"),
+            ]
+        )
+        .collect(engine="streaming")
+        .row(0, named=True)
+    )
+    aggregates = {name: int(value or 0) for name, value in values.items()}
+    digest = model_content_sha256(
+        {
+            "schema_version": "alpha_factory_managed_dataset_digest.v1",
+            "dataset_name": dataset_name,
+            "managed_scope": ALPHA_FACTORY_SHARED_MANAGED_SCOPES[dataset_name],
+            "schema": [(column, str(schema[column])) for column in columns],
+            **aggregates,
+        }
+    )
+    return aggregates["row_count"], digest
 
 
 def _alpha_factory_managed_shared_digest(

@@ -11,7 +11,6 @@ import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from pydantic import ValidationError
 
-import quant_lab.research_plane.alpha_factory_publish as alpha_factory_publish_module
 import quant_lab.research_plane.importer as importer_module
 from quant_lab.data.lake import read_parquet_dataset, write_parquet_dataset
 from quant_lab.research.alpha_factory.factory import (
@@ -384,7 +383,6 @@ def test_alpha_factory_empty_result_cloud_derivation_and_import(tmp_path: Path) 
 
 def test_alpha_factory_generation_scopes_shared_verification_to_managed_source(
     tmp_path: Path,
-    monkeypatch,
 ) -> None:
     lake, queue, task, task_key, worker_key = _stage_empty_alpha_result(tmp_path)
     previous_day = "2026-07-17"
@@ -404,6 +402,18 @@ def test_alpha_factory_generation_scopes_shared_verification_to_managed_source(
                     "as_of_date": previous_day,
                     "strategy_candidate": "v5.alt_impulse_shadow",
                     "candidate_id": "v5-existing-sample",
+                    "source": V5_EVIDENCE_SOURCE_NAME,
+                },
+                {
+                    "as_of_date": "2026-07-18",
+                    "strategy_candidate": "v5.alt_impulse_shadow",
+                    "candidate_id": "alpha-stale-current-sample",
+                    "source": SECOND_STAGE_SOURCE_NAME,
+                },
+                {
+                    "as_of_date": "2026-07-18",
+                    "strategy_candidate": "v5.alt_impulse_shadow",
+                    "candidate_id": "v5-current-sample",
                     "source": V5_EVIDENCE_SOURCE_NAME,
                 },
             ],
@@ -428,10 +438,27 @@ def test_alpha_factory_generation_scopes_shared_verification_to_managed_source(
                     "sample_count": 99,
                     "source": V5_EVIDENCE_SOURCE_NAME,
                 },
+                {
+                    "as_of_date": "2026-07-18",
+                    "strategy_candidate": "v5.alt_impulse_shadow",
+                    "decision": "KEEP_SHADOW",
+                    "sample_count": 7,
+                    "source": ALPHA_FACTORY_SOURCE_NAME,
+                },
+                {
+                    "as_of_date": "2026-07-18",
+                    "strategy_candidate": "v5.alt_impulse_shadow",
+                    "decision": "KEEP_SHADOW",
+                    "sample_count": 101,
+                    "source": V5_EVIDENCE_SOURCE_NAME,
+                },
             ],
         ),
         summary_path,
     )
+    orphan_stage = lake / "gold" / ".__alpha_factory_stage_interrupted"
+    orphan_stage.mkdir()
+    (orphan_stage / "partial").write_text("interrupted", encoding="utf-8")
 
     imported = import_entry_quality_history_result(
         lake,
@@ -444,6 +471,7 @@ def test_alpha_factory_generation_scopes_shared_verification_to_managed_source(
         expected_quant_lab_commit=COMMIT,
     )
     assert imported.state == "completed"
+    assert not orphan_stage.exists()
     pointer = json.loads((lake / ALPHA_FACTORY_GENERATION_POINTER).read_text("utf-8"))
     assert pointer["schema_version"] == ALPHA_FACTORY_GENERATION_SCHEMA
     assert pointer["row_count_scopes"]["strategy_evidence_sample"] == (
@@ -454,6 +482,24 @@ def test_alpha_factory_generation_scopes_shared_verification_to_managed_source(
     )
     assert pointer["row_counts"]["strategy_evidence_sample"] == 1
     assert pointer["row_counts"]["strategy_evidence"] == 1
+    published_samples = read_parquet_dataset(sample_path)
+    published_summary = read_parquet_dataset(summary_path)
+    assert "alpha-stale-current-sample" not in published_samples["candidate_id"].to_list()
+    assert "v5-current-sample" in published_samples["candidate_id"].to_list()
+    assert (
+        published_summary.filter(
+            (pl.col("as_of_date") == "2026-07-18")
+            & (pl.col("source") == ALPHA_FACTORY_SOURCE_NAME)
+        ).height
+        == 0
+    )
+    assert (
+        published_summary.filter(
+            (pl.col("as_of_date") == "2026-07-18")
+            & (pl.col("source") == V5_EVIDENCE_SOURCE_NAME)
+        ).height
+        == 1
+    )
 
     sidecars = {
         path: (path / "_research_generation.json").read_bytes()
@@ -499,18 +545,6 @@ def test_alpha_factory_generation_scopes_shared_verification_to_managed_source(
     for path, payload in sidecars.items():
         (path / "_research_generation.json").write_bytes(payload)
 
-    original_reader = alpha_factory_publish_module.read_parquet_dataset
-
-    def reject_full_shared_read(path: str | Path) -> pl.DataFrame:
-        if Path(path) in {sample_path, summary_path}:
-            raise AssertionError("shared evidence verification must use a filtered lazy scan")
-        return original_reader(path)
-
-    monkeypatch.setattr(
-        alpha_factory_publish_module,
-        "read_parquet_dataset",
-        reject_full_shared_read,
-    )
     assert verify_alpha_factory_generation(lake, pointer["generation_id"]) == pointer[
         "row_counts"
     ]

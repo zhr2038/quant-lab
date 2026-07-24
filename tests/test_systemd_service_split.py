@@ -354,8 +354,8 @@ def test_alpha_factory_nas_request_replaces_scheduled_local_compute():
         in importer
     )
     assert "TimeoutStartSec=30min" in importer
-    assert "MemoryHigh=5G" in importer
-    assert "MemoryMax=6G" in importer
+    assert "MemoryHigh=2560M" in importer
+    assert "MemoryMax=3G" in importer
     assert "gc-research-snapshots" in snapshot_gc
 
 

@@ -337,6 +337,17 @@ def test_alpha_factory_nas_request_replaces_scheduled_local_compute():
     assert "Unit=quant-lab-alpha-factory-request.service" not in legacy_timer
 
     assert "import-research-results" in importer
+    assert (
+        "flock -E 75 -w 30 /var/lock/quant-lab-heavy.lock "
+        "/usr/bin/flock -E 75 -w 30 /var/lock/quant-lab-v5-research.lock"
+        in importer
+    )
+    assert "SKIP_RESEARCH_RESULT_IMPORT_LOCK_BUSY" in importer
+    assert (
+        "ReadWritePaths=/var/lib/quant-lab/lake /var/lib/quant-lab/research_queue "
+        "/var/lock/quant-lab-heavy.lock /var/lock/quant-lab-v5-research.lock"
+        in importer
+    )
     assert "TimeoutStartSec=30min" in importer
     assert "MemoryHigh=2G" in importer
     assert "MemoryMax=3G" in importer

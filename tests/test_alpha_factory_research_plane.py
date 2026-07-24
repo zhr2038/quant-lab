@@ -402,6 +402,12 @@ def test_alpha_factory_generation_scopes_shared_verification_to_managed_source(
                 {
                     "as_of_date": previous_day,
                     "strategy_candidate": "v5.alt_impulse_shadow",
+                    "candidate_id": "alpha-previous-sample",
+                    "source": SECOND_STAGE_SOURCE_NAME,
+                },
+                {
+                    "as_of_date": previous_day,
+                    "strategy_candidate": "v5.alt_impulse_shadow",
                     "candidate_id": "v5-existing-sample",
                     "source": V5_EVIDENCE_SOURCE_NAME,
                 },
@@ -425,6 +431,13 @@ def test_alpha_factory_generation_scopes_shared_verification_to_managed_source(
         _typed_rows(
             SUMMARY_SCHEMA,
             [
+                {
+                    "as_of_date": previous_day,
+                    "strategy_candidate": "v5.alt_impulse_shadow",
+                    "decision": "KEEP_SHADOW",
+                    "sample_count": 3,
+                    "source": ALPHA_FACTORY_SOURCE_NAME,
+                },
                 {
                     "as_of_date": previous_day,
                     "strategy_candidate": "v5.alt_impulse_shadow",

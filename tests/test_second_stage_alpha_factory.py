@@ -425,6 +425,38 @@ def test_alpha_factory_pure_compute_matches_legacy_publish_fixture(tmp_path):
         registry=build_default_template_registry(generated_at),
         generated_at=generated_at,
     )
+    alpha_feedback_sample = (
+        pure.second_stage_alpha_factory_sample.head(1)
+        .with_columns(
+            [
+                pl.lit("v5.alt_impulse_shadow").alias("strategy_candidate"),
+                pl.lit("alpha-feedback-sample").alias("candidate_id"),
+                pl.lit("SOL-USDT").alias("symbol"),
+                pl.lit("ALT_IMPULSE").alias("regime_state"),
+                pl.lit(24).cast(pl.Int64).alias("horizon_hours"),
+                pl.lit("alpha-feedback-event").alias("source_event_key"),
+                pl.lit(second_stage_module.SOURCE_NAME).alias("source"),
+            ]
+        )
+    )
+    assert alpha_feedback_sample.height == 1
+    write_parquet_dataset(
+        alpha_feedback_sample,
+        lake / "gold" / "strategy_evidence_sample",
+    )
+    feedback_guarded = compute_alpha_factory(
+        lake,
+        as_of_date="2026-05-24",
+        lookback_days=30,
+        max_candidates=200,
+        registry=build_default_template_registry(generated_at),
+        generated_at=generated_at,
+    )
+    assert_frame_equal(
+        feedback_guarded.alpha_factory_result,
+        pure.alpha_factory_result,
+        check_row_order=False,
+    )
 
     build_and_publish_alpha_factory(
         lake,

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import shutil
+import tempfile
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
@@ -33,6 +34,7 @@ from quant_lab.research.second_stage_alpha_factory import (
 from quant_lab.research.strategy_evidence import (
     SAMPLE_SCHEMA,
     STRATEGY_EVIDENCE_SAMPLE_DATASET,
+    STRATEGY_EVIDENCE_SAMPLE_KEY_COLUMNS,
     SUMMARY_SCHEMA,
     normalize_strategy_evidence_decisions,
 )
@@ -56,6 +58,22 @@ ALPHA_FACTORY_SHARED_MANAGED_SCOPES = {
         "scope": "managed_source",
         "source": ALPHA_FACTORY_SOURCE_NAME,
     },
+}
+ALPHA_FACTORY_SHARED_PRIMARY_KEYS = {
+    "strategy_evidence_sample": (
+        "source",
+        *STRATEGY_EVIDENCE_SAMPLE_KEY_COLUMNS,
+    ),
+    "strategy_evidence": (
+        "source",
+        "strategy",
+        "evidence_version",
+        "as_of_date",
+        "strategy_candidate",
+        "symbol",
+        "regime_state",
+        "horizon_hours",
+    ),
 }
 
 
@@ -284,7 +302,7 @@ def _stage_alpha_factory_shared_evidence(
     dataset_name: str,
     as_of_date: str,
 ) -> int:
-    """Replace one Alpha-owned day with a bounded-memory DuckDB copy."""
+    """Replace the current day and upsert Alpha-owned history with bounded memory."""
     try:
         managed_source = ALPHA_FACTORY_SHARED_MANAGED_SCOPES[dataset_name]["source"]
     except KeyError as exc:
@@ -308,14 +326,41 @@ def _stage_alpha_factory_shared_evidence(
             f"[{','.join(_sql_literal(path) for path in existing_files)}], "
             "union_by_name=true, hive_partitioning=false)"
         )
-        replace_predicate = (
+        managed_existing_predicate = (
             f"{_sql_identifier('source')} = {_sql_literal(managed_source)} "
-            f"AND CAST({_sql_identifier('as_of_date')} AS VARCHAR) = "
-            f"{_sql_literal(as_of_date)}"
+            f"AND CAST({_sql_identifier('as_of_date')} AS VARCHAR) "
+            f"IS DISTINCT FROM {_sql_literal(as_of_date)}"
+        )
+        unmanaged_existing_predicate = (
+            f"{_sql_identifier('source')} IS DISTINCT FROM "
+            f"{_sql_literal(managed_source)}"
+        )
+        key_columns = ",".join(
+            _sql_identifier(column)
+            for column in ALPHA_FACTORY_SHARED_PRIMARY_KEYS[dataset_name]
+        )
+        priority_column = _sql_identifier("__alpha_incoming_priority")
+        managed_rows = (
+            f"SELECT {columns}, 0 AS {priority_column} "
+            f"FROM ({existing_sql}) WHERE {managed_existing_predicate} "
+            "UNION ALL BY NAME "
+            f"SELECT {columns}, 1 AS {priority_column} FROM ({incoming_sql})"
+        )
+        deduplicated_managed_rows = (
+            f"SELECT {columns} FROM ("
+            f"SELECT {columns}, ROW_NUMBER() OVER ("
+            f"PARTITION BY {key_columns} "
+            f"ORDER BY {priority_column} DESC, "
+            f"{_sql_identifier('created_at')} DESC NULLS LAST"
+            ") AS __alpha_row_number "
+            f"FROM ({managed_rows})"
+            ") WHERE __alpha_row_number = 1"
         )
         query = (
-            f"SELECT * FROM ({existing_sql}) WHERE NOT ({replace_predicate}) "
-            f"UNION ALL BY NAME SELECT * FROM ({incoming_sql})"
+            f"SELECT {columns} FROM ({existing_sql}) "
+            f"WHERE {unmanaged_existing_predicate} "
+            "UNION ALL BY NAME "
+            f"SELECT {columns} FROM ({deduplicated_managed_rows})"
         )
     else:
         query = incoming_sql
@@ -521,6 +566,16 @@ def _alpha_factory_managed_shared_metrics(
     if not files:
         empty = pl.DataFrame(schema=schema)
         return 0, _alpha_factory_managed_shared_digest(dataset_name, empty)
+    duplicate_rows = _alpha_factory_managed_shared_duplicate_rows(
+        dataset_root,
+        dataset_name,
+        files=files,
+    )
+    if duplicate_rows:
+        raise RuntimeError(
+            "alpha_factory_shared_dataset_duplicate_primary_key:"
+            f"{dataset_name}:{duplicate_rows}"
+        )
     lazy = pl.scan_parquet([str(path) for path in files], extra_columns="ignore")
     missing = sorted(set(schema) - set(lazy.collect_schema().names()))
     if missing:
@@ -565,6 +620,50 @@ def _alpha_factory_managed_shared_metrics(
         }
     )
     return aggregates["row_count"], digest
+
+
+def _alpha_factory_managed_shared_duplicate_rows(
+    dataset_root: Path,
+    dataset_name: str,
+    *,
+    files: list[Path] | None = None,
+) -> int:
+    try:
+        managed_source = ALPHA_FACTORY_SHARED_MANAGED_SCOPES[dataset_name]["source"]
+        primary_keys = ALPHA_FACTORY_SHARED_PRIMARY_KEYS[dataset_name]
+    except KeyError as exc:
+        raise ValueError(
+            f"alpha_factory_unknown_shared_dataset:{dataset_name}"
+        ) from exc
+    parquet_files = files or _alpha_factory_parquet_files(dataset_root)
+    if not parquet_files:
+        return 0
+    source = (
+        "read_parquet("
+        f"[{','.join(_sql_literal(path) for path in parquet_files)}], "
+        "union_by_name=true, hive_partitioning=false)"
+    )
+    keys = ",".join(_sql_identifier(column) for column in primary_keys)
+    with tempfile.TemporaryDirectory(prefix="quant-lab-alpha-verify-") as temp_root:
+        connection = duckdb.connect(database=":memory:", read_only=False)
+        try:
+            connection.execute("SET threads = 1")
+            connection.execute("SET preserve_insertion_order = false")
+            connection.execute("SET enable_progress_bar = false")
+            connection.execute("SET memory_limit = '512MB'")
+            connection.execute(
+                f"SET temp_directory = {_sql_literal(Path(temp_root) / 'duckdb')}"
+            )
+            row = connection.execute(
+                "SELECT COALESCE(SUM(row_count - 1), 0) FROM ("
+                f"SELECT COUNT(*) AS row_count FROM {source} "
+                f"WHERE {_sql_identifier('source')} = {_sql_literal(managed_source)} "
+                f"GROUP BY {keys} HAVING COUNT(*) > 1"
+                ")"
+            ).fetchone()
+        finally:
+            connection.close()
+    return int(row[0] or 0)
 
 
 def _alpha_factory_managed_shared_digest(

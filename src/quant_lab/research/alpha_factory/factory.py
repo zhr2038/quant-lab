@@ -544,6 +544,7 @@ def compute_alpha_factory(
             root / STRATEGY_EVIDENCE_SAMPLE_DATASET,
             day,
             candidates=("v5.alt_impulse_shadow",),
+            excluded_sources=(SECOND_STAGE_SOURCE_NAME,),
         ),
         "gold/strategy_evidence_sample",
     )
@@ -1885,6 +1886,7 @@ def _alpha_factory_source_samples(root: Path, day: date) -> pl.DataFrame:
         root / STRATEGY_EVIDENCE_SAMPLE_DATASET,
         day,
         candidates=("v5.alt_impulse_shadow",),
+        excluded_sources=(SECOND_STAGE_SOURCE_NAME,),
     )
     alt_impulse = _with_source_dataset(
         alt_impulse,

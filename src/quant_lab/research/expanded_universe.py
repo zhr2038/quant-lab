@@ -1763,7 +1763,22 @@ def _read_recent_orderbook_snapshots(lake_root: Path, *, since: datetime) -> pl.
     scan = _scan_dataset(dataset_path, max_files=300)
     if scan is None:
         return pl.DataFrame()
-    timestamp = pl.coalesce([pl.col("ts"), pl.col("ingest_ts")])
+    schema = scan.collect_schema()
+    timestamp_candidates = []
+    for column in ("ts", "ingest_ts"):
+        if column not in schema:
+            continue
+        timestamp_candidates.extend(
+            [
+                pl.col(column).cast(pl.Datetime(time_zone="UTC"), strict=False),
+                pl.col(column)
+                .cast(pl.Utf8, strict=False)
+                .str.to_datetime(time_zone="UTC", strict=False),
+            ]
+        )
+    if not timestamp_candidates:
+        return pl.DataFrame()
+    timestamp = pl.coalesce(timestamp_candidates)
     columns = ["symbol", "ts", "ingest_ts", "bids_json", "asks_json"]
     try:
         return (

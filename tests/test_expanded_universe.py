@@ -12,6 +12,7 @@ from quant_lab.data.lake import (
 from quant_lab.research.alpha_discovery import build_and_publish_alpha_discovery_board
 from quant_lab.research.expanded_universe import (
     STRATEGY_EVIDENCE_UPSERT_KEYS,
+    _read_recent_orderbook_snapshots,
     build_and_publish_expanded_crypto_universe_shadow,
     build_expanded_universe_candidate_maturity,
     build_expanded_universe_watchlist,
@@ -119,6 +120,28 @@ def test_symbol_quality_uses_rest_candidate_spread_when_orderbook_missing():
     assert xrp["avg_spread_bps"] == 4.0
     assert xrp["quote_volume_24h"] == 2_000_000.0
     assert "spread_not_observed" not in json.loads(xrp["blocking_reasons"])
+
+
+def test_recent_orderbook_reader_parses_production_string_timestamps(tmp_path):
+    lake_root = tmp_path / "lake"
+    orderbooks = _orderbook_frame({"BTC-USDT": 5.0}).with_columns(
+        [
+            pl.col("ts").dt.to_string("%Y-%m-%dT%H:%M:%S%.fZ"),
+            pl.col("ingest_ts").dt.to_string("%Y-%m-%dT%H:%M:%S%.fZ"),
+        ]
+    )
+    write_parquet_dataset(
+        orderbooks,
+        lake_root / "silver" / "orderbook_snapshot",
+    )
+
+    recent = _read_recent_orderbook_snapshots(
+        lake_root,
+        since=datetime(2026, 5, 20, 6, tzinfo=UTC),
+    )
+
+    assert recent.height == 1
+    assert recent.item(0, "symbol") == "BTC-USDT"
 
 
 def test_web_strategy_page_reads_expanded_universe(tmp_path):

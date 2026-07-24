@@ -11,6 +11,7 @@ from quant_lab.data.file_index import (
     build_lake_file_index,
     files_fully_within_time_range,
     old_files_for_dataset,
+    recent_files_for_dataset,
 )
 from quant_lab.data.lake import (
     append_parquet_dataset,
@@ -454,6 +455,56 @@ def test_lake_file_index_reuses_unchanged_rows_and_scans_only_new_files(
     reused_flags = updated.sort("path").get_column("reused_from_previous_index").to_list()
     assert reused_flags.count(True) == 2
     assert reused_flags.count(False) == 1
+
+
+def test_lake_file_index_metadata_mode_avoids_hashing_and_preserves_time_bounds(
+    tmp_path,
+    monkeypatch,
+):
+    lake = tmp_path / "lake"
+    source = lake / "silver/trade_print"
+    source.mkdir(parents=True)
+    event_ts = datetime(2026, 5, 31, 10, tzinfo=UTC)
+    target = source / "hot.parquet"
+    pl.DataFrame([{"symbol": "BNB-USDT", "ts": event_ts, "size": 2.0}]).write_parquet(target)
+
+    monkeypatch.setattr(
+        file_index_module,
+        "sha256_file",
+        lambda _path: (_ for _ in ()).throw(
+            AssertionError("metadata-only refresh must not hash payload bytes")
+        ),
+    )
+    frame = build_lake_file_index(
+        lake,
+        ["silver/trade_print"],
+        content_identity=False,
+    )
+
+    row = frame.row(0, named=True)
+    assert row["identity_mode"] == "metadata"
+    assert row["sha256"] == ""
+    assert row["row_count"] == 1
+    assert row["min_ts"] == "2026-05-31T10:00:00Z"
+    assert row["max_ts"] == "2026-05-31T10:00:00Z"
+    assert recent_files_for_dataset(
+        source,
+        since=event_ts - timedelta(minutes=1),
+    ) == [target]
+
+    monkeypatch.setattr(
+        file_index_module,
+        "_file_metadata_time_bounds",
+        lambda _path: (_ for _ in ()).throw(
+            AssertionError("unchanged metadata-only rows must be reused")
+        ),
+    )
+    reused = build_lake_file_index(
+        lake,
+        ["silver/trade_print"],
+        content_identity=False,
+    )
+    assert reused.item(0, "reused_from_previous_index") is True
 
 
 def test_lake_file_index_rejects_dataset_path_escape_and_symlink(tmp_path: Path) -> None:

@@ -3206,6 +3206,7 @@ def test_refresh_web_file_index_covers_web_reader_datasets(tmp_path, monkeypatch
 
     assert result["dataset_count"] == 2
     assert result["indexed_rows"] == 2
+    assert result["metadata_only_dataset_count"] == 0
 
     def fail_rglob(_path):
         raise AssertionError("web reader should use lake_file_index after refresh")
@@ -3218,6 +3219,48 @@ def test_refresh_web_file_index_covers_web_reader_datasets(tmp_path, monkeypatch
 
     assert len(files) == 1
     assert warning is None
+
+
+def test_refresh_web_file_index_uses_metadata_mode_for_heavy_datasets(
+    tmp_path,
+    monkeypatch,
+):
+    readers.clear_web_cache()
+    lake_root = tmp_path / "lake"
+    trade_dataset = lake_root / "silver" / "trade_print"
+    cost_dataset = lake_root / "gold" / "cost_bucket_daily"
+    write_parquet_dataset(
+        pl.DataFrame({"ts": [datetime(2026, 6, 4, tzinfo=UTC)], "size": [1.0]}),
+        trade_dataset,
+    )
+    write_parquet_dataset(
+        pl.DataFrame({"ts": [datetime(2026, 6, 4, tzinfo=UTC)], "cost_bps": [12.0]}),
+        cost_dataset,
+    )
+    monkeypatch.setattr(
+        readers,
+        "DATASET_PATHS",
+        {
+            "trade_print": Path("silver") / "trade_print",
+            "cost_bucket_daily": Path("gold") / "cost_bucket_daily",
+        },
+    )
+    monkeypatch.setattr(readers, "WEB_HEAVY_METADATA_DATASETS", {"trade_print"})
+
+    result = _refresh_web_file_index(lake_root)
+    index = readers.read_parquet_dataset(lake_root / "bronze" / "lake_file_index")
+
+    assert result["dataset_count"] == 2
+    assert result["indexed_rows"] == 2
+    assert result["metadata_only_dataset_count"] == 1
+    modes = {
+        row["dataset"]: row["identity_mode"]
+        for row in index.select(["dataset", "identity_mode"]).to_dicts()
+    }
+    assert modes == {
+        "gold/cost_bucket_daily": "content",
+        "silver/trade_print": "metadata",
+    }
 
 
 def test_dataset_snapshot_uses_snapshot_meta_without_scanning_parquet(tmp_path, monkeypatch):

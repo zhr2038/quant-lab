@@ -763,10 +763,10 @@ def lake_health_command(
         ),
     ] = True,
 ) -> None:
+    result = write_lake_file_health_daily(lake_root)
     web_index: dict[str, Any] | None = None
     if refresh_web_index:
         web_index = _refresh_web_file_index(lake_root)
-    result = write_lake_file_health_daily(lake_root)
     if web_index is not None:
         result["web_file_index"] = web_index
     dataset_names = _parse_dataset_names(dataset)
@@ -806,12 +806,31 @@ def refresh_web_file_index_command(
 
 
 def _refresh_web_file_index(lake_root: str | Path) -> dict[str, Any]:
+    from quant_lab.web.readers import DATASET_PATHS, WEB_HEAVY_METADATA_DATASETS
+
     root = Path(lake_root)
     dataset_paths = _web_file_index_dataset_paths()
-    frame = build_lake_file_index(root, dataset_paths)
+    heavy_paths = sorted(
+        {
+            str(DATASET_PATHS[name]).replace("\\", "/")
+            for name in WEB_HEAVY_METADATA_DATASETS
+            if name in DATASET_PATHS
+        }
+    )
+    regular_paths = [path for path in dataset_paths if path not in set(heavy_paths)]
+    indexed_rows = 0
+    if heavy_paths:
+        indexed_rows += build_lake_file_index(
+            root,
+            heavy_paths,
+            content_identity=False,
+        ).height
+    if regular_paths:
+        indexed_rows += build_lake_file_index(root, regular_paths).height
     return {
         "dataset_count": len(dataset_paths),
-        "indexed_rows": frame.height,
+        "indexed_rows": indexed_rows,
+        "metadata_only_dataset_count": len(heavy_paths),
         "lake_root": str(root),
     }
 

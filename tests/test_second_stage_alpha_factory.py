@@ -273,6 +273,69 @@ def test_exit_policy_review_outputs_actual_vs_alternative_exits(tmp_path):
     assert summary_row["recommended_mode"] == "shadow"
 
 
+def test_exit_policy_review_uses_exact_asset_and_stable_paper_trade_identity() -> None:
+    created_at = datetime(2026, 7, 24, 3, 12, tzinfo=UTC)
+    paper_runs = pl.DataFrame(
+        [
+            {
+                "strategy_id": "ETHFI_F3_F4_DEDUP_24H_PAPER",
+                "strategy_candidate": "f3_f4_deduplicated_entry",
+                "symbol": "ETHFI-USDT",
+                "paper_trade_id": "ethfi-paper-24h",
+                "created_at": created_at,
+                "paper_pnl_bps": -200.0,
+                "exit_reason": "max_holding_bars",
+            },
+            {
+                "strategy_id": "ETHFI_F3_F4_DEDUP_48H_PAPER",
+                "strategy_candidate": "f3_f4_deduplicated_entry",
+                "symbol": "ETHFI-USDT",
+                "paper_trade_id": "ethfi-paper-48h",
+                "created_at": created_at,
+                "paper_pnl_bps": -370.0,
+                "exit_reason": "stop_loss",
+            },
+            {
+                "strategy_id": "ETH_USDT_F3_DOMINANT_ENTRY_PAPER_V1",
+                "strategy_candidate": "v5.f3_dominant_entry",
+                "symbol": "ETH-USDT",
+                "paper_trade_id": "eth-paper-1",
+                "entry_signal_ts": datetime(2026, 7, 23, 2, tzinfo=UTC),
+                "created_at": created_at,
+                "paper_pnl_bps": 12.0,
+                "exit_reason": "fixed_horizon",
+            },
+            {
+                "strategy_id": "ETH_USDT_F3_DOMINANT_ENTRY_PAPER_V2",
+                "strategy_candidate": "v5.f3_dominant_entry",
+                "symbol": "ETH-USDT",
+                "paper_trade_id": "eth-paper-2",
+                "entry_signal_ts": datetime(2026, 7, 23, 3, tzinfo=UTC),
+                "created_at": created_at,
+                "paper_pnl_bps": -8.0,
+                "exit_reason": "stop_loss",
+            },
+        ]
+    )
+
+    samples = second_stage_module.build_exit_policy_review_samples(
+        btc_exit=pl.DataFrame(),
+        paper_runs=paper_runs,
+        as_of_date=date(2026, 7, 24),
+        generated_at=datetime(2026, 7, 24, 4, tzinfo=UTC),
+    )
+
+    assert samples.height == 2
+    assert set(samples["symbol"].to_list()) == {"ETH-USDT"}
+    assert set(samples["source_entry_id"].to_list()) == {
+        "eth-paper-1",
+        "eth-paper-2",
+    }
+    assert samples.select(
+        ["as_of_date", "strategy_id", "source_entry_id"]
+    ).unique().height == samples.height
+
+
 def test_alpha_factory_outputs_candidates_results_and_queue_without_live(tmp_path):
     lake = tmp_path / "lake"
     _write_market(lake)

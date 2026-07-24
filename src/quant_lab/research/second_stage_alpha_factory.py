@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import statistics
 from bisect import bisect_left, bisect_right
 from collections import defaultdict
@@ -478,22 +479,48 @@ def build_exit_policy_review_samples(
             )
         )
     for row in paper_runs.to_dicts() if not paper_runs.is_empty() else []:
-        strategy_id = str(row.get("strategy_id") or row.get("proposal_id") or "").upper()
-        if "ETH" in strategy_id and "F3" in strategy_id:
+        source_strategy_id = str(
+            row.get("strategy_id")
+            or row.get("proposal_id")
+            or row.get("strategy_candidate")
+            or ""
+        )
+        identity_tokens = _identity_tokens(
+            row.get("strategy_id"),
+            row.get("proposal_id"),
+            row.get("strategy_candidate"),
+        )
+        source_symbol = normalize_symbol(row.get("symbol"))
+        if (
+            (source_symbol == "ETH-USDT" or (source_symbol is None and "ETH" in identity_tokens))
+            and "F3" in identity_tokens
+        ):
             candidate = "v5.eth_f3_exit_policy_review"
             symbol = "ETH-USDT"
             strategy = "ETH_F3_EXIT_POLICY_REVIEW"
-        elif "SOL" in strategy_id and "PROTECT" in strategy_id:
+        elif (
+            (source_symbol == "SOL-USDT" or (source_symbol is None and "SOL" in identity_tokens))
+            and "PROTECT" in identity_tokens
+        ):
             candidate = "v5.sol_paper_exit_policy_review"
             symbol = "SOL-USDT"
             strategy = "SOL_PAPER_EXIT_POLICY_REVIEW"
         else:
             continue
-        entry_ts = _parse_dt(row.get("ts_utc") or row.get("created_at") or row.get("as_of_date"))
+        entry_ts = _parse_dt(
+            row.get("entry_signal_ts")
+            or row.get("opened_at")
+            or row.get("entry_decision_ts")
+            or row.get("ts_utc")
+            or row.get("created_at")
+            or row.get("as_of_date")
+        )
         if entry_ts is None:
             continue
-        source_entry_id = str(
-            row.get("run_id") or row.get("source_entry_id") or entry_ts.isoformat()
+        source_entry_id = _paper_source_entry_id(
+            row,
+            source_strategy_id=source_strategy_id,
+            entry_ts=entry_ts,
         )
         rows.append(
             _exit_policy_sample_row(
@@ -523,6 +550,36 @@ def build_exit_policy_review_samples(
     if not rows:
         return pl.DataFrame(schema=EXIT_POLICY_REVIEW_SAMPLE_SCHEMA)
     return pl.DataFrame(rows, schema=EXIT_POLICY_REVIEW_SAMPLE_SCHEMA, orient="row")
+
+
+def _identity_tokens(*values: Any) -> set[str]:
+    return {
+        token
+        for token in re.split(
+            r"[^A-Z0-9]+",
+            " ".join(str(value or "") for value in values).upper(),
+        )
+        if token
+    }
+
+
+def _paper_source_entry_id(
+    row: dict[str, Any],
+    *,
+    source_strategy_id: str,
+    entry_ts: datetime,
+) -> str:
+    explicit = row.get("paper_trade_id") or row.get("run_id") or row.get("source_entry_id")
+    if explicit not in (None, ""):
+        return str(explicit)
+    stable_fallback = (
+        row.get("canonical_opportunity_id")
+        or row.get("entry_signal_ts")
+        or row.get("opened_at")
+        or row.get("entry_decision_ts")
+        or entry_ts.isoformat()
+    )
+    return f"{source_strategy_id}:{stable_fallback}"
 
 
 def build_exit_policy_review_summary(

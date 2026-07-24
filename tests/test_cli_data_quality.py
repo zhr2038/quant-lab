@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import polars as pl
 from typer.testing import CliRunner
 
+import quant_lab.cli as cli_module
 from quant_lab.cli import app
 from quant_lab.data.lake import write_parquet_dataset
 
@@ -192,3 +193,40 @@ def test_lake_health_include_quality_compact_outputs_quality_summary(tmp_path):
     assert "data_quality" in payload
     assert payload["data_quality"]["dataset_count"] == 1
     assert "checks" not in payload["data_quality"]
+
+
+def test_lake_health_persists_health_before_refreshing_web_index(tmp_path, monkeypatch):
+    events: list[str] = []
+
+    def write_health(_lake_root):
+        events.append("health")
+        return {
+            "dataset_count": 0,
+            "total_parquet_files": 0,
+            "warning_count": 0,
+            "rows": [],
+        }
+
+    def refresh_index(_lake_root):
+        events.append("index")
+        return {
+            "dataset_count": 0,
+            "indexed_rows": 0,
+            "metadata_only_dataset_count": 0,
+        }
+
+    monkeypatch.setattr(cli_module, "write_lake_file_health_daily", write_health)
+    monkeypatch.setattr(cli_module, "_refresh_web_file_index", refresh_index)
+
+    result = runner.invoke(
+        app,
+        [
+            "lake-health",
+            "--lake-root",
+            str(tmp_path / "lake"),
+            "--compact-output",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert events == ["health", "index"]

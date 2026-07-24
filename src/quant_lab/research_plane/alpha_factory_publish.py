@@ -24,16 +24,38 @@ from quant_lab.research.alpha_factory.factory import (
     derive_alpha_factory_cloud_outputs,
     merge_alpha_factory_managed_evidence,
 )
-from quant_lab.research.strategy_evidence import STRATEGY_EVIDENCE_SAMPLE_DATASET
+from quant_lab.research.alpha_factory.factory import (
+    SOURCE_NAME as ALPHA_FACTORY_SOURCE_NAME,
+)
+from quant_lab.research.second_stage_alpha_factory import (
+    SOURCE_NAME as SECOND_STAGE_ALPHA_FACTORY_SOURCE_NAME,
+)
+from quant_lab.research.strategy_evidence import (
+    SAMPLE_SCHEMA,
+    STRATEGY_EVIDENCE_SAMPLE_DATASET,
+    SUMMARY_SCHEMA,
+)
 from quant_lab.research_plane.atomic_publish import (
     AtomicPublishItem,
     commit_atomic_research_generation,
     recover_atomic_research_generation,
 )
 from quant_lab.research_plane.result import ValidatedAlphaFactoryResult
+from quant_lab.research_plane.signatures import model_content_sha256
 
 ALPHA_FACTORY_GENERATION_POINTER = Path("gold") / "alpha_factory_generation.json"
+ALPHA_FACTORY_GENERATION_SCHEMA = "alpha_factory_generation.v2"
 ALPHA_FACTORY_TRANSACTION_NAME = "alpha_factory"
+ALPHA_FACTORY_SHARED_MANAGED_SCOPES = {
+    "strategy_evidence_sample": {
+        "scope": "managed_source",
+        "source": SECOND_STAGE_ALPHA_FACTORY_SOURCE_NAME,
+    },
+    "strategy_evidence": {
+        "scope": "managed_source",
+        "source": ALPHA_FACTORY_SOURCE_NAME,
+    },
+}
 
 
 def publish_alpha_factory_generation(
@@ -77,7 +99,7 @@ def publish_alpha_factory_generation(
     staging_root = root / "gold" / f".__alpha_factory_stage_{transaction_id[:8]}"
     staging_root.mkdir(parents=True, exist_ok=False)
     generation_payload = {
-        "schema_version": "alpha_factory_generation.v1",
+        "schema_version": ALPHA_FACTORY_GENERATION_SCHEMA,
         "generation_id": manifest.generation_id,
         "task_id": manifest.task_id,
         "snapshot_id": manifest.snapshot_id,
@@ -109,6 +131,7 @@ def publish_alpha_factory_generation(
     }
     items: list[AtomicPublishItem] = []
     row_counts: dict[str, int] = {}
+    managed_dataset_hashes: dict[str, str] = {}
     try:
         for index, spec in enumerate(ALPHA_FACTORY_COMPUTE_OUTPUT_SPECS):
             frame = pl.read_parquet(validated.output_paths[spec.dataset_name])
@@ -182,7 +205,12 @@ def publish_alpha_factory_generation(
                     candidate_evidence_sidecar,
                     staged / candidate_evidence_sidecar.name,
                 )
-            row_counts[name] = frame.height
+            managed = _alpha_factory_managed_shared_frame(frame, name)
+            row_counts[name] = managed.height
+            managed_dataset_hashes[name] = _alpha_factory_managed_shared_digest(
+                name,
+                managed,
+            )
             items.append(
                 AtomicPublishItem(
                     target=target,
@@ -212,6 +240,8 @@ def publish_alpha_factory_generation(
                 "strategy_evidence",
             ],
             "row_counts": row_counts,
+            "row_count_scopes": _alpha_factory_row_count_scopes(),
+            "managed_dataset_hashes": managed_dataset_hashes,
         }
         commit_atomic_research_generation(
             root,
@@ -245,6 +275,8 @@ def verify_alpha_factory_generation(
 ) -> dict[str, int]:
     root = Path(lake_root)
     pointer = json.loads((root / ALPHA_FACTORY_GENERATION_POINTER).read_text("utf-8"))
+    if pointer.get("schema_version") != ALPHA_FACTORY_GENERATION_SCHEMA:
+        raise RuntimeError("alpha_factory_generation_pointer_schema_mismatch")
     if pointer.get("generation_id") != generation_id:
         raise RuntimeError("alpha_factory_generation_pointer_mismatch")
     if (
@@ -277,6 +309,22 @@ def verify_alpha_factory_generation(
         "strategy_evidence_sample": STRATEGY_EVIDENCE_SAMPLE_DATASET,
         "strategy_evidence": STRATEGY_EVIDENCE_DATASET,
     }
+    row_count_scopes = {
+        str(key): value
+        for key, value in dict(pointer.get("row_count_scopes") or {}).items()
+    }
+    expected_scopes = _alpha_factory_row_count_scopes()
+    if row_count_scopes != expected_scopes:
+        raise RuntimeError("alpha_factory_generation_row_count_scope_mismatch")
+    managed_dataset_hashes = {
+        str(key): str(value)
+        for key, value in dict(pointer.get("managed_dataset_hashes") or {}).items()
+    }
+    if (
+        set(managed_dataset_hashes) != set(ALPHA_FACTORY_SHARED_MANAGED_SCOPES)
+        or any(len(value) != 64 for value in managed_dataset_hashes.values())
+    ):
+        raise RuntimeError("alpha_factory_generation_managed_hash_set_mismatch")
     if set(rows) != set(targets):
         raise RuntimeError("alpha_factory_generation_dataset_set_mismatch")
     for dataset_name, target in targets.items():
@@ -285,6 +333,96 @@ def verify_alpha_factory_generation(
         )
         if metadata.get("generation_id") != generation_id:
             raise RuntimeError(f"alpha_factory_dataset_generation_mismatch:{target}")
-        if count_parquet_rows(root / target) != rows[dataset_name]:
+        if dataset_name in ALPHA_FACTORY_SHARED_MANAGED_SCOPES:
+            managed = _alpha_factory_managed_shared_frame(
+                read_parquet_dataset(root / target),
+                dataset_name,
+            )
+            actual_rows = managed.height
+        else:
+            managed = None
+            actual_rows = count_parquet_rows(root / target)
+        if actual_rows != rows[dataset_name]:
             raise RuntimeError(f"alpha_factory_dataset_row_count_mismatch:{target}")
+        if (
+            managed is not None
+            and _alpha_factory_managed_shared_digest(dataset_name, managed)
+            != managed_dataset_hashes[dataset_name]
+        ):
+            raise RuntimeError(f"alpha_factory_dataset_managed_hash_mismatch:{target}")
     return rows
+
+
+def _alpha_factory_row_count_scopes() -> dict[str, dict[str, str]]:
+    scopes = {
+        spec.dataset_name: {"scope": "dataset_total"}
+        for spec in ALPHA_FACTORY_COMPUTE_OUTPUT_SPECS
+    }
+    scopes["alpha_factory_promotion_queue"] = {"scope": "dataset_total"}
+    scopes.update(ALPHA_FACTORY_SHARED_MANAGED_SCOPES)
+    return scopes
+
+
+def _alpha_factory_managed_shared_frame(
+    frame: pl.DataFrame,
+    dataset_name: str,
+) -> pl.DataFrame:
+    try:
+        scope = ALPHA_FACTORY_SHARED_MANAGED_SCOPES[dataset_name]
+    except KeyError as exc:
+        raise ValueError(
+            f"alpha_factory_unknown_shared_dataset:{dataset_name}"
+        ) from exc
+    schema = SAMPLE_SCHEMA if dataset_name == "strategy_evidence_sample" else SUMMARY_SCHEMA
+    if frame.is_empty() and not frame.columns:
+        return pl.DataFrame(schema=schema)
+    missing = sorted(set(schema) - set(frame.columns))
+    if missing:
+        raise RuntimeError(
+            f"alpha_factory_shared_dataset_columns_missing:{dataset_name}:"
+            + ",".join(missing)
+        )
+    return (
+        frame.filter(
+            pl.col("source").cast(pl.Utf8, strict=False) == scope["source"]
+        )
+        .select(list(schema))
+        .cast(schema, strict=False)
+    )
+
+
+def _alpha_factory_managed_shared_digest(
+    dataset_name: str,
+    frame: pl.DataFrame,
+) -> str:
+    columns = sorted(frame.columns)
+    schema = [(column, str(frame.schema[column])) for column in columns]
+    if frame.is_empty():
+        aggregates = {
+            "row_count": 0,
+            "hash_sum_0": 0,
+            "hash_sum_1": 0,
+            "hash_min": 0,
+            "hash_max": 0,
+        }
+    else:
+        row = pl.struct(columns)
+        values = frame.select(
+            [
+                pl.len().alias("row_count"),
+                row.hash(seed=0).sum().alias("hash_sum_0"),
+                row.hash(seed=1).sum().alias("hash_sum_1"),
+                row.hash(seed=2).min().alias("hash_min"),
+                row.hash(seed=3).max().alias("hash_max"),
+            ]
+        ).row(0, named=True)
+        aggregates = {name: int(value or 0) for name, value in values.items()}
+    return model_content_sha256(
+        {
+            "schema_version": "alpha_factory_managed_dataset_digest.v1",
+            "dataset_name": dataset_name,
+            "managed_scope": ALPHA_FACTORY_SHARED_MANAGED_SCOPES[dataset_name],
+            "schema": schema,
+            **aggregates,
+        }
+    )

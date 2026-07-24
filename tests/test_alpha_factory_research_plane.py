@@ -17,6 +17,7 @@ from quant_lab.research.alpha_factory.factory import (
     ALPHA_FACTORY_COMPUTE_OUTPUT_SPECS,
     ALPHA_FACTORY_PROMOTION_QUEUE_DATASET,
     ALPHA_FACTORY_TEMPLATE_REGISTRY_DATASET,
+    STRATEGY_EVIDENCE_DATASET,
     alpha_factory_template_registry_digest,
     build_default_template_registry,
     merge_alpha_factory_managed_evidence,
@@ -33,6 +34,7 @@ from quant_lab.research.second_stage_alpha_factory import (
 )
 from quant_lab.research.strategy_evidence import (
     SAMPLE_SCHEMA,
+    STRATEGY_EVIDENCE_SAMPLE_DATASET,
     SUMMARY_SCHEMA,
 )
 from quant_lab.research.strategy_evidence import (
@@ -40,6 +42,8 @@ from quant_lab.research.strategy_evidence import (
 )
 from quant_lab.research_plane.alpha_factory_publish import (
     ALPHA_FACTORY_GENERATION_POINTER,
+    ALPHA_FACTORY_GENERATION_SCHEMA,
+    ALPHA_FACTORY_SHARED_MANAGED_SCOPES,
     verify_alpha_factory_generation,
 )
 from quant_lab.research_plane.atomic_publish import (
@@ -374,6 +378,138 @@ def test_alpha_factory_empty_result_cloud_derivation_and_import(tmp_path: Path) 
         encoding="utf-8",
     )
     with pytest.raises(RuntimeError, match="generation_safety_mismatch"):
+        verify_alpha_factory_generation(lake, pointer["generation_id"])
+
+
+def test_alpha_factory_generation_scopes_shared_verification_to_managed_source(
+    tmp_path: Path,
+) -> None:
+    lake, queue, task, task_key, worker_key = _stage_empty_alpha_result(tmp_path)
+    previous_day = "2026-07-17"
+    sample_path = lake / STRATEGY_EVIDENCE_SAMPLE_DATASET
+    summary_path = lake / STRATEGY_EVIDENCE_DATASET
+    write_parquet_dataset(
+        _typed_rows(
+            SAMPLE_SCHEMA,
+            [
+                {
+                    "as_of_date": previous_day,
+                    "strategy_candidate": "v5.alt_impulse_shadow",
+                    "candidate_id": "alpha-previous-sample",
+                    "source": SECOND_STAGE_SOURCE_NAME,
+                },
+                {
+                    "as_of_date": previous_day,
+                    "strategy_candidate": "v5.alt_impulse_shadow",
+                    "candidate_id": "v5-existing-sample",
+                    "source": V5_EVIDENCE_SOURCE_NAME,
+                },
+            ],
+        ),
+        sample_path,
+    )
+    write_parquet_dataset(
+        _typed_rows(
+            SUMMARY_SCHEMA,
+            [
+                {
+                    "as_of_date": previous_day,
+                    "strategy_candidate": "v5.alt_impulse_shadow",
+                    "decision": "KEEP_SHADOW",
+                    "sample_count": 3,
+                    "source": ALPHA_FACTORY_SOURCE_NAME,
+                },
+                {
+                    "as_of_date": previous_day,
+                    "strategy_candidate": "v5.alt_impulse_shadow",
+                    "decision": "KEEP_SHADOW",
+                    "sample_count": 99,
+                    "source": V5_EVIDENCE_SOURCE_NAME,
+                },
+            ],
+        ),
+        summary_path,
+    )
+
+    imported = import_entry_quality_history_result(
+        lake,
+        queue,
+        task.task_id,
+        task_public_key=task_key.public_key(),
+        worker_public_key=worker_key.public_key(),
+        expected_task_key_id=TASK_KEY_ID,
+        expected_worker_key_id=WORKER_KEY_ID,
+        expected_quant_lab_commit=COMMIT,
+    )
+    assert imported.state == "completed"
+    pointer = json.loads((lake / ALPHA_FACTORY_GENERATION_POINTER).read_text("utf-8"))
+    assert pointer["schema_version"] == ALPHA_FACTORY_GENERATION_SCHEMA
+    assert pointer["row_count_scopes"]["strategy_evidence_sample"] == (
+        ALPHA_FACTORY_SHARED_MANAGED_SCOPES["strategy_evidence_sample"]
+    )
+    assert pointer["row_count_scopes"]["strategy_evidence"] == (
+        ALPHA_FACTORY_SHARED_MANAGED_SCOPES["strategy_evidence"]
+    )
+    assert pointer["row_counts"]["strategy_evidence_sample"] == 1
+    assert pointer["row_counts"]["strategy_evidence"] == 1
+
+    sidecars = {
+        path: (path / "_research_generation.json").read_bytes()
+        for path in (sample_path, summary_path)
+    }
+    additional_sample = _typed_rows(
+        SAMPLE_SCHEMA,
+        [
+            {
+                "as_of_date": "2026-07-18",
+                "strategy_candidate": "v5.alt_impulse_shadow",
+                "candidate_id": "v5-later-sample",
+                "source": V5_EVIDENCE_SOURCE_NAME,
+            }
+        ],
+    )
+    additional_summary = _typed_rows(
+        SUMMARY_SCHEMA,
+        [
+            {
+                "as_of_date": "2026-07-18",
+                "strategy_candidate": "v5.alt_impulse_shadow",
+                "decision": "KEEP_SHADOW",
+                "sample_count": 101,
+                "source": V5_EVIDENCE_SOURCE_NAME,
+            }
+        ],
+    )
+    write_parquet_dataset(
+        pl.concat(
+            [read_parquet_dataset(sample_path), additional_sample],
+            how="vertical_relaxed",
+        ),
+        sample_path,
+    )
+    write_parquet_dataset(
+        pl.concat(
+            [read_parquet_dataset(summary_path), additional_summary],
+            how="vertical_relaxed",
+        ),
+        summary_path,
+    )
+    for path, payload in sidecars.items():
+        (path / "_research_generation.json").write_bytes(payload)
+
+    assert verify_alpha_factory_generation(lake, pointer["generation_id"]) == pointer[
+        "row_counts"
+    ]
+
+    mutated_summary = read_parquet_dataset(summary_path).with_columns(
+        pl.when(pl.col("source") == ALPHA_FACTORY_SOURCE_NAME)
+        .then(pl.col("sample_count") + 1)
+        .otherwise(pl.col("sample_count"))
+        .alias("sample_count")
+    )
+    write_parquet_dataset(mutated_summary, summary_path)
+    (summary_path / "_research_generation.json").write_bytes(sidecars[summary_path])
+    with pytest.raises(RuntimeError, match="dataset_managed_hash_mismatch"):
         verify_alpha_factory_generation(lake, pointer["generation_id"])
 
 

@@ -11,6 +11,7 @@ import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from pydantic import ValidationError
 
+import quant_lab.research_plane.atomic_publish as atomic_publish_module
 import quant_lab.research_plane.importer as importer_module
 from quant_lab.data.lake import read_parquet_dataset, write_parquet_dataset
 from quant_lab.research.alpha_factory.factory import (
@@ -708,6 +709,72 @@ def test_alpha_factory_publish_failure_keeps_valid_result_retryable(
         expected_quant_lab_commit=COMMIT,
     )
     assert completed.state == "completed"
+
+
+def test_alpha_factory_import_recovers_unverified_atomic_commit_before_retry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    lake, queue, task, task_key, worker_key = _stage_empty_alpha_result(tmp_path)
+    journal = lake / "gold" / ".alpha_factory_publish_transaction.json"
+    original_atomic_write_json = atomic_publish_module.atomic_write_json
+
+    class SimulatedProcessDeath(BaseException):
+        pass
+
+    def crash_before_commit_marker(path: Path, payload: dict[str, object]) -> None:
+        if Path(path) == journal and payload.get("commit_verified") is True:
+            raise SimulatedProcessDeath
+        original_atomic_write_json(path, payload)
+
+    monkeypatch.setattr(
+        atomic_publish_module,
+        "atomic_write_json",
+        crash_before_commit_marker,
+    )
+    with pytest.raises(SimulatedProcessDeath):
+        import_entry_quality_history_result(
+            lake,
+            queue,
+            task.task_id,
+            task_public_key=task_key.public_key(),
+            worker_public_key=worker_key.public_key(),
+            expected_task_key_id=TASK_KEY_ID,
+            expected_worker_key_id=WORKER_KEY_ID,
+            expected_quant_lab_commit=COMMIT,
+        )
+
+    assert journal.is_file()
+    assert (
+        json.loads(journal.read_text("utf-8"))["commit_verified"]
+        is False
+    )
+    assert (queue / "results" / "inbox" / task.task_id).is_dir()
+    assert not (queue / "results" / "imported" / task.task_id).exists()
+
+    monkeypatch.setattr(
+        atomic_publish_module,
+        "atomic_write_json",
+        original_atomic_write_json,
+    )
+    completed = import_entry_quality_history_result(
+        lake,
+        queue,
+        task.task_id,
+        task_public_key=task_key.public_key(),
+        worker_public_key=worker_key.public_key(),
+        expected_task_key_id=TASK_KEY_ID,
+        expected_worker_key_id=WORKER_KEY_ID,
+        expected_quant_lab_commit=COMMIT,
+    )
+
+    assert completed.state == "completed"
+    assert not journal.exists()
+    assert verify_alpha_factory_generation(
+        lake,
+        completed.generation_id,
+        completed.published_rows,
+    ) == completed.published_rows
 
 
 def test_alpha_factory_import_rejects_superseded_factor_generation(

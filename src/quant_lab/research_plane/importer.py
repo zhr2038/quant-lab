@@ -29,6 +29,7 @@ from quant_lab.research.factor_research.registry import (
 )
 from quant_lab.research_plane.alpha_factory_publish import (
     publish_alpha_factory_generation,
+    recover_alpha_factory_publication,
     verify_alpha_factory_generation,
 )
 from quant_lab.research_plane.contracts import (
@@ -83,6 +84,7 @@ from quant_lab.research_plane.contracts import (
 from quant_lab.research_plane.factor_factory_publish import (
     FACTOR_FACTORY_DATASETS,
     publish_factor_factory_generation,
+    recover_factor_factory_publication,
     verify_factor_factory_generation,
 )
 from quant_lab.research_plane.factor_factory_result import (
@@ -92,6 +94,7 @@ from quant_lab.research_plane.factor_research_publish import (
     FACTOR_RESEARCH_GENERATION_POINTER,
     current_factor_research_generation_binding,
     publish_factor_research_generation,
+    recover_factor_research_publication,
     verify_factor_research_generation,
 )
 from quant_lab.research_plane.result import (
@@ -112,6 +115,7 @@ from quant_lab.research_plane.status import (
 from quant_lab.research_plane.trade_level_history_publish import (
     TRADE_LEVEL_HISTORY_DATASETS,
     publish_trade_level_history_generation,
+    recover_trade_level_history_publication,
     verify_trade_level_history_generation_fast,
 )
 from quant_lab.research_plane.trade_level_history_result import (
@@ -120,6 +124,7 @@ from quant_lab.research_plane.trade_level_history_result import (
 from quant_lab.research_plane.v5_candidate_evidence_publish import (
     V5_CANDIDATE_EVIDENCE_DATASETS,
     publish_v5_candidate_evidence_generation,
+    recover_v5_candidate_evidence_publication,
     verify_v5_candidate_evidence_generation_fast,
 )
 from quant_lab.research_plane.v5_candidate_evidence_result import (
@@ -808,6 +813,7 @@ def _import_trade_level_history_result(
     max_file_count: int,
 ) -> ResearchImportResult:
     lake = Path(lake_root)
+    recover_trade_level_history_publication(lake)
     inbox = queue / "results" / "inbox" / task_id
     imported = queue / "results" / "imported" / task_id
     if imported.is_dir() and inbox.is_dir():
@@ -1046,6 +1052,7 @@ def _import_v5_candidate_evidence_result(
     max_file_count: int,
 ) -> ResearchImportResult:
     lake = Path(lake_root)
+    recover_v5_candidate_evidence_publication(lake)
     inbox = queue / "results" / "inbox" / task_id
     imported = queue / "results" / "imported" / task_id
     if imported.is_dir() and inbox.is_dir():
@@ -1210,6 +1217,7 @@ def _import_alpha_factory_result(
     max_result_bytes: int,
 ) -> ResearchImportResult:
     lake = Path(lake_root)
+    recover_alpha_factory_publication(lake)
     inbox = queue / "results" / "inbox" / task_id
     imported = queue / "results" / "imported" / task_id
     if imported.is_dir() and inbox.is_dir():
@@ -1381,6 +1389,7 @@ def _import_factor_factory_result(
     max_uncompressed_bytes: int,
 ) -> ResearchImportResult:
     lake = Path(lake_root)
+    recover_factor_factory_publication(lake)
     inbox = queue / "results" / "inbox" / task_id
     imported = queue / "results" / "imported" / task_id
     if imported.is_dir() and inbox.is_dir():
@@ -1554,6 +1563,7 @@ def _import_factor_research_result(
     max_result_bytes: int,
 ) -> ResearchImportResult:
     lake = Path(lake_root)
+    recover_factor_research_publication(lake)
     inbox = queue / "results" / "inbox" / task_id
     imported = queue / "results" / "imported" / task_id
     if imported.is_dir() and inbox.is_dir():

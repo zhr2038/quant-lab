@@ -26,7 +26,6 @@ def _parser() -> argparse.ArgumentParser:
     process.add_argument("--lake-root", required=True, type=Path)
     process.add_argument("--private-key", required=True, type=Path)
     process.add_argument("--key-id", required=True)
-    process.add_argument("--worker-commit", required=True)
 
     receipts = commands.add_parser("import-receipts")
     receipts.add_argument("--queue-root", required=True, type=Path)
@@ -54,7 +53,6 @@ def main(argv: list[str] | None = None) -> int:
             lake_root=args.lake_root,
             signing_key_path=args.private_key,
             signature_key_id=args.key_id,
-            expected_worker_commit=args.worker_commit.lower(),
         )
     elif args.command == "import-receipts":
         payload = import_export_receipts(

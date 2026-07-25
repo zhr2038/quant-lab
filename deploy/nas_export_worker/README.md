@@ -27,6 +27,8 @@ docker compose up -d
 docker compose logs -f quant-export-worker
 ```
 
-The worker refuses a task when `expected_worker_commit` differs from its build commit.
+Each task binds `expected_worker_commit` to the sealed snapshot's full quant-lab commit.
+The worker refuses the task when its build commit differs, so cloud and NAS deployments
+remain fail-closed without a separately maintained commit setting.
 `SNAPSHOT_FETCH_WORKERS` controls independent, resumable snapshot streams. Use `4` by
 default and raise it only after checking qyun2 SSH load and NAS network stability.

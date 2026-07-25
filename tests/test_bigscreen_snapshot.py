@@ -2630,6 +2630,21 @@ def test_web_v2_uses_truthful_charts_and_readable_mid_width_layout():
     assert "labelLine: { show: false }" in costs
     assert ".factor-generation-grid{grid-template-columns:1fr}" in styles
     assert "@media (min-width: 1101px) and (max-width: 1600px)" in styles
+    assert (
+        ".overview-matrix-card{\n"
+        "  min-width:0;display:grid;grid-template-columns:minmax(0,1fr)"
+        in styles
+    )
+    assert (
+        ".overview-matrix-card .matrix-grid-shell{"
+        "grid-template-columns:minmax(0,1fr) minmax(200px,.38fr)"
+        in styles
+    )
+    assert (
+        ".overview-matrix-card .matrix-bottom-panel{"
+        "grid-template-columns:minmax(0,1fr) minmax(210px,.5fr)"
+        in styles
+    )
 
 
 def test_web_v2_legacy_redirects_to_streamlit_port(monkeypatch):

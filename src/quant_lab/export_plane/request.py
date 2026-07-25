@@ -51,7 +51,7 @@ def process_export_requests(
     lake_root: str | Path,
     signing_key_path: str | Path,
     signature_key_id: str,
-    expected_worker_commit: str,
+    expected_worker_commit: str | None = None,
     max_requests: int = 5,
 ) -> dict[str, Any]:
     root = ensure_queue_layout(queue_root)

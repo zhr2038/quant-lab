@@ -17,6 +17,15 @@ def test_export_plane_units_share_the_low_privilege_queue_group() -> None:
         assert "SupplementaryGroups=quant-export" in unit
 
 
+def test_export_request_binds_worker_to_snapshot_commit_without_static_sha() -> None:
+    unit = (SYSTEMD / "quant-lab-export-request.service").read_text(encoding="utf-8")
+    environment = (SYSTEMD / "export-plane.env.example").read_text(encoding="utf-8")
+
+    assert "--worker-commit" not in unit
+    assert "QUANT_LAB_EXPORT_WORKER_COMMIT" not in unit
+    assert "QUANT_LAB_EXPORT_WORKER_COMMIT" not in environment
+
+
 SCRIPTS = ROOT / "deploy" / "scripts"
 
 

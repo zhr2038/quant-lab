@@ -1477,6 +1477,14 @@ def _build_factor_validation_audit(
         eligible_current_candidate_count=len(eligible_current_candidates),
         current_forward_factor_count=len(current_forward_ids),
     )
+    factor_forward_status_rows = _factor_forward_status_rows(
+        current_candidates=current_candidates,
+        current_forward_rows=current_forward_rows,
+        dedupe_rows=dedupe,
+    )
+    paper_ready_status_rows = [
+        row for row in factor_forward_status_rows if row[1] == "PAPER_READY"
+    ]
     complete = not orphan_forward_ids
     warnings = []
     if orphan_forward_ids:
@@ -1484,7 +1492,7 @@ def _build_factor_validation_audit(
     if population_status == "CURRENT_FORWARD_EVIDENCE_MISSING":
         warnings.append("current_factor_forward_validation_missing")
     content = {
-        "schema_version": "quant_lab.ai_factor_validation_audit.v3",
+        "schema_version": "quant_lab.ai_factor_validation_audit.v4",
         "source_members": sorted(sources),
         "freshness": {
             "definition_created_at_values": _bounded_distinct_row_values(
@@ -1549,8 +1557,35 @@ def _build_factor_validation_audit(
             "Current Factor Research definitions, historical Factor Factory candidates, "
             "and forward-validation rows are distinct populations. An empty forward table "
             "is not a runtime failure when no current-definition candidate is in "
-            "KEEP_SHADOW or PAPER_READY."
+            "KEEP_SHADOW or PAPER_READY. Candidate PAPER_READY is development evidence "
+            "only; formal Paper readiness is evaluated by the Paper lifecycle."
         ),
+        "factor_forward_status_legend": [
+            "factor_id",
+            "candidate_state",
+            "candidate_state_scope",
+            "forward_row_count",
+            "forward_pass_count",
+            "forward_weak_or_mixed_count",
+            "forward_needs_more_samples_count",
+            "symbol_count",
+            "regime_count",
+            "horizon_count",
+            "dedupe_decision",
+            "leader_factor_id",
+            "forward_evidence_state",
+            "formal_paper_readiness",
+        ],
+        "factor_forward_status_rows": factor_forward_status_rows,
+        "paper_ready_candidate_factor_count": len(paper_ready_status_rows),
+        "paper_ready_with_forward_pass_factor_count": sum(
+            1 for row in paper_ready_status_rows if row[4] > 0
+        ),
+        "paper_ready_without_forward_pass_factor_count": sum(
+            1 for row in paper_ready_status_rows if row[4] == 0
+        ),
+        "candidate_forward_mapping_complete": len(factor_forward_status_rows)
+        == len({str(row.get("factor_id") or "") for row in current_candidates}),
         "forward_recommendation_counts": _value_counts_rows(forward, "recommendation"),
         "unmapped_forward_factor_ids": historical_forward_ids,
         "definition_legend": [
@@ -1633,6 +1668,90 @@ def _factor_validation_population_status(
     if current_forward_factor_count == 0:
         return "CURRENT_FORWARD_EVIDENCE_MISSING"
     return "CURRENT_FORWARD_EVIDENCE_AVAILABLE"
+
+
+def _factor_forward_status_rows(
+    *,
+    current_candidates: list[dict[str, Any]],
+    current_forward_rows: list[dict[str, Any]],
+    dedupe_rows: list[dict[str, Any]],
+) -> list[list[Any]]:
+    forward_by_factor: dict[str, list[dict[str, Any]]] = {}
+    for row in current_forward_rows:
+        factor_id = str(row.get("factor_id") or "")
+        if factor_id:
+            forward_by_factor.setdefault(factor_id, []).append(row)
+    dedupe_by_factor = {
+        str(row.get("factor_id") or ""): row
+        for row in dedupe_rows
+        if str(row.get("factor_id") or "")
+    }
+    candidate_by_factor: dict[str, list[dict[str, Any]]] = {}
+    for row in current_candidates:
+        factor_id = str(row.get("factor_id") or "")
+        if factor_id:
+            candidate_by_factor.setdefault(factor_id, []).append(row)
+
+    rows: list[list[Any]] = []
+    for factor_id in sorted(candidate_by_factor):
+        candidate_rows = candidate_by_factor[factor_id]
+        candidate_states = sorted(
+            {str(row.get("candidate_state") or "UNKNOWN").upper() for row in candidate_rows}
+        )
+        candidate_state = candidate_states[0] if len(candidate_states) == 1 else "MIXED"
+        factor_forward = forward_by_factor.get(factor_id, [])
+        recommendation_counts = {
+            recommendation: sum(
+                1
+                for row in factor_forward
+                if str(row.get("recommendation") or "").upper() == recommendation
+            )
+            for recommendation in (
+                "FORWARD_VALIDATION_PASS",
+                "FORWARD_VALIDATION_WEAK_OR_MIXED",
+                "NEEDS_MORE_FORWARD_SAMPLES",
+            )
+        }
+        pass_count = recommendation_counts["FORWARD_VALIDATION_PASS"]
+        if candidate_state == "PAPER_READY":
+            state_scope = "FACTOR_FACTORY_DEVELOPMENT_EVIDENCE_ONLY"
+            if pass_count:
+                evidence_state = "DEVELOPMENT_READY_WITH_FORWARD_PASS"
+            elif factor_forward:
+                evidence_state = "DEVELOPMENT_READY_NOT_FORWARD_VALIDATED"
+            else:
+                evidence_state = "DEVELOPMENT_READY_FORWARD_EVIDENCE_MISSING"
+        elif candidate_state == "KEEP_SHADOW":
+            state_scope = "FACTOR_FACTORY_SHADOW_EVIDENCE_ONLY"
+            if pass_count:
+                evidence_state = "SHADOW_WITH_FORWARD_PASS"
+            elif factor_forward:
+                evidence_state = "SHADOW_FORWARD_NOT_PASSED"
+            else:
+                evidence_state = "SHADOW_FORWARD_EVIDENCE_MISSING"
+        else:
+            state_scope = "FACTOR_FACTORY_RESEARCH_EVIDENCE_ONLY"
+            evidence_state = "RESEARCH_NOT_FORWARD_ELIGIBLE"
+        dedupe = dedupe_by_factor.get(factor_id, {})
+        rows.append(
+            [
+                factor_id,
+                candidate_state,
+                state_scope,
+                len(factor_forward),
+                pass_count,
+                recommendation_counts["FORWARD_VALIDATION_WEAK_OR_MIXED"],
+                recommendation_counts["NEEDS_MORE_FORWARD_SAMPLES"],
+                len({str(row.get("symbol") or "") for row in factor_forward}),
+                len({str(row.get("regime") or "") for row in factor_forward}),
+                len({str(row.get("horizon_hours") or "") for row in factor_forward}),
+                str(dedupe.get("dedupe_decision") or ""),
+                str(dedupe.get("leader_factor_id") or ""),
+                evidence_state,
+                "NOT_EVALUATED_BY_FACTOR_AUDIT",
+            ]
+        )
+    return rows
 
 
 def _derived_evidence_document(

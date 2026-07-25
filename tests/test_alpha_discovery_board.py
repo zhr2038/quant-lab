@@ -10,6 +10,7 @@ import polars as pl
 from quant_lab.data.lake import read_parquet_dataset, write_parquet_dataset
 from quant_lab.export.daily import (
     STRATEGY_OPPORTUNITY_ADVISORY_TTL_SECONDS,
+    _canonical_final_score_alpha6_conflict_for_export,
     _final_score_vs_alpha6_conflict_for_export,
     _final_score_vs_alpha6_conflict_summary_md,
     _late_breakout_failure_shadow_for_export,
@@ -1225,11 +1226,60 @@ def test_final_score_vs_alpha6_conflict_quantifies_bnb_no_order():
 
     summary = _final_score_vs_alpha6_conflict_summary_md(pl.DataFrame(rows))
     assert "conflict_count: 2" in summary
+    assert "unique_event_count: 2" in summary
+    assert "duplicate_event_count: 0" in summary
     assert "blocked_final_decision_count: 1" in summary
     assert "negative_expectancy_block_count: 2" in summary
     assert "partial_complete_count: 1" in summary
     assert "BNB-USDT" in summary
     assert "review_final_score_alpha6_conflict" in summary
+
+
+def test_conflict_export_prefers_current_recompute_and_deduplicates_persisted_rows():
+    ts = datetime(2026, 6, 1, 12, tzinfo=UTC)
+    candidate = {
+        "run_id": "run-current",
+        "ts_utc": ts,
+        "symbol": "BNB-USDT",
+        "final_score": -1.0,
+        "final_decision": "no_order",
+        "alpha6_side": "buy",
+        "alpha6_score": 0.99,
+        "expected_edge_bps": 100.0,
+        "required_edge_bps": 40.0,
+        "cost_gate_verified": True,
+        "cost_bps": 10.0,
+    }
+    market_bars = pl.DataFrame(
+        [
+            {"symbol": "BNB-USDT", "ts": ts, "close": 100.0},
+            {"symbol": "BNB-USDT", "ts": ts + timedelta(hours=4), "close": 99.0},
+            {"symbol": "BNB-USDT", "ts": ts + timedelta(hours=8), "close": 98.0},
+            {"symbol": "BNB-USDT", "ts": ts + timedelta(hours=12), "close": 97.0},
+            {"symbol": "BNB-USDT", "ts": ts + timedelta(hours=24), "close": 96.0},
+        ]
+    )
+    persisted_row = _final_score_vs_alpha6_conflict_for_export(
+        candidate_events=pl.DataFrame([candidate]),
+        market_bars=market_bars,
+    ).with_columns(pl.lit(999.0).alias("future_24h_net_bps"))
+    persisted = pl.concat([persisted_row, persisted_row], how="vertical")
+
+    current = _canonical_final_score_alpha6_conflict_for_export(
+        persisted_conflicts=persisted,
+        candidate_events=pl.DataFrame([candidate, candidate]),
+        market_bars=market_bars,
+    )
+    fallback = _canonical_final_score_alpha6_conflict_for_export(
+        persisted_conflicts=persisted,
+        candidate_events=pl.DataFrame(),
+        market_bars=market_bars,
+    )
+
+    assert current.height == 1
+    assert current["future_24h_net_bps"][0] < 0
+    assert fallback.height == 1
+    assert fallback["future_24h_net_bps"][0] == 999.0
 
 
 def test_post_impulse_overextension_shadow_flags_late_breakout_failure():

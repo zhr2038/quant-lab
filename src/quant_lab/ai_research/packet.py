@@ -29,7 +29,7 @@ from quant_lab.export_plane.signatures import sha256_file
 
 DEFAULT_MAX_MEMBER_BYTES = 256 * 1024
 DEFAULT_MAX_DOCUMENT_CHARS = 40_000
-DEFAULT_MAX_TOTAL_CHARS = 300_000
+DEFAULT_MAX_TOTAL_CHARS = 380_000
 DEFAULT_MAX_CSV_ROWS = 64
 DEFAULT_MAX_DOCS_PER_SECTION = 4
 CORE_JSON_MAX_MEMBER_BYTES = 2 * 1024 * 1024
@@ -133,6 +133,7 @@ _ALLOWED_HYPOTHESIS_FAMILIES = [
 ]
 
 _TASK_ID_RE = re.compile(r"[^A-Za-z0-9_.-]+")
+_REQUIRED_CORE_MEMBERS = ("manifest.json", "provenance.json", "data_quality.json")
 _CORE_SUMMARY_MEMBERS = {"manifest.json", "data_quality.json"}
 _DETERMINISTIC_CSV_SUMMARY_MEMBERS = {"reports/alpha_discovery_board.csv"}
 _ALPHA_FACTORY_AUDIT_MEMBERS = {
@@ -253,6 +254,49 @@ def build_ai_research_task(
     consumed_chars = 0
 
     with zipfile.ZipFile(pack) as archive:
+        selected = _select_members(
+            archive,
+            max_docs_per_section=max_docs_per_section,
+        )
+        supported_members = {
+            member.filename.lower().lstrip("./"): member
+            for member in archive.infolist()
+            if _safe_supported_member(member)
+        }
+        processed_members: set[str] = set()
+        priority_core_members = [
+            supported_members[member_name]
+            for member_name in _REQUIRED_CORE_MEMBERS
+            if member_name in supported_members
+        ]
+        for index, member in enumerate(priority_core_members):
+            remaining_chars = max_total_chars - consumed_chars
+            remaining_core_count = len(priority_core_members) - index
+            if remaining_chars <= 0:
+                warnings.append(f"skipped_due_to_total_limit:{member.filename}")
+                continue
+            core_document_chars = min(
+                max_document_chars,
+                max(1, remaining_chars // remaining_core_count - 1_024),
+            )
+            document, document_warnings = _compact_member(
+                archive,
+                member,
+                max_member_bytes=max_member_bytes,
+                max_document_chars=core_document_chars,
+                max_csv_rows=max_csv_rows,
+            )
+            warnings.extend(document_warnings)
+            if document is None:
+                continue
+            encoded_length = len(canonical_json(document.model_dump(mode="json")))
+            if consumed_chars + encoded_length > max_total_chars:
+                warnings.append(f"skipped_due_to_total_limit:{member.filename}")
+                continue
+            sections["core_state"].append(document)
+            consumed_chars += encoded_length
+            processed_members.add(member.filename.lower().lstrip("./"))
+
         audit_documents, audit_sources, audit_warnings = (
             _build_factor_research_audit_documents(archive)
         )
@@ -282,10 +326,6 @@ def build_ai_research_task(
             sections["cost_and_execution"].append(document)
             consumed_chars += encoded_length
 
-        selected = _select_members(
-            archive,
-            max_docs_per_section=max_docs_per_section,
-        )
         if audit_documents:
             # The derived documents already carry every current Alpha Factory and
             # factor-validation row. Keep the large discovery board summary for
@@ -299,7 +339,8 @@ def build_ai_research_task(
             ]
         for section_name, members in selected.items():
             for member in members:
-                if member.filename.lower().lstrip("./") in audit_sources:
+                normalized_name = member.filename.lower().lstrip("./")
+                if normalized_name in processed_members or normalized_name in audit_sources:
                     continue
                 if consumed_chars >= max_total_chars:
                     warnings.append("packet_total_character_limit_reached")
@@ -412,7 +453,7 @@ def _build_task_preflight(
     checked_at: datetime,
     packet_warnings: list[str],
 ) -> TaskPreflight:
-    required_core_members = ["manifest.json", "provenance.json", "data_quality.json"]
+    required_core_members = list(_REQUIRED_CORE_MEMBERS)
     core_members = {
         document.source_member.lower().lstrip("./")
         for document in sections.get("core_state", [])
@@ -1436,6 +1477,14 @@ def _build_factor_validation_audit(
         eligible_current_candidate_count=len(eligible_current_candidates),
         current_forward_factor_count=len(current_forward_ids),
     )
+    factor_forward_status_rows = _factor_forward_status_rows(
+        current_candidates=current_candidates,
+        current_forward_rows=current_forward_rows,
+        dedupe_rows=dedupe,
+    )
+    paper_ready_status_rows = [
+        row for row in factor_forward_status_rows if row[1] == "PAPER_READY"
+    ]
     complete = not orphan_forward_ids
     warnings = []
     if orphan_forward_ids:
@@ -1443,7 +1492,7 @@ def _build_factor_validation_audit(
     if population_status == "CURRENT_FORWARD_EVIDENCE_MISSING":
         warnings.append("current_factor_forward_validation_missing")
     content = {
-        "schema_version": "quant_lab.ai_factor_validation_audit.v3",
+        "schema_version": "quant_lab.ai_factor_validation_audit.v4",
         "source_members": sorted(sources),
         "freshness": {
             "definition_created_at_values": _bounded_distinct_row_values(
@@ -1508,8 +1557,35 @@ def _build_factor_validation_audit(
             "Current Factor Research definitions, historical Factor Factory candidates, "
             "and forward-validation rows are distinct populations. An empty forward table "
             "is not a runtime failure when no current-definition candidate is in "
-            "KEEP_SHADOW or PAPER_READY."
+            "KEEP_SHADOW or PAPER_READY. Candidate PAPER_READY is development evidence "
+            "only; formal Paper readiness is evaluated by the Paper lifecycle."
         ),
+        "factor_forward_status_legend": [
+            "factor_id",
+            "candidate_state",
+            "candidate_state_scope",
+            "forward_row_count",
+            "forward_pass_count",
+            "forward_weak_or_mixed_count",
+            "forward_needs_more_samples_count",
+            "symbol_count",
+            "regime_count",
+            "horizon_count",
+            "dedupe_decision",
+            "leader_factor_id",
+            "forward_evidence_state",
+            "formal_paper_readiness",
+        ],
+        "factor_forward_status_rows": factor_forward_status_rows,
+        "paper_ready_candidate_factor_count": len(paper_ready_status_rows),
+        "paper_ready_with_forward_pass_factor_count": sum(
+            1 for row in paper_ready_status_rows if row[4] > 0
+        ),
+        "paper_ready_without_forward_pass_factor_count": sum(
+            1 for row in paper_ready_status_rows if row[4] == 0
+        ),
+        "candidate_forward_mapping_complete": len(factor_forward_status_rows)
+        == len({str(row.get("factor_id") or "") for row in current_candidates}),
         "forward_recommendation_counts": _value_counts_rows(forward, "recommendation"),
         "unmapped_forward_factor_ids": historical_forward_ids,
         "definition_legend": [
@@ -1592,6 +1668,90 @@ def _factor_validation_population_status(
     if current_forward_factor_count == 0:
         return "CURRENT_FORWARD_EVIDENCE_MISSING"
     return "CURRENT_FORWARD_EVIDENCE_AVAILABLE"
+
+
+def _factor_forward_status_rows(
+    *,
+    current_candidates: list[dict[str, Any]],
+    current_forward_rows: list[dict[str, Any]],
+    dedupe_rows: list[dict[str, Any]],
+) -> list[list[Any]]:
+    forward_by_factor: dict[str, list[dict[str, Any]]] = {}
+    for row in current_forward_rows:
+        factor_id = str(row.get("factor_id") or "")
+        if factor_id:
+            forward_by_factor.setdefault(factor_id, []).append(row)
+    dedupe_by_factor = {
+        str(row.get("factor_id") or ""): row
+        for row in dedupe_rows
+        if str(row.get("factor_id") or "")
+    }
+    candidate_by_factor: dict[str, list[dict[str, Any]]] = {}
+    for row in current_candidates:
+        factor_id = str(row.get("factor_id") or "")
+        if factor_id:
+            candidate_by_factor.setdefault(factor_id, []).append(row)
+
+    rows: list[list[Any]] = []
+    for factor_id in sorted(candidate_by_factor):
+        candidate_rows = candidate_by_factor[factor_id]
+        candidate_states = sorted(
+            {str(row.get("candidate_state") or "UNKNOWN").upper() for row in candidate_rows}
+        )
+        candidate_state = candidate_states[0] if len(candidate_states) == 1 else "MIXED"
+        factor_forward = forward_by_factor.get(factor_id, [])
+        recommendation_counts = {
+            recommendation: sum(
+                1
+                for row in factor_forward
+                if str(row.get("recommendation") or "").upper() == recommendation
+            )
+            for recommendation in (
+                "FORWARD_VALIDATION_PASS",
+                "FORWARD_VALIDATION_WEAK_OR_MIXED",
+                "NEEDS_MORE_FORWARD_SAMPLES",
+            )
+        }
+        pass_count = recommendation_counts["FORWARD_VALIDATION_PASS"]
+        if candidate_state == "PAPER_READY":
+            state_scope = "FACTOR_FACTORY_DEVELOPMENT_EVIDENCE_ONLY"
+            if pass_count:
+                evidence_state = "DEVELOPMENT_READY_WITH_FORWARD_PASS"
+            elif factor_forward:
+                evidence_state = "DEVELOPMENT_READY_NOT_FORWARD_VALIDATED"
+            else:
+                evidence_state = "DEVELOPMENT_READY_FORWARD_EVIDENCE_MISSING"
+        elif candidate_state == "KEEP_SHADOW":
+            state_scope = "FACTOR_FACTORY_SHADOW_EVIDENCE_ONLY"
+            if pass_count:
+                evidence_state = "SHADOW_WITH_FORWARD_PASS"
+            elif factor_forward:
+                evidence_state = "SHADOW_FORWARD_NOT_PASSED"
+            else:
+                evidence_state = "SHADOW_FORWARD_EVIDENCE_MISSING"
+        else:
+            state_scope = "FACTOR_FACTORY_RESEARCH_EVIDENCE_ONLY"
+            evidence_state = "RESEARCH_NOT_FORWARD_ELIGIBLE"
+        dedupe = dedupe_by_factor.get(factor_id, {})
+        rows.append(
+            [
+                factor_id,
+                candidate_state,
+                state_scope,
+                len(factor_forward),
+                pass_count,
+                recommendation_counts["FORWARD_VALIDATION_WEAK_OR_MIXED"],
+                recommendation_counts["NEEDS_MORE_FORWARD_SAMPLES"],
+                len({str(row.get("symbol") or "") for row in factor_forward}),
+                len({str(row.get("regime") or "") for row in factor_forward}),
+                len({str(row.get("horizon_hours") or "") for row in factor_forward}),
+                str(dedupe.get("dedupe_decision") or ""),
+                str(dedupe.get("leader_factor_id") or ""),
+                evidence_state,
+                "NOT_EVALUATED_BY_FACTOR_AUDIT",
+            ]
+        )
+    return rows
 
 
 def _derived_evidence_document(

@@ -273,12 +273,76 @@ def test_exit_policy_review_outputs_actual_vs_alternative_exits(tmp_path):
     assert summary_row["recommended_mode"] == "shadow"
 
 
+def test_exit_policy_review_uses_exact_asset_and_stable_paper_trade_identity() -> None:
+    created_at = datetime(2026, 7, 24, 3, 12, tzinfo=UTC)
+    paper_runs = pl.DataFrame(
+        [
+            {
+                "strategy_id": "ETHFI_F3_F4_DEDUP_24H_PAPER",
+                "strategy_candidate": "f3_f4_deduplicated_entry",
+                "symbol": "ETHFI-USDT",
+                "paper_trade_id": "ethfi-paper-24h",
+                "created_at": created_at,
+                "paper_pnl_bps": -200.0,
+                "exit_reason": "max_holding_bars",
+            },
+            {
+                "strategy_id": "ETHFI_F3_F4_DEDUP_48H_PAPER",
+                "strategy_candidate": "f3_f4_deduplicated_entry",
+                "symbol": "ETHFI-USDT",
+                "paper_trade_id": "ethfi-paper-48h",
+                "created_at": created_at,
+                "paper_pnl_bps": -370.0,
+                "exit_reason": "stop_loss",
+            },
+            {
+                "strategy_id": "ETH_USDT_F3_DOMINANT_ENTRY_PAPER_V1",
+                "strategy_candidate": "v5.f3_dominant_entry",
+                "symbol": "ETH-USDT",
+                "paper_trade_id": "eth-paper-1",
+                "entry_signal_ts": datetime(2026, 7, 23, 2, tzinfo=UTC),
+                "created_at": created_at,
+                "paper_pnl_bps": 12.0,
+                "exit_reason": "fixed_horizon",
+            },
+            {
+                "strategy_id": "ETH_USDT_F3_DOMINANT_ENTRY_PAPER_V2",
+                "strategy_candidate": "v5.f3_dominant_entry",
+                "symbol": "ETH-USDT",
+                "paper_trade_id": "eth-paper-2",
+                "entry_signal_ts": datetime(2026, 7, 23, 3, tzinfo=UTC),
+                "created_at": created_at,
+                "paper_pnl_bps": -8.0,
+                "exit_reason": "stop_loss",
+            },
+        ]
+    )
+
+    samples = second_stage_module.build_exit_policy_review_samples(
+        btc_exit=pl.DataFrame(),
+        paper_runs=paper_runs,
+        as_of_date=date(2026, 7, 24),
+        generated_at=datetime(2026, 7, 24, 4, tzinfo=UTC),
+    )
+
+    assert samples.height == 2
+    assert set(samples["symbol"].to_list()) == {"ETH-USDT"}
+    assert set(samples["source_entry_id"].to_list()) == {
+        "eth-paper-1",
+        "eth-paper-2",
+    }
+    assert samples.select(
+        ["as_of_date", "strategy_id", "source_entry_id"]
+    ).unique().height == samples.height
+
+
 def test_alpha_factory_outputs_candidates_results_and_queue_without_live(tmp_path):
     lake = tmp_path / "lake"
     _write_market(lake)
     _write_expanded_labels(lake)
     _write_exit_policy_inputs(lake)
     _write_alt_impulse_evidence(lake)
+    _append_alpha_factory_feedback_evidence(lake)
 
     result = build_and_publish_alpha_factory(
         lake,
@@ -310,6 +374,18 @@ def test_alpha_factory_outputs_candidates_results_and_queue_without_live(tmp_pat
     assert "max_live_notional_usdt" in expanded_space
     assert set(results["strategy_candidate"].to_list()).issubset(ALPHA_FACTORY_CANDIDATES)
     assert "v5.alt_impulse_shadow" in set(results["strategy_candidate"].to_list())
+    assert candidates.select(["as_of_date", "candidate_id"]).unique().height == (
+        candidates.height
+    )
+    assert results.select(["as_of_date", "candidate_id"]).unique().height == results.height
+    alt_impulse = results.filter(
+        (pl.col("strategy_candidate") == "v5.alt_impulse_shadow")
+        & (pl.col("symbol") == "SOL-USDT")
+        & (pl.col("regime_state") == "ALT_IMPULSE")
+        & (pl.col("horizon_hours") == 24)
+    )
+    assert alt_impulse.height == 1
+    assert alt_impulse["sample_count"][0] == 35
     assert set(candidates["max_live_notional_usdt"].to_list()) == {0.0}
     assert set(results["max_live_notional_usdt"].to_list()) == {0.0}
     assert set(promotion["max_live_notional_usdt"].to_list()) == {0.0}
@@ -348,6 +424,38 @@ def test_alpha_factory_pure_compute_matches_legacy_publish_fixture(tmp_path):
         max_candidates=200,
         registry=build_default_template_registry(generated_at),
         generated_at=generated_at,
+    )
+    alpha_feedback_sample = (
+        pure.second_stage_alpha_factory_sample.head(1)
+        .with_columns(
+            [
+                pl.lit("v5.alt_impulse_shadow").alias("strategy_candidate"),
+                pl.lit("alpha-feedback-sample").alias("candidate_id"),
+                pl.lit("SOL-USDT").alias("symbol"),
+                pl.lit("ALT_IMPULSE").alias("regime_state"),
+                pl.lit(24).cast(pl.Int64).alias("horizon_hours"),
+                pl.lit("alpha-feedback-event").alias("source_event_key"),
+                pl.lit(second_stage_module.SOURCE_NAME).alias("source"),
+            ]
+        )
+    )
+    assert alpha_feedback_sample.height == 1
+    write_parquet_dataset(
+        alpha_feedback_sample,
+        lake / "gold" / "strategy_evidence_sample",
+    )
+    feedback_guarded = compute_alpha_factory(
+        lake,
+        as_of_date="2026-05-24",
+        lookback_days=30,
+        max_candidates=200,
+        registry=build_default_template_registry(generated_at),
+        generated_at=generated_at,
+    )
+    assert_frame_equal(
+        feedback_guarded.alpha_factory_result,
+        pure.alpha_factory_result,
+        check_row_order=False,
     )
 
     build_and_publish_alpha_factory(
@@ -1380,11 +1488,27 @@ def _write_alt_impulse_evidence(lake) -> None:
                     "start_ts": datetime(2026, 5, 20, tzinfo=UTC),
                     "end_ts": datetime(2026, 5, 24, tzinfo=UTC),
                     "created_at": datetime(2026, 5, 24, tzinfo=UTC),
-                    "source": "test",
+                    "source": "research.expanded_crypto_universe_automation.v0.1",
                 }
             ]
         ),
         lake / "gold" / "strategy_evidence",
+    )
+
+
+def _append_alpha_factory_feedback_evidence(lake) -> None:
+    path = lake / "gold" / "strategy_evidence"
+    upstream = read_parquet_dataset(path)
+    feedback = upstream.with_columns(
+        [
+            pl.lit(999).cast(pl.Int64).alias("sample_count"),
+            pl.lit(999).cast(pl.Int64).alias("complete_sample_count"),
+            pl.lit(alpha_factory_module.SOURCE_NAME).alias("source"),
+        ]
+    )
+    write_parquet_dataset(
+        pl.concat([upstream, feedback], how="vertical_relaxed"),
+        path,
     )
 
 

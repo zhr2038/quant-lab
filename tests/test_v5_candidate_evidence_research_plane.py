@@ -907,6 +907,20 @@ def test_v5_candidate_evidence_worker_is_symbol_staged_and_decision_free(
         )
     handoff_marker.write_text("", encoding="utf-8")
     _seed_other_strategy_evidence_source(lake, samples)
+    alpha_generation_sidecar = json.dumps(
+        {
+            "schema_version": "alpha_factory_generation.v2",
+            "generation_id": "alpha-generation-preserved",
+            "research_only": True,
+            "live_order_effect": "none",
+            "automatic_promotion": False,
+        },
+        sort_keys=True,
+    ).encode()
+    for dataset_name in ("strategy_evidence_sample", "strategy_evidence"):
+        (
+            lake / "gold" / dataset_name / "_research_generation.json"
+        ).write_bytes(alpha_generation_sidecar)
     published = publish_v5_candidate_evidence_generation(
         lake,
         validated,
@@ -949,6 +963,10 @@ def test_v5_candidate_evidence_worker_is_symbol_staged_and_decision_free(
     }
     shared_sample = pl.read_parquet(lake / "gold" / "strategy_evidence_sample" / "data.parquet")
     shared_summary = pl.read_parquet(lake / "gold" / "strategy_evidence" / "data.parquet")
+    for dataset_name in ("strategy_evidence_sample", "strategy_evidence"):
+        assert (
+            lake / "gold" / dataset_name / "_research_generation.json"
+        ).read_bytes() == alpha_generation_sidecar
     assert shared_sample.filter(pl.col("source") == "research.alpha_factory.test").height == 2
     assert shared_summary.filter(pl.col("source") == "research.alpha_factory.test").height == 1
     assert (

@@ -3,7 +3,10 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import polars as pl
+import pytest
 
+import quant_lab.research.expanded_universe as expanded_universe_module
+from quant_lab.data.file_index import build_lake_file_index
 from quant_lab.data.lake import (
     read_parquet_dataset,
     upsert_parquet_dataset,
@@ -12,6 +15,7 @@ from quant_lab.data.lake import (
 from quant_lab.research.alpha_discovery import build_and_publish_alpha_discovery_board
 from quant_lab.research.expanded_universe import (
     STRATEGY_EVIDENCE_UPSERT_KEYS,
+    _read_recent_orderbook_snapshots,
     build_and_publish_expanded_crypto_universe_shadow,
     build_expanded_universe_candidate_maturity,
     build_expanded_universe_watchlist,
@@ -121,6 +125,72 @@ def test_symbol_quality_uses_rest_candidate_spread_when_orderbook_missing():
     assert "spread_not_observed" not in json.loads(xrp["blocking_reasons"])
 
 
+def test_recent_orderbook_reader_parses_production_string_timestamps(tmp_path):
+    lake_root = tmp_path / "lake"
+    orderbooks = pl.concat(
+        [_orderbook_frame({"BTC-USDT": 5.0}) for _ in range(100)]
+    ).with_columns(
+        [
+            pl.col("ts").dt.to_string("%Y-%m-%dT%H:%M:%S%.fZ"),
+            pl.col("ingest_ts").dt.to_string("%Y-%m-%dT%H:%M:%S%.fZ"),
+        ]
+    )
+    write_parquet_dataset(
+        orderbooks,
+        lake_root / "silver" / "orderbook_snapshot",
+    )
+
+    recent = _read_recent_orderbook_snapshots(
+        lake_root,
+        since=datetime(2026, 5, 20, 6, tzinfo=UTC),
+    )
+
+    assert recent.height == 1
+    assert recent.item(0, "symbol") == "BTC-USDT"
+    assert recent.item(0, "spread_sample_count") == 100
+    assert recent.item(0, "avg_spread_bps") == pytest.approx(5.0)
+
+
+def test_recent_orderbook_reader_uses_index_to_skip_old_files(tmp_path, monkeypatch):
+    lake_root = tmp_path / "lake"
+    dataset_path = lake_root / "silver" / "orderbook_snapshot"
+    dataset_path.mkdir(parents=True)
+    old = _orderbook_frame({"ETH-USDT": 7.0}).with_columns(
+        [
+            pl.lit(datetime(2026, 5, 19, tzinfo=UTC)).alias("ts"),
+            pl.lit(datetime(2026, 5, 19, tzinfo=UTC)).alias("ingest_ts"),
+        ]
+    )
+    recent = _orderbook_frame({"BTC-USDT": 5.0})
+    old.write_parquet(dataset_path / "old.parquet")
+    recent.write_parquet(dataset_path / "recent.parquet")
+    build_lake_file_index(
+        lake_root,
+        ["silver/orderbook_snapshot"],
+        content_identity=False,
+    )
+    scanned_paths: list[Path] = []
+    real_scan = expanded_universe_module._scan_parquet_files
+
+    def capture_scan(paths):
+        scanned_paths.extend(paths)
+        return real_scan(paths)
+
+    monkeypatch.setattr(
+        expanded_universe_module,
+        "_scan_parquet_files",
+        capture_scan,
+    )
+
+    frame = _read_recent_orderbook_snapshots(
+        lake_root,
+        since=datetime(2026, 5, 20, 6, tzinfo=UTC),
+    )
+
+    assert scanned_paths == [dataset_path / "recent.parquet"]
+    assert frame.get_column("symbol").to_list() == ["BTC-USDT"]
+
+
 def test_web_strategy_page_reads_expanded_universe(tmp_path):
     lake_root = tmp_path / "lake"
     _write_market(lake_root)
@@ -164,11 +234,16 @@ def test_expanded_universe_automation_builds_events_labels_and_promotion(tmp_pat
     )
     strategy_evidence_root = lake_root / "gold" / "strategy_evidence"
     strategy_evidence_root.mkdir(parents=True)
-    candidate_generation_sidecar = (
-        strategy_evidence_root / "_v5_candidate_evidence_generation.json"
-    )
-    sidecar_bytes = b'{"generation_id":"v5-candidate-generation"}\n'
-    candidate_generation_sidecar.write_bytes(sidecar_bytes)
+    generation_sidecars = {
+        strategy_evidence_root
+        / "_research_generation.json": b'{"generation_id":"alpha-generation"}\n',
+        strategy_evidence_root
+        / "_v5_candidate_evidence_generation.json": (
+            b'{"generation_id":"v5-candidate-generation"}\n'
+        ),
+    }
+    for sidecar, payload in generation_sidecars.items():
+        sidecar.write_bytes(payload)
 
     result = build_and_publish_expanded_crypto_universe_shadow(
         lake_root,
@@ -194,7 +269,8 @@ def test_expanded_universe_automation_builds_events_labels_and_promotion(tmp_pat
     evidence = read_parquet_dataset(lake_root / "gold" / "strategy_evidence")
     expanded = evidence.filter(pl.col("universe_type") == "expanded_paper")
     assert not expanded.is_empty()
-    assert candidate_generation_sidecar.read_bytes() == sidecar_bytes
+    for sidecar, payload in generation_sidecars.items():
+        assert sidecar.read_bytes() == payload
 
     queue = read_parquet_dataset(lake_root / "gold" / "expanded_universe_promotion_queue")
     assert not queue.is_empty()

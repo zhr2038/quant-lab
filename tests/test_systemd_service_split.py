@@ -295,8 +295,11 @@ def test_candidate_research_refresh_is_separate_from_alpha_evidence():
     assert "build-bnb-swing-exit-policy-review" not in refresh_unit
     assert "build-entry-quality" in refresh_unit
     assert "build-regime-router" not in refresh_unit
-    assert "/var/lock/quant-lab-heavy.lock" not in refresh_unit
-    assert "flock -E 75 -w 30 /var/lock/quant-lab-v5-research.lock" in refresh_unit
+    assert (
+        "flock -E 75 -w 30 /var/lock/quant-lab-heavy.lock "
+        "/usr/bin/flock -E 75 -w 30 /var/lock/quant-lab-v5-research.lock"
+        in refresh_unit
+    )
     assert "/usr/bin/timeout 45m" in refresh_unit
     assert "TimeoutStartSec=55min" in refresh_unit
     assert "CPUQuota=40%" in refresh_unit
@@ -324,8 +327,8 @@ def test_alpha_factory_nas_request_replaces_scheduled_local_compute():
     assert "QUANT_LAB_NAS_ALPHA_FACTORY_ENABLED" in request_service
     assert "POLARS_MAX_THREADS=1" in request_service
     assert "CPUQuota=30%" in request_service
-    assert "MemoryHigh=500M" in request_service
-    assert "MemoryMax=900M" in request_service
+    assert "MemoryHigh=2G" in request_service
+    assert "MemoryMax=3G" in request_service
     assert "/var/lib/quant-lab/lake/bronze/lake_file_index" in request_service
     assert "OnCalendar=*-*-* 03:20:00 UTC" in request_timer
     assert "RandomizedDelaySec=20min" in request_timer
@@ -337,8 +340,21 @@ def test_alpha_factory_nas_request_replaces_scheduled_local_compute():
     assert "Unit=quant-lab-alpha-factory-request.service" not in legacy_timer
 
     assert "import-research-results" in importer
+    assert (
+        "flock -E 75 -w 30 /var/lock/quant-lab-heavy.lock "
+        "/usr/bin/flock -E 75 -w 30 /var/lock/quant-lab-v5-research.lock"
+        in importer
+    )
+    assert "SKIP_RESEARCH_RESULT_IMPORT_LOCK_BUSY" in importer
+    assert 'if [ "$${code}" = "75" ]' in importer
+    assert 'exit "$${code}"' in importer
+    assert (
+        "ReadWritePaths=/var/lib/quant-lab/lake /var/lib/quant-lab/research_queue "
+        "/var/lock/quant-lab-heavy.lock /var/lock/quant-lab-v5-research.lock"
+        in importer
+    )
     assert "TimeoutStartSec=30min" in importer
-    assert "MemoryHigh=2G" in importer
+    assert "MemoryHigh=2560M" in importer
     assert "MemoryMax=3G" in importer
     assert "gc-research-snapshots" in snapshot_gc
 

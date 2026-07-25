@@ -59,6 +59,13 @@ V5_CANDIDATE_EVIDENCE_GENERATION_POINTER = Path("gold") / "v5_candidate_evidence
 V5_CANDIDATE_EVIDENCE_GENERATION_SCHEMA = "v5_candidate_evidence_generation.v2"
 V5_CANDIDATE_EVIDENCE_TRANSACTION_NAME = "v5_candidate_evidence"
 V5_CANDIDATE_EVIDENCE_SIDECAR = "_v5_candidate_evidence_generation.json"
+ALPHA_FACTORY_GENERATION_SIDECAR = "_research_generation.json"
+ALPHA_FACTORY_SHARED_DATASETS = frozenset(
+    {
+        "strategy_evidence_sample",
+        "strategy_evidence",
+    }
+)
 V5_CANDIDATE_EVIDENCE_DATASETS = {
     "v5_candidate_label": CANDIDATE_LABEL_DATASET,
     "v5_candidate_quality_daily": CANDIDATE_QUALITY_DATASET,
@@ -251,6 +258,11 @@ def publish_v5_candidate_evidence_generation(
                     replace_scope=replace_scope,
                 )
                 staged_by_dataset[dataset_name] = staged
+            _preserve_alpha_factory_generation_sidecar(
+                root / target,
+                staged,
+                dataset_name=dataset_name,
+            )
             _validate_staged_dataset(
                 staged,
                 dataset_name=dataset_name,
@@ -751,6 +763,19 @@ def _write_generation_sidecars(
             "created_at": datetime.now(UTC).isoformat(),
         },
     )
+
+
+def _preserve_alpha_factory_generation_sidecar(
+    existing: Path,
+    staged: Path,
+    *,
+    dataset_name: str,
+) -> None:
+    if dataset_name not in ALPHA_FACTORY_SHARED_DATASETS:
+        return
+    sidecar = existing / ALPHA_FACTORY_GENERATION_SIDECAR
+    if sidecar.is_file():
+        shutil.copy2(sidecar, staged / sidecar.name)
 
 
 def _validate_cloud_decision_safety(dataset_root: Path) -> None:

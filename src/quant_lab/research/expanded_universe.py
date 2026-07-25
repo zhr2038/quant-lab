@@ -11,6 +11,7 @@ from typing import Any
 import polars as pl
 from pydantic import BaseModel, ConfigDict, Field
 
+from quant_lab.data.file_index import recent_files_for_dataset
 from quant_lab.data.lake import (
     read_parquet_dataset,
     upsert_parquet_dataset,
@@ -23,8 +24,13 @@ MARKET_BAR_DATASET = Path("silver") / "market_bar"
 ORDERBOOK_SNAPSHOT_DATASET = Path("silver") / "orderbook_snapshot"
 SPOT_UNIVERSE_CANDIDATES_DATASET = Path("bronze") / "okx_public_rest" / "spot_universe_candidates"
 STRATEGY_EVIDENCE_DATASET = Path("gold") / "strategy_evidence"
+ALPHA_FACTORY_GENERATION_SIDECAR = "_research_generation.json"
 V5_CANDIDATE_EVIDENCE_GENERATION_SIDECAR = (
     "_v5_candidate_evidence_generation.json"
+)
+STRATEGY_EVIDENCE_GENERATION_SIDECARS = (
+    ALPHA_FACTORY_GENERATION_SIDECAR,
+    V5_CANDIDATE_EVIDENCE_GENERATION_SIDECAR,
 )
 STRATEGY_EVIDENCE_UPSERT_KEYS = (
     "source",
@@ -512,7 +518,7 @@ def build_and_publish_expanded_crypto_universe_shadow(
             expanded_evidence,
             root / STRATEGY_EVIDENCE_DATASET,
             key_columns=STRATEGY_EVIDENCE_UPSERT_KEYS,
-            preserve_files=(V5_CANDIDATE_EVIDENCE_GENERATION_SIDECAR,),
+            preserve_files=STRATEGY_EVIDENCE_GENERATION_SIDECARS,
         )
     write_parquet_dataset(outcomes, root / EXPANDED_CANDIDATE_OUTCOMES_DATASET)
     write_parquet_dataset(shadow, root / EXPANDED_UNIVERSE_SHADOW_DATASET)
@@ -1760,15 +1766,80 @@ def _read_recent_market_bars(
 
 def _read_recent_orderbook_snapshots(lake_root: Path, *, since: datetime) -> pl.DataFrame:
     dataset_path = lake_root / ORDERBOOK_SNAPSHOT_DATASET
-    scan = _scan_dataset(dataset_path, max_files=300)
+    indexed_paths = recent_files_for_dataset(dataset_path, since=since)
+    if indexed_paths is None:
+        scan = _scan_dataset(dataset_path, max_files=300)
+    else:
+        existing_paths = [path for path in indexed_paths if path.exists()]
+        scan = (
+            _scan_parquet_files(existing_paths)
+            if existing_paths
+            else _scan_dataset(dataset_path, max_files=300)
+        )
     if scan is None:
         return pl.DataFrame()
-    timestamp = pl.coalesce([pl.col("ts"), pl.col("ingest_ts")])
-    columns = ["symbol", "ts", "ingest_ts", "bids_json", "asks_json"]
+    schema = set(scan.collect_schema().names())
+    if not {"symbol", "bids_json", "asks_json"}.issubset(schema):
+        return pl.DataFrame()
+    timestamp_candidates = []
+    for column in ("ts", "ingest_ts"):
+        if column not in schema:
+            continue
+        timestamp_candidates.extend(
+            [
+                pl.col(column).cast(pl.Datetime(time_zone="UTC"), strict=False),
+                pl.col(column)
+                .cast(pl.Utf8, strict=False)
+                .str.to_datetime(time_zone="UTC", strict=False),
+            ]
+        )
+    if not timestamp_candidates:
+        return pl.DataFrame()
+    timestamp = pl.coalesce(timestamp_candidates)
+    bid = (
+        pl.col("bids_json")
+        .cast(pl.Utf8, strict=False)
+        .str.extract(r'^\s*\[\s*\[\s*"([^"]+)"', 1)
+        .cast(pl.Float64, strict=False)
+    )
+    ask = (
+        pl.col("asks_json")
+        .cast(pl.Utf8, strict=False)
+        .str.extract(r'^\s*\[\s*\[\s*"([^"]+)"', 1)
+        .cast(pl.Float64, strict=False)
+    )
     try:
         return (
-            scan.filter(timestamp >= pl.lit(since))
-            .select(columns)
+            scan.select(
+                [
+                    pl.col("symbol"),
+                    timestamp.alias("_event_ts"),
+                    bid.alias("_best_bid"),
+                    ask.alias("_best_ask"),
+                ]
+            )
+            .filter(
+                (pl.col("_event_ts") >= pl.lit(since))
+                & pl.col("symbol").is_not_null()
+                & (pl.col("_best_bid") > 0)
+                & (pl.col("_best_ask") > pl.col("_best_bid"))
+            )
+            .with_columns(
+                (
+                    (pl.col("_best_ask") - pl.col("_best_bid"))
+                    / ((pl.col("_best_ask") + pl.col("_best_bid")) / 2.0)
+                    * 10_000.0
+                ).alias("_spread_bps")
+            )
+            .group_by("symbol")
+            .agg(
+                [
+                    pl.col("_event_ts").max().alias("ts"),
+                    pl.col("_event_ts").max().alias("ingest_ts"),
+                    pl.col("_spread_bps").mean().alias("avg_spread_bps"),
+                    pl.len().alias("spread_sample_count"),
+                ]
+            )
             .collect(engine="streaming")
         )
     except Exception:
@@ -1795,6 +1866,12 @@ def _scan_dataset(dataset_path: Path, *, max_files: int | None = None) -> pl.Laz
             key=lambda path: path.stat().st_mtime,
             reverse=True,
         )[:max_files]
+    return _scan_parquet_files(parquet_paths)
+
+
+def _scan_parquet_files(parquet_paths: list[Path]) -> pl.LazyFrame | None:
+    if not parquet_paths:
+        return None
     return pl.scan_parquet(
         [str(path) for path in parquet_paths],
         missing_columns="insert",
@@ -1862,6 +1939,12 @@ def _avg_spread_by_symbol(orderbook: pl.DataFrame, *, since: datetime) -> dict[s
             continue
         symbol = normalize_symbol(row.get("symbol"))
         if not _is_usdt_symbol(symbol):
+            continue
+        aggregate_spread = _float(row.get("avg_spread_bps"))
+        if aggregate_spread is None:
+            aggregate_spread = _float(row.get("spread_bps"))
+        if aggregate_spread is not None and aggregate_spread >= 0:
+            values[symbol].append(aggregate_spread)
             continue
         bid = _best_price(row.get("bids_json"), best="bid")
         ask = _best_price(row.get("asks_json"), best="ask")

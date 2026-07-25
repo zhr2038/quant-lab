@@ -24,6 +24,8 @@ SCOPE_METADATA_VERSION = "lake_file_scope_metadata.v1"
 def build_lake_file_index(
     lake_root: str | Path,
     dataset_paths: Iterable[str | Path],
+    *,
+    content_identity: bool = True,
 ) -> pl.DataFrame:
     # Read-only callers may inspect a Lake path before it has been initialized.
     # ``strict=False`` still canonicalizes existing parents without creating state.
@@ -45,7 +47,14 @@ def build_lake_file_index(
                 raise ValueError("lake_file_index_dataset_path_escape")
         dataset = str(absolute.relative_to(root)).replace("\\", "/")
         indexed_datasets.append(dataset)
-        rows.extend(_index_dataset(root, absolute, existing_by_key=existing_by_key))
+        rows.extend(
+            _index_dataset(
+                root,
+                absolute,
+                existing_by_key=existing_by_key,
+                content_identity=content_identity,
+            )
+        )
     frame = pl.DataFrame(rows, infer_schema_length=None)
     output = _merged_index_frame(existing, frame, indexed_datasets=indexed_datasets)
     if output.columns and not _frames_equal(existing, output):
@@ -161,6 +170,7 @@ def _index_dataset(
     dataset_path: Path,
     *,
     existing_by_key: dict[tuple[str, str], dict[str, Any]],
+    content_identity: bool,
 ) -> list[dict]:
     if not dataset_path.exists() or not dataset_path.is_dir():
         return []
@@ -186,16 +196,33 @@ def _index_dataset(
             existing is not None
             and _int_value(existing.get("mtime_ns")) == stat.st_mtime_ns
             and _int_value(existing.get("size_bytes") or existing.get("file_size")) == stat.st_size
-            and _stable_index_identity_present(existing)
+            and (
+                _stable_index_identity_present(existing)
+                or (not content_identity and _metadata_index_identity_present(existing))
+            )
         ):
             rows.append(_reuse_index_row(existing, stat=stat, indexed_at=indexed_at))
             continue
         try:
-            min_ts, max_ts, row_count = _file_time_bounds(file_path)
-            source_sha = sha256_file(file_path)
-            schema_fingerprint = _parquet_schema_fingerprint(file_path)
-            uncompressed_bytes = _parquet_uncompressed_bytes(file_path)
-            scope_metadata_json = _file_scope_metadata(file_path, dataset=dataset)
+            if content_identity:
+                min_ts, max_ts, row_count = _file_time_bounds(file_path)
+                source_sha = sha256_file(file_path)
+                schema_fingerprint = _parquet_schema_fingerprint(file_path)
+                uncompressed_bytes = _parquet_uncompressed_bytes(file_path)
+                scope_metadata_json = _file_scope_metadata(file_path, dataset=dataset)
+                identity_mode = "content"
+            else:
+                min_ts, max_ts, row_count = _file_metadata_time_bounds(file_path)
+                source_sha = ""
+                schema_fingerprint = ""
+                uncompressed_bytes = 0
+                scope_metadata_json = json.dumps(
+                    {"schema_version": SCOPE_METADATA_VERSION, "scopes": []},
+                    ensure_ascii=True,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                identity_mode = "metadata"
             after = file_path.stat()
         except Exception as exc:
             raise RuntimeError(f"lake_file_index_source_read_failed:{relative_path}") from exc
@@ -218,6 +245,7 @@ def _index_dataset(
                 "scope_metadata_json": scope_metadata_json,
                 "indexed_at": indexed_at,
                 "index_version": INDEX_VERSION,
+                "identity_mode": identity_mode,
                 "reused_from_previous_index": False,
             }
         )
@@ -237,11 +265,15 @@ def _reuse_index_row(row: dict[str, Any], *, stat, indexed_at: str) -> dict[str,
     reused["file_size"] = stat.st_size
     reused["size_bytes"] = stat.st_size
     reused["mtime_ns"] = stat.st_mtime_ns
-    reused["sha256"] = str(reused["sha256"])
-    reused["source_sha"] = str(reused["sha256"])
+    reused["sha256"] = str(reused.get("sha256") or "")
+    reused["source_sha"] = str(reused.get("source_sha") or reused["sha256"])
     reused["scope_metadata_json"] = str(reused.get("scope_metadata_json") or "")
     reused["indexed_at"] = str(reused.get("indexed_at") or indexed_at)
     reused["index_version"] = INDEX_VERSION
+    reused["identity_mode"] = str(
+        reused.get("identity_mode")
+        or ("content" if _stable_index_identity_present(reused) else "metadata")
+    )
     reused["reused_from_previous_index"] = True
     return reused
 
@@ -285,6 +317,41 @@ def _file_time_bounds(file_path: Path) -> tuple[datetime | None, datetime | None
     )
 
 
+def _file_metadata_time_bounds(
+    file_path: Path,
+) -> tuple[datetime | None, datetime | None, int]:
+    """Read timestamp bounds from Parquet footer statistics without hashing payload bytes."""
+
+    import pyarrow.parquet as pq  # noqa: PLC0415
+
+    parquet = pq.ParquetFile(file_path)
+    metadata = parquet.metadata
+    schema_names = list(parquet.schema_arrow.names)
+    timestamp_column = next(
+        (column for column in TIMESTAMP_COLUMNS if column in schema_names),
+        None,
+    )
+    if timestamp_column is None:
+        return None, None, int(metadata.num_rows)
+
+    column_index = schema_names.index(timestamp_column)
+    minimums: list[datetime] = []
+    maximums: list[datetime] = []
+    for row_group_index in range(metadata.num_row_groups):
+        statistics = metadata.row_group(row_group_index).column(column_index).statistics
+        if statistics is None or not statistics.has_min_max:
+            return _file_time_bounds(file_path)
+        minimum = _coerce_datetime(statistics.min)
+        maximum = _coerce_datetime(statistics.max)
+        if minimum is None or maximum is None:
+            return _file_time_bounds(file_path)
+        minimums.append(minimum)
+        maximums.append(maximum)
+    if not minimums or not maximums:
+        return _file_time_bounds(file_path)
+    return min(minimums), max(maximums), int(metadata.num_rows)
+
+
 def _stable_index_identity_present(row: dict[str, Any]) -> bool:
     sha = str(row.get("sha256") or "")
     schema = str(row.get("schema_fingerprint") or "")
@@ -295,6 +362,15 @@ def _stable_index_identity_present(row: dict[str, Any]) -> bool:
         and len(schema) == 64
         and all(character in "0123456789abcdef" for character in schema)
         and _int_value(row.get("uncompressed_bytes")) is not None
+        and _valid_scope_metadata(row.get("scope_metadata_json"))
+    )
+
+
+def _metadata_index_identity_present(row: dict[str, Any]) -> bool:
+    return (
+        str(row.get("index_version") or "") == INDEX_VERSION
+        and str(row.get("identity_mode") or "") == "metadata"
+        and _int_value(row.get("row_count")) is not None
         and _valid_scope_metadata(row.get("scope_metadata_json"))
     )
 
@@ -430,8 +506,26 @@ def _timestamp_expr(column: str) -> pl.Expr:
 
 
 def _coerce_datetime(value) -> datetime | None:
+    if isinstance(value, bytes):
+        value = value.decode("utf-8", "replace")
     if isinstance(value, datetime):
         parsed = value
+    elif isinstance(value, (int, float)):
+        numeric = float(value)
+        absolute = abs(numeric)
+        divisor = (
+            1_000_000_000.0
+            if absolute >= 1e17
+            else 1_000_000.0
+            if absolute >= 1e14
+            else 1_000.0
+            if absolute >= 1e11
+            else 1.0
+        )
+        try:
+            parsed = datetime.fromtimestamp(numeric / divisor, tz=UTC)
+        except (OSError, OverflowError, ValueError):
+            return None
     elif value in (None, ""):
         return None
     else:

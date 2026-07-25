@@ -7207,14 +7207,16 @@ def _dataset_members(
         candidate_events=frames.get("v5_candidate_event", pl.DataFrame()),
         market_bars=market,
     )
-    final_score_alpha6_conflict = _prefer_frame(
-        _normalize_final_score_alpha6_conflict_frame(
-            frames.get("v5_final_score_vs_alpha6_conflict", pl.DataFrame())
+    final_score_alpha6_conflict = _canonical_final_score_alpha6_conflict_for_export(
+        persisted_conflicts=frames.get(
+            "v5_final_score_vs_alpha6_conflict",
+            pl.DataFrame(),
         ),
-        _final_score_vs_alpha6_conflict_for_export(
-            candidate_events=frames.get("v5_candidate_event", pl.DataFrame()),
-            market_bars=market,
-            negative_expectancy=frames.get("v5_negative_expectancy_consistency", pl.DataFrame()),
+        candidate_events=frames.get("v5_candidate_event", pl.DataFrame()),
+        market_bars=market,
+        negative_expectancy=frames.get(
+            "v5_negative_expectancy_consistency",
+            pl.DataFrame(),
         ),
     )
     bnb_strong_alpha6_bypass_shadow = _normalize_bnb_strong_alpha6_bypass_frame(
@@ -15167,6 +15169,25 @@ def _late_breakout_failure_shadow_for_export(overextension: pl.DataFrame) -> pl.
     )
 
 
+def _canonical_final_score_alpha6_conflict_for_export(
+    *,
+    persisted_conflicts: pl.DataFrame,
+    candidate_events: pl.DataFrame,
+    market_bars: pl.DataFrame,
+    negative_expectancy: pl.DataFrame | None = None,
+) -> pl.DataFrame:
+    recomputed = _final_score_vs_alpha6_conflict_for_export(
+        candidate_events=candidate_events,
+        market_bars=market_bars,
+        negative_expectancy=negative_expectancy,
+    )
+    persisted = _normalize_final_score_alpha6_conflict_frame(persisted_conflicts)
+    # Persisted V5 rows are historical bundle evidence and can contain repeated
+    # materializations. Current candidate events plus current market bars are the
+    # canonical source whenever they are available.
+    return _prefer_frame(recomputed, persisted)
+
+
 def _final_score_vs_alpha6_conflict_for_export(
     *,
     candidate_events: pl.DataFrame,
@@ -15291,6 +15312,7 @@ def _final_score_vs_alpha6_conflict_for_export(
     return (
         pl.DataFrame(rows, infer_schema_length=None)
         .select(CSV_SCHEMAS[path])
+        .unique(subset=["run_id", "ts_utc", "symbol"], keep="last", maintain_order=True)
         .sort(["ts_utc", "symbol", "run_id"])
     )
 
@@ -15392,6 +15414,16 @@ def _conflict_display_number(value: Any) -> str:
 def _final_score_vs_alpha6_conflict_summary_md(conflicts: pl.DataFrame) -> str:
     rows = conflicts.to_dicts() if not conflicts.is_empty() else []
     conflict_count = len(rows)
+    unique_event_count = len(
+        {
+            (
+                str(row.get("run_id") or ""),
+                str(row.get("ts_utc") or ""),
+                str(row.get("symbol") or ""),
+            )
+            for row in rows
+        }
+    )
     avg_4h = _conflict_avg_optional(row.get("future_4h_net_bps") for row in rows)
     avg_8h = _conflict_avg_optional(row.get("future_8h_net_bps") for row in rows)
     avg_24h = _conflict_avg_optional(row.get("future_24h_net_bps") for row in rows)
@@ -15434,6 +15466,8 @@ def _final_score_vs_alpha6_conflict_summary_md(conflicts: pl.DataFrame) -> str:
             "Diagnostic only. This report does not change V5 live orders.",
             "",
             f"- conflict_count: {conflict_count}",
+            f"- unique_event_count: {unique_event_count}",
+            f"- duplicate_event_count: {conflict_count - unique_event_count}",
             f"- avg_future_4h_net_bps: {_conflict_display_number(avg_4h)}",
             f"- avg_future_8h_net_bps: {_conflict_display_number(avg_8h)}",
             f"- avg_future_24h_net_bps: {_conflict_display_number(avg_24h)}",
@@ -18601,7 +18635,15 @@ def _normalize_final_score_alpha6_conflict_frame(frame: pl.DataFrame) -> pl.Data
     for old, new in rename_map.items():
         if old in normalized.columns and new not in normalized.columns:
             normalized = normalized.rename({old: new})
-    return _csv_frame_with_schema(normalized, CSV_SCHEMAS[path])
+    normalized = _csv_frame_with_schema(normalized, CSV_SCHEMAS[path])
+    event_key = ["run_id", "ts_utc", "symbol"]
+    if all(column in normalized.columns for column in event_key):
+        normalized = normalized.unique(
+            subset=event_key,
+            keep="last",
+            maintain_order=True,
+        )
+    return normalized
 
 
 def _normalize_bnb_strong_alpha6_bypass_frame(frame: pl.DataFrame) -> pl.DataFrame:

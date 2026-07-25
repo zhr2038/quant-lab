@@ -572,7 +572,7 @@ def _lease_is_expired(
 def _read_remote_claim_epoch(config: Config, task_id: str) -> int | None:
     _require_identifier(task_id)
     path = f"{config.cloud_queue_root}/running/{task_id}/.lease_claim_epoch"
-    result = _ssh(config, f"cat {shlex.quote(path)}", check=False)
+    result = _poll_control_plane_ssh(config, f"cat {shlex.quote(path)}")
     if result.returncode != 0:
         return None
     try:
@@ -582,7 +582,10 @@ def _read_remote_claim_epoch(config: Config, task_id: str) -> int | None:
 
 
 def _remote_exists(config: Config, path: str) -> bool:
-    return _ssh(config, f"test -e {shlex.quote(path)}", check=False).returncode == 0
+    return _poll_control_plane_ssh(
+        config,
+        f"test -e {shlex.quote(path)}",
+    ).returncode == 0
 
 
 def _conditional_remote_transition(
@@ -609,7 +612,7 @@ def _conditional_remote_transition(
         f"mv {shlex.quote(source)} {shlex.quote(destination)}; "
         f"rm -f -- {shlex.quote(root + '/lease/' + task_id + '.json')}"
     )
-    result = _ssh(config, script, check=False)
+    result = _poll_control_plane_ssh(config, script)
     if result.returncode in {46, 47, 48, 49}:
         return False
     if result.returncode != 0:
@@ -1326,7 +1329,7 @@ def _list_result_partials(config: Config, task_id: str) -> list[str]:
         f"find {shlex.quote(inbox_root)} -mindepth 1 -maxdepth 1 -type d "
         f"-name {shlex.quote(prefix + '*' + suffix)} -print 2>/dev/null | LC_ALL=C sort"
     )
-    result = _ssh(config, command, check=False)
+    result = _poll_control_plane_ssh(config, command)
     if result.returncode != 0:
         raise RuntimeError(f"research_partial_scan_failed:{_tail(result.stderr)}")
     partials: list[str] = []

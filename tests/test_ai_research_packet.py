@@ -7,6 +7,7 @@ import stat
 import zipfile
 from datetime import UTC, datetime
 
+import quant_lab.ai_research.packet as packet_module
 from quant_lab.ai_research.contracts import (
     EvidenceDocument,
     canonical_json,
@@ -134,6 +135,53 @@ def test_default_packet_stays_within_model_input_budget(tmp_path) -> None:
     task, _ = build_ai_research_task(pack, queue_root=tmp_path / "queue")
 
     assert task is not None
+    assert len(canonical_json(task.model_dump(mode="json")).encode("utf-8")) < 400_000
+
+
+def test_default_packet_prioritizes_core_identity_before_large_audits(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    pack = tmp_path / "quant_lab_expert_pack_large_audits.zip"
+    with zipfile.ZipFile(pack, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(
+            "manifest.json", json.dumps({"generated_at": "2026-07-25T00:00:00Z"})
+        )
+        archive.writestr("provenance.json", json.dumps({"detail": "p" * 60_000}))
+        archive.writestr("data_quality.json", json.dumps({"status": "PASS"}))
+
+    audit_documents = [
+        EvidenceDocument(
+            source_member=f"derived/audit_{index}.json",
+            source_format="json",
+            content_sha256=str(index) * 64,
+            source_size_bytes=140_000,
+            representation="full",
+            truncated=False,
+            content={"rows": ["x" * 149_500]},
+        )
+        for index in (1, 2)
+    ]
+    monkeypatch.setattr(
+        packet_module,
+        "_build_factor_research_audit_documents",
+        lambda _archive: (audit_documents, set(), []),
+    )
+
+    task, _ = build_ai_research_task(pack, queue_root=tmp_path / "queue")
+
+    assert task is not None and task.preflight is not None
+    core_members = {
+        document.source_member.lower().lstrip("./")
+        for document in task.sections["core_state"]
+    }
+    assert core_members.issuperset(
+        {"manifest.json", "provenance.json", "data_quality.json"}
+    )
+    assert task.preflight.blockers == []
+    assert {
+        document.source_member for document in task.sections["factor_research"]
+    }.issuperset({"derived/audit_1.json", "derived/audit_2.json"})
     assert len(canonical_json(task.model_dump(mode="json")).encode("utf-8")) < 400_000
 
 
@@ -327,6 +375,7 @@ def test_factor_audit_documents_preserve_complete_candidate_and_validation_rows(
             "reports/factor_candidates.csv",
             "factor_id,candidate_state,hypothesis_id,data_snapshot_id,source,as_of_date\n"
             "f1,KEEP_SHADOW,hypothesis-a,snapshot-a,factor_research.nas.v2,2026-07-19\n"
+            "f2,PAPER_READY,hypothesis-b,snapshot-b,factors.factory.v0.1,2026-07-19\n"
             "legacy-a,PAPER_READY,,,factors.factory.v0.1,2026-07-19\n",
         )
         archive.writestr(
@@ -335,14 +384,17 @@ def test_factor_audit_documents_preserve_complete_candidate_and_validation_rows(
             "canonical_factor_id,formula_hash,duplicate_of,correlation_cluster_id,"
             "independence_weight,availability_lag_bars,causal,operator_graph_hash\n"
             'f1,momentum,"[""close_return_24""]",feature,expr-1,canonical-1,'
-            "formula-1,,cluster-1,1.0,1,True,graph-1\n",
+            "formula-1,,cluster-1,1.0,1,True,graph-1\n"
+            'f2,momentum,"[""close_return_8""]",feature,expr-2,canonical-2,'
+            "formula-2,,cluster-2,1.0,1,True,graph-2\n",
         )
         archive.writestr(
             "reports/factor_dedupe_decision.csv",
             "factor_id,correlation_cluster_id,cluster_size,leader_factor_id,"
             "is_cluster_leader,max_abs_correlation,independence_weight,"
             "dedupe_decision,dedupe_reason\n"
-            "f1,cluster-1,1,f1,True,1.0,1.0,keep_leader,unique\n",
+            "f1,cluster-1,1,f1,True,1.0,1.0,keep_leader,unique\n"
+            "f2,cluster-2,1,f2,True,1.0,1.0,keep_leader,unique\n",
         )
         archive.writestr(
             "reports/factor_forward_validation.csv",
@@ -350,7 +402,9 @@ def test_factor_audit_documents_preserve_complete_candidate_and_validation_rows(
             "long_short_bps,p25_net_bps,hit_rate,recent_7d_score,regime_stability,"
             "cost_adjusted_score,recommendation,data_leakage_check\n"
             "f1,SOL-USDT,TREND_UP,8,40,0.04,0.03,12.5,-2.0,0.6,5.0,0.8,12.5,"
-            "FORWARD_VALIDATION_PASS,pass\n",
+            "FORWARD_VALIDATION_PASS,pass\n"
+            "f2,ETH-USDT,RISK_OFF,24,40,-0.01,-0.02,-5.0,-20.0,0.4,-2.0,-0.2,"
+            "-5.0,FORWARD_VALIDATION_WEAK_OR_MIXED,pass\n",
         )
 
     task, _ = build_ai_research_task(pack, queue_root=tmp_path / "queue")
@@ -370,12 +424,12 @@ def test_factor_audit_documents_preserve_complete_candidate_and_validation_rows(
     assert "insufficient_recent_samples" in alpha.content["rows"][0][14]
     assert alpha.content["rows"][1][13] == "NO_VALIDATION_OR_RECENT_SAMPLES"
     assert factor.truncated is False
-    assert factor.content["definition_count"] == 1
-    assert factor.content["candidate_count"] == 2
+    assert factor.content["definition_count"] == 2
+    assert factor.content["candidate_count"] == 3
     assert factor.content["join_complete"] is True
-    assert factor.content["current_definition_candidate_count"] == 1
+    assert factor.content["current_definition_candidate_count"] == 2
     assert factor.content["join_complete"] is True
-    assert factor.content["current_definition_eligible_candidate_count"] == 1
+    assert factor.content["current_definition_eligible_candidate_count"] == 2
     assert factor.content["current_candidate_as_of_date"] == "2026-07-19"
     assert factor.content["current_definition_candidate_rows"][0][0:2] == [
         "f1",
@@ -385,9 +439,34 @@ def test_factor_audit_documents_preserve_complete_candidate_and_validation_rows(
     assert factor.content["evidence_population_status"] == (
         "CURRENT_FORWARD_EVIDENCE_AVAILABLE"
     )
-    assert factor.content["forward_validation_count"] == 1
+    assert factor.content["forward_validation_count"] == 2
     assert factor.content["forward_validation_rows"][0][0] == "f1"
     assert factor.content["forward_validation_rows"][0][6] == 0.03
+    assert factor.content["schema_version"] == "quant_lab.ai_factor_validation_audit.v4"
+    assert factor.content["candidate_forward_mapping_complete"] is True
+    assert factor.content["factor_forward_status_rows"][0][0:5] == [
+        "f1",
+        "KEEP_SHADOW",
+        "FACTOR_FACTORY_SHADOW_EVIDENCE_ONLY",
+        1,
+        1,
+    ]
+    assert factor.content["factor_forward_status_rows"][0][12:] == [
+        "SHADOW_WITH_FORWARD_PASS",
+        "NOT_EVALUATED_BY_FACTOR_AUDIT",
+    ]
+    assert factor.content["factor_forward_status_rows"][1][0:5] == [
+        "f2",
+        "PAPER_READY",
+        "FACTOR_FACTORY_DEVELOPMENT_EVIDENCE_ONLY",
+        1,
+        0,
+    ]
+    assert factor.content["factor_forward_status_rows"][1][12] == (
+        "DEVELOPMENT_READY_NOT_FORWARD_VALIDATED"
+    )
+    assert factor.content["paper_ready_candidate_factor_count"] == 1
+    assert factor.content["paper_ready_without_forward_pass_factor_count"] == 1
     assert task.preflight.status == "PASS"
 
 
@@ -441,6 +520,9 @@ def test_factor_audit_distinguishes_rejected_current_candidates_from_missing_for
     assert factor.content["forward_validation_count"] == 0
     assert factor.content["evidence_population_status"] == (
         "CURRENT_CANDIDATES_NOT_FORWARD_ELIGIBLE"
+    )
+    assert factor.content["factor_forward_status_rows"][0][12] == (
+        "RESEARCH_NOT_FORWARD_ELIGIBLE"
     )
     assert "current_factor_forward_validation_missing" not in task.preflight.warnings
 

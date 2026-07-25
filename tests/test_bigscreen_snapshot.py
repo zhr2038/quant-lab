@@ -2566,6 +2566,26 @@ def test_web_v2_ai_panel_keeps_current_legacy_stage2_outputs_visible():
     assert "function metricCount(value: unknown, fallback: number): number" in panel
 
 
+def test_web_v2_ai_panel_long_content_cannot_expand_the_card():
+    styles = Path("frontend-bigscreen/src/styles.css").read_text(encoding="utf-8")
+
+    assert ".ai-research{min-width:0;" in styles
+    assert ".ai-research>*,.ai-work-grid>*,.ai-evidence-grid>*{min-width:0}" in styles
+    assert (
+        ".ai-latest{min-width:0;display:grid;"
+        "grid-template-columns:minmax(0,1.35fr) minmax(0,1fr) minmax(0,1fr)"
+        in styles
+    )
+    assert (
+        ".ai-evidence-grid{min-width:0;min-height:0;display:grid;"
+        "grid-template-columns:minmax(0,1fr) minmax(0,1fr)"
+        in styles
+    )
+    assert ".ai-block-head h3{min-width:0;" in styles
+    assert ".ai-evidence-list article b,.ai-evidence-list article small{min-width:0;" in styles
+    assert styles.count("overflow-wrap:anywhere") >= 5
+
+
 def test_web_v2_displays_bounded_ai_and_stale_dataset_counts_truthfully():
     app_source = Path("frontend-bigscreen/src/App.tsx").read_text(encoding="utf-8")
     panel = Path("frontend-bigscreen/src/components/AIResearchPanel.tsx").read_text(

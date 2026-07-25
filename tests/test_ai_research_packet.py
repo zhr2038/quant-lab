@@ -442,7 +442,7 @@ def test_factor_audit_documents_preserve_complete_candidate_and_validation_rows(
     assert factor.content["forward_validation_count"] == 2
     assert factor.content["forward_validation_rows"][0][0] == "f1"
     assert factor.content["forward_validation_rows"][0][6] == 0.03
-    assert factor.content["schema_version"] == "quant_lab.ai_factor_validation_audit.v4"
+    assert factor.content["schema_version"] == "quant_lab.ai_factor_validation_audit.v5"
     assert factor.content["candidate_forward_mapping_complete"] is True
     assert factor.content["factor_forward_status_rows"][0][0:5] == [
         "f1",
@@ -468,6 +468,75 @@ def test_factor_audit_documents_preserve_complete_candidate_and_validation_rows(
     assert factor.content["paper_ready_candidate_factor_count"] == 1
     assert factor.content["paper_ready_without_forward_pass_factor_count"] == 1
     assert task.preflight.status == "PASS"
+
+
+def test_factor_audit_selects_latest_candidate_per_factor_instead_of_global_date(
+    tmp_path,
+) -> None:
+    pack = tmp_path / "quant_lab_expert_pack_factor_per_factor_latest.zip"
+    with zipfile.ZipFile(pack, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("manifest.json", "{}")
+        archive.writestr("provenance.json", "{}")
+        archive.writestr("data_quality.json", "{}")
+        archive.writestr(
+            "reports/factor_candidates.csv",
+            "factor_id,candidate_state,hypothesis_id,data_snapshot_id,source,as_of_date,"
+            "promotion_block_reasons_json\n"
+            'breadth-a,REJECTED,hypothesis-a,snapshot-a,factor_research.nas.v2,'
+            '2026-07-21,"[""signal_not_valid""]"\n'
+            'low-vol-b,REJECTED,hypothesis-b,snapshot-b,factor_research.nas.v2,'
+            '2026-07-25,"[""rejected_data_quality""]"\n',
+        )
+        archive.writestr(
+            "reports/factor_definitions.csv",
+            "factor_id,factor_family,input_features_json,template,expression_hash,"
+            "canonical_factor_id,formula_hash,duplicate_of,correlation_cluster_id,"
+            "independence_weight,availability_lag_bars,causal,operator_graph_hash\n"
+            'breadth-a,breadth,"[""close""]",feature,expr-a,breadth-a,'
+            "formula-a,,cluster-a,1.0,1,True,graph-a\n"
+            'low-vol-b,defensive,"[""close""]",feature,expr-b,low-vol-b,'
+            "formula-b,,cluster-b,1.0,1,True,graph-b\n",
+        )
+        archive.writestr(
+            "reports/factor_dedupe_decision.csv",
+            "factor_id,correlation_cluster_id,cluster_size,leader_factor_id,"
+            "is_cluster_leader,max_abs_correlation,independence_weight,"
+            "dedupe_decision,dedupe_reason\n"
+            "breadth-a,cluster-a,1,breadth-a,True,1.0,1.0,keep_leader,unique\n"
+            "low-vol-b,cluster-b,1,low-vol-b,True,1.0,1.0,keep_leader,unique\n",
+        )
+        archive.writestr(
+            "reports/factor_forward_validation.csv",
+            "factor_id,symbol,regime,horizon_hours,sample_count,rank_ic,pearson_ic,"
+            "long_short_bps,p25_net_bps,hit_rate,recent_7d_score,regime_stability,"
+            "cost_adjusted_score,recommendation,data_leakage_check\n",
+        )
+
+    task, _ = build_ai_research_task(pack, queue_root=tmp_path / "queue")
+
+    assert task is not None and task.preflight is not None
+    factor = {
+        item.source_member: item for item in task.sections["factor_research"]
+    }["derived/factor_validation_audit.json"]
+    assert factor.content["current_definition_candidate_count"] == 2
+    assert factor.content["current_candidate_as_of_dates"] == [
+        "2026-07-21",
+        "2026-07-25",
+    ]
+    assert factor.content["current_candidate_as_of_by_factor"] == {
+        "breadth-a": "2026-07-21",
+        "low-vol-b": "2026-07-25",
+    }
+    assert factor.content["current_candidate_selection_rule"] == (
+        "latest_available_as_of_date_per_factor_id"
+    )
+    assert [row[0] for row in factor.content["current_definition_candidate_rows"]] == [
+        "breadth-a",
+        "low-vol-b",
+    ]
+    assert factor.content["evidence_population_status"] == (
+        "CURRENT_CANDIDATES_NOT_FORWARD_ELIGIBLE"
+    )
 
 
 def test_factor_audit_distinguishes_rejected_current_candidates_from_missing_forward_runtime(

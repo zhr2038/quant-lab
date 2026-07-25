@@ -7,6 +7,7 @@ import stat
 import zipfile
 from datetime import UTC, datetime
 
+import quant_lab.ai_research.packet as packet_module
 from quant_lab.ai_research.contracts import (
     EvidenceDocument,
     canonical_json,
@@ -134,6 +135,53 @@ def test_default_packet_stays_within_model_input_budget(tmp_path) -> None:
     task, _ = build_ai_research_task(pack, queue_root=tmp_path / "queue")
 
     assert task is not None
+    assert len(canonical_json(task.model_dump(mode="json")).encode("utf-8")) < 400_000
+
+
+def test_default_packet_prioritizes_core_identity_before_large_audits(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    pack = tmp_path / "quant_lab_expert_pack_large_audits.zip"
+    with zipfile.ZipFile(pack, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(
+            "manifest.json", json.dumps({"generated_at": "2026-07-25T00:00:00Z"})
+        )
+        archive.writestr("provenance.json", json.dumps({"detail": "p" * 60_000}))
+        archive.writestr("data_quality.json", json.dumps({"status": "PASS"}))
+
+    audit_documents = [
+        EvidenceDocument(
+            source_member=f"derived/audit_{index}.json",
+            source_format="json",
+            content_sha256=str(index) * 64,
+            source_size_bytes=140_000,
+            representation="full",
+            truncated=False,
+            content={"rows": ["x" * 149_500]},
+        )
+        for index in (1, 2)
+    ]
+    monkeypatch.setattr(
+        packet_module,
+        "_build_factor_research_audit_documents",
+        lambda _archive: (audit_documents, set(), []),
+    )
+
+    task, _ = build_ai_research_task(pack, queue_root=tmp_path / "queue")
+
+    assert task is not None and task.preflight is not None
+    core_members = {
+        document.source_member.lower().lstrip("./")
+        for document in task.sections["core_state"]
+    }
+    assert core_members.issuperset(
+        {"manifest.json", "provenance.json", "data_quality.json"}
+    )
+    assert task.preflight.blockers == []
+    assert {
+        document.source_member for document in task.sections["factor_research"]
+    }.issuperset({"derived/audit_1.json", "derived/audit_2.json"})
     assert len(canonical_json(task.model_dump(mode="json")).encode("utf-8")) < 400_000
 
 

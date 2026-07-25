@@ -8,6 +8,7 @@ from pathlib import Path
 
 from quant_lab.ai_research.importer import import_ai_research_results
 from quant_lab.ai_research.packet import (
+    DEFAULT_MAX_TOTAL_CHARS,
     build_task_from_latest_export,
     build_task_from_nas_pack_reference,
     queue_status,
@@ -32,7 +33,7 @@ def _parser() -> argparse.ArgumentParser:
     build.add_argument("--force", action="store_true")
     build.add_argument("--max-member-bytes", type=int, default=256 * 1024)
     build.add_argument("--max-document-chars", type=int, default=40_000)
-    build.add_argument("--max-total-chars", type=int, default=300_000)
+    build.add_argument("--max-total-chars", type=int, default=DEFAULT_MAX_TOTAL_CHARS)
     build.add_argument("--max-csv-rows", type=int, default=64)
     build.add_argument("--max-docs-per-section", type=int, default=4)
 

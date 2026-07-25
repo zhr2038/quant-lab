@@ -29,7 +29,7 @@ from quant_lab.export_plane.signatures import sha256_file
 
 DEFAULT_MAX_MEMBER_BYTES = 256 * 1024
 DEFAULT_MAX_DOCUMENT_CHARS = 40_000
-DEFAULT_MAX_TOTAL_CHARS = 300_000
+DEFAULT_MAX_TOTAL_CHARS = 380_000
 DEFAULT_MAX_CSV_ROWS = 64
 DEFAULT_MAX_DOCS_PER_SECTION = 4
 CORE_JSON_MAX_MEMBER_BYTES = 2 * 1024 * 1024
@@ -133,6 +133,7 @@ _ALLOWED_HYPOTHESIS_FAMILIES = [
 ]
 
 _TASK_ID_RE = re.compile(r"[^A-Za-z0-9_.-]+")
+_REQUIRED_CORE_MEMBERS = ("manifest.json", "provenance.json", "data_quality.json")
 _CORE_SUMMARY_MEMBERS = {"manifest.json", "data_quality.json"}
 _DETERMINISTIC_CSV_SUMMARY_MEMBERS = {"reports/alpha_discovery_board.csv"}
 _ALPHA_FACTORY_AUDIT_MEMBERS = {
@@ -253,6 +254,49 @@ def build_ai_research_task(
     consumed_chars = 0
 
     with zipfile.ZipFile(pack) as archive:
+        selected = _select_members(
+            archive,
+            max_docs_per_section=max_docs_per_section,
+        )
+        supported_members = {
+            member.filename.lower().lstrip("./"): member
+            for member in archive.infolist()
+            if _safe_supported_member(member)
+        }
+        processed_members: set[str] = set()
+        priority_core_members = [
+            supported_members[member_name]
+            for member_name in _REQUIRED_CORE_MEMBERS
+            if member_name in supported_members
+        ]
+        for index, member in enumerate(priority_core_members):
+            remaining_chars = max_total_chars - consumed_chars
+            remaining_core_count = len(priority_core_members) - index
+            if remaining_chars <= 0:
+                warnings.append(f"skipped_due_to_total_limit:{member.filename}")
+                continue
+            core_document_chars = min(
+                max_document_chars,
+                max(1, remaining_chars // remaining_core_count - 1_024),
+            )
+            document, document_warnings = _compact_member(
+                archive,
+                member,
+                max_member_bytes=max_member_bytes,
+                max_document_chars=core_document_chars,
+                max_csv_rows=max_csv_rows,
+            )
+            warnings.extend(document_warnings)
+            if document is None:
+                continue
+            encoded_length = len(canonical_json(document.model_dump(mode="json")))
+            if consumed_chars + encoded_length > max_total_chars:
+                warnings.append(f"skipped_due_to_total_limit:{member.filename}")
+                continue
+            sections["core_state"].append(document)
+            consumed_chars += encoded_length
+            processed_members.add(member.filename.lower().lstrip("./"))
+
         audit_documents, audit_sources, audit_warnings = (
             _build_factor_research_audit_documents(archive)
         )
@@ -282,10 +326,6 @@ def build_ai_research_task(
             sections["cost_and_execution"].append(document)
             consumed_chars += encoded_length
 
-        selected = _select_members(
-            archive,
-            max_docs_per_section=max_docs_per_section,
-        )
         if audit_documents:
             # The derived documents already carry every current Alpha Factory and
             # factor-validation row. Keep the large discovery board summary for
@@ -299,7 +339,8 @@ def build_ai_research_task(
             ]
         for section_name, members in selected.items():
             for member in members:
-                if member.filename.lower().lstrip("./") in audit_sources:
+                normalized_name = member.filename.lower().lstrip("./")
+                if normalized_name in processed_members or normalized_name in audit_sources:
                     continue
                 if consumed_chars >= max_total_chars:
                     warnings.append("packet_total_character_limit_reached")
@@ -412,7 +453,7 @@ def _build_task_preflight(
     checked_at: datetime,
     packet_warnings: list[str],
 ) -> TaskPreflight:
-    required_core_members = ["manifest.json", "provenance.json", "data_quality.json"]
+    required_core_members = list(_REQUIRED_CORE_MEMBERS)
     core_members = {
         document.source_member.lower().lstrip("./")
         for document in sections.get("core_state", [])

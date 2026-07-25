@@ -175,6 +175,104 @@ def test_blocked_preflight_cannot_enter_stage2() -> None:
         _validate_result_against_task(_result(task, _reference()), task)
 
 
+def test_import_validation_accepts_exact_deterministic_preflight_reference() -> None:
+    task = _task().model_copy(
+        update={
+            "preflight": TaskPreflight(
+                status="BLOCK",
+                checked_at=datetime(2026, 7, 25, tzinfo=UTC),
+                available_sections=["factor_research"],
+                required_core_members=[
+                    "manifest.json",
+                    "provenance.json",
+                    "data_quality.json",
+                ],
+                missing_core_members=["provenance.json"],
+                blockers=["missing_core_member:provenance.json"],
+                truncated_document_count=0,
+            )
+        }
+    )
+    task = task.model_copy(update={"packet_sha256": compute_task_packet_sha256(task)})
+    reference = EvidenceReference(
+        section="task.preflight",
+        source_member="task.preflight",
+        fields=["status", "blockers", "missing_core_members"],
+        claim="The deterministic preflight blocks Stage 2.",
+    )
+    finding = ResearchFinding(
+        finding_id="preflight-blocked",
+        category="data_quality",
+        status="observed",
+        severity="critical",
+        summary="Core identity is incomplete.",
+        explanation="The deterministic preflight reports a missing core member.",
+        confidence=1.0,
+        evidence_refs=[reference],
+        recommended_action="Restore the missing core member.",
+    )
+    diagnosis = Stage1Diagnosis(
+        task_id=task.task_id,
+        system_state="BLOCKED_DATA_QUALITY",
+        executive_summary="Stage 2 is blocked by deterministic preflight.",
+        stage2_allowed=False,
+        route_sections=[],
+        primary_bottlenecks=[finding],
+        primary_bottleneck_id=finding.finding_id,
+    )
+    result = AIResearchResult(
+        task_id=task.task_id,
+        source_pack_sha256=task.source_pack_sha256,
+        packet_sha256=task.packet_sha256,
+        model="gpt-5.6-sol",
+        reasoning_effort="xhigh",
+        worker_id="nas-1",
+        started_at=datetime(2026, 7, 25, 1, tzinfo=UTC),
+        completed_at=datetime(2026, 7, 25, 2, tzinfo=UTC),
+        diagnosis=diagnosis,
+        proposals=None,
+    )
+
+    _validate_result_against_task(result, task)
+
+
+def test_import_validation_rejects_forged_preflight_source_member() -> None:
+    task = _task().model_copy(
+        update={
+            "preflight": TaskPreflight(
+                status="PASS",
+                checked_at=datetime(2026, 7, 25, tzinfo=UTC),
+                available_sections=["factor_research"],
+                truncated_document_count=0,
+            )
+        }
+    )
+    task = task.model_copy(update={"packet_sha256": compute_task_packet_sha256(task)})
+    reference = EvidenceReference(
+        section="task.preflight",
+        source_member="task.not-preflight",
+        fields=["status"],
+        claim="Forged deterministic preflight evidence.",
+    )
+    base_result = _result(task, _reference())
+    result = base_result.model_copy(
+        update={
+            "diagnosis": base_result.diagnosis.model_copy(
+                update={
+                    "primary_bottlenecks": [
+                        base_result.diagnosis.primary_bottlenecks[0].model_copy(
+                            update={"evidence_refs": [reference]}
+                        )
+                    ]
+                }
+            )
+        }
+    )
+
+    with pytest.raises(ValueError, match="not present"):
+        _validate_result_against_task(result, task)
+
+
 def test_nas_result_requires_and_publishes_materialized_effective_preflight(tmp_path) -> None:
     embedded = _task()
     provisional = embedded.model_copy(

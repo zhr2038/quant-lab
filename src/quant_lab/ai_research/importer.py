@@ -981,11 +981,19 @@ def _validate_result_against_task(result: AIResearchResult, task: AIResearchTask
         for action in result.diagnosis.next_actions
         for reference in action.evidence_refs
     )
+    stage1_allowed_sections = set(available_sections)
+    stage1_evidence_members = evidence_members
+    if effective_preflight is not None:
+        stage1_allowed_sections.add("task.preflight")
+        stage1_evidence_members = {
+            **evidence_members,
+            "task.preflight": {"task.preflight"},
+        }
     _validate_evidence_references(
         stage1_references,
         task=task,
-        allowed_sections=available_sections,
-        evidence_members=evidence_members,
+        allowed_sections=stage1_allowed_sections,
+        evidence_members=stage1_evidence_members,
     )
     if result.proposals is None:
         return

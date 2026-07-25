@@ -706,10 +706,31 @@ def test_daily_export_template_refreshes_v5_before_packaging():
     assert "ExecStartPre=/usr/bin/systemctl start quant-lab-v5-telemetry-sync.service" not in unit
     assert "ExecStartPre=/usr/bin/systemctl start quant-lab-cost-calibration.service" in unit
     assert (
-        "ExecStartPre=/opt/quant-lab/.venv/bin/qlab publish-risk-permission "
+        "ExecStartPre=/usr/bin/flock -E 75 -w 300 "
+        "/var/lock/quant-lab-risk-permission.lock "
+        "/opt/quant-lab/.venv/bin/qlab publish-risk-permission "
         "--lake-root /var/lib/quant-lab/lake --strategy v5 --version 5.0.0"
     ) in unit
     assert "EnvironmentFile=-/etc/quant-lab/quant_lab_api.env" in unit
+
+
+def test_risk_permission_publish_and_shadow_share_one_exclusive_lock():
+    risk_permission = _unit("quant-lab-risk-permission.service")
+    refresh = _unit("quant-lab-v5-research-refresh.service")
+
+    lock = "/var/lock/quant-lab-risk-permission.lock"
+    assert lock in risk_permission
+    assert lock in refresh
+    assert (
+        "/usr/bin/flock -E 75 -w 300 "
+        f"{lock} /opt/quant-lab/.venv/bin/qlab publish-risk-permission"
+    ) in risk_permission
+    assert (
+        "QUANT_LAB_LOCAL_TRADE_LEVEL_HISTORY_ENABLED=1 "
+        "/usr/bin/flock -E 75 -w 300 "
+        f"{lock} /opt/quant-lab/.venv/bin/qlab "
+        "build-trade-level-legacy-control-shadow"
+    ) in refresh
 
 
 def test_web_export_request_refreshes_costs_before_packaging():

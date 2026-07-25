@@ -1430,22 +1430,41 @@ def _build_factor_validation_audit(
     definition_candidate_history = [
         row for row in candidates if str(row.get("factor_id") or "") in definition_ids
     ]
-    candidate_as_of_dates = sorted(
-        {
-            str(row.get("as_of_date") or "")
-            for row in definition_candidate_history
-            if str(row.get("as_of_date") or "")
-        }
+    current_candidate_by_factor: dict[str, dict[str, str]] = {}
+    for row in definition_candidate_history:
+        factor_id = str(row.get("factor_id") or "")
+        if not factor_id:
+            continue
+        current = current_candidate_by_factor.get(factor_id)
+        row_rank = (
+            str(row.get("as_of_date") or ""),
+            str(row.get("created_at") or ""),
+            str(row.get("data_snapshot_id") or ""),
+        )
+        current_rank = (
+            (
+                str(current.get("as_of_date") or ""),
+                str(current.get("created_at") or ""),
+                str(current.get("data_snapshot_id") or ""),
+            )
+            if current is not None
+            else ("", "", "")
+        )
+        if current is None or row_rank >= current_rank:
+            current_candidate_by_factor[factor_id] = row
+    current_candidates = [
+        current_candidate_by_factor[factor_id]
+        for factor_id in sorted(current_candidate_by_factor)
+    ]
+    current_candidate_as_of_by_factor = {
+        factor_id: str(row.get("as_of_date") or "")
+        for factor_id, row in sorted(current_candidate_by_factor.items())
+    }
+    current_candidate_as_of_dates = sorted(
+        {value for value in current_candidate_as_of_by_factor.values() if value}
     )
-    current_candidate_as_of_date = candidate_as_of_dates[-1] if candidate_as_of_dates else ""
-    current_candidates = (
-        [
-            row
-            for row in definition_candidate_history
-            if str(row.get("as_of_date") or "") == current_candidate_as_of_date
-        ]
-        if current_candidate_as_of_date
-        else definition_candidate_history
+    current_candidate_as_of_date = (
+        current_candidate_as_of_dates[-1] if current_candidate_as_of_dates else ""
     )
     forward_eligible_states = {"KEEP_SHADOW", "PAPER_READY"}
     eligible_current_candidates = [
@@ -1456,11 +1475,18 @@ def _build_factor_validation_audit(
     current_forward_rows = [
         row
         for row in forward
-        if str(row.get("factor_id") or "") in definition_ids
+        if str(row.get("factor_id") or "") in current_candidate_by_factor
         and (
-            not current_candidate_as_of_date
+            not current_candidate_as_of_by_factor.get(
+                str(row.get("factor_id") or ""),
+                "",
+            )
             or not str(row.get("as_of_date") or "")
-            or str(row.get("as_of_date") or "") == current_candidate_as_of_date
+            or str(row.get("as_of_date") or "")
+            == current_candidate_as_of_by_factor.get(
+                str(row.get("factor_id") or ""),
+                "",
+            )
         )
     ]
     current_forward_ids = sorted(
@@ -1492,7 +1518,7 @@ def _build_factor_validation_audit(
     if population_status == "CURRENT_FORWARD_EVIDENCE_MISSING":
         warnings.append("current_factor_forward_validation_missing")
     content = {
-        "schema_version": "quant_lab.ai_factor_validation_audit.v4",
+        "schema_version": "quant_lab.ai_factor_validation_audit.v5",
         "source_members": sorted(sources),
         "freshness": {
             "definition_created_at_values": _bounded_distinct_row_values(
@@ -1510,6 +1536,9 @@ def _build_factor_validation_audit(
         "candidate_state_counts": _value_counts_rows(candidates, "candidate_state"),
         "definition_mapped_candidate_history_count": len(definition_candidate_history),
         "current_candidate_as_of_date": current_candidate_as_of_date or None,
+        "current_candidate_as_of_dates": current_candidate_as_of_dates,
+        "current_candidate_as_of_by_factor": current_candidate_as_of_by_factor,
+        "current_candidate_selection_rule": "latest_available_as_of_date_per_factor_id",
         "current_definition_candidate_count": len(current_candidates),
         "current_definition_candidate_state_counts": _value_counts_rows(
             current_candidates,

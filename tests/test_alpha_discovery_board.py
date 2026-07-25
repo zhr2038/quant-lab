@@ -1228,6 +1228,9 @@ def test_final_score_vs_alpha6_conflict_quantifies_bnb_no_order():
     assert "conflict_count: 2" in summary
     assert "unique_event_count: 2" in summary
     assert "duplicate_event_count: 0" in summary
+    assert "observable_4h_count: 2" in summary
+    assert "observable_8h_count: 1" in summary
+    assert "observable_24h_count: 1" in summary
     assert "blocked_final_decision_count: 1" in summary
     assert "negative_expectancy_block_count: 2" in summary
     assert "partial_complete_count: 1" in summary
@@ -1280,6 +1283,47 @@ def test_conflict_export_prefers_current_recompute_and_deduplicates_persisted_ro
     assert current["future_24h_net_bps"][0] < 0
     assert fallback.height == 1
     assert fallback["future_24h_net_bps"][0] == 999.0
+
+
+def test_conflict_export_does_not_match_market_bars_across_large_time_gaps():
+    ts = datetime(2026, 6, 1, 12, tzinfo=UTC)
+    candidate = {
+        "run_id": "run-with-stale-market-window",
+        "ts_utc": ts,
+        "symbol": "BNB-USDT",
+        "current_px": 100.0,
+        "final_score": -1.0,
+        "final_decision": "no_order",
+        "alpha6_side": "buy",
+        "alpha6_score": 0.99,
+        "expected_edge_bps": 100.0,
+        "required_edge_bps": 40.0,
+        "cost_gate_verified": True,
+        "cost_bps": 30.0,
+    }
+    market_bars = pl.DataFrame(
+        [
+            {
+                "symbol": "BNB-USDT",
+                "ts": ts + timedelta(days=30),
+                "close": 100.0,
+            }
+        ]
+    )
+
+    row = _final_score_vs_alpha6_conflict_for_export(
+        candidate_events=pl.DataFrame([candidate]),
+        market_bars=market_bars,
+    ).to_dicts()[0]
+
+    assert row["future_4h_net_bps"] is None
+    assert row["future_8h_net_bps"] is None
+    assert row["future_12h_net_bps"] is None
+    assert row["future_24h_net_bps"] is None
+    assert row["any_label_complete"] is False
+    assert row["all_labels_complete"] is False
+    assert row["label_status"] == "pending"
+    assert row["missed_profit_flag"] is False
 
 
 def test_post_impulse_overextension_shadow_flags_late_breakout_failure():

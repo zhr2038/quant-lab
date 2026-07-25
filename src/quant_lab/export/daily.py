@@ -401,6 +401,7 @@ V5_CANDIDATE_OPTIONAL_SIGNAL_FIELDS = (
     "ml_score",
     "mean_reversion_score",
 )
+MARKET_OUTCOME_MAX_BAR_DELAY = timedelta(hours=2)
 
 SECTIONS = ["market", "features", "costs", "research", "risk", "anomalies", "v5", "charts"]
 HEAVY_EXPORT_DATASET_LIMITS = {
@@ -15427,6 +15428,14 @@ def _final_score_vs_alpha6_conflict_summary_md(conflicts: pl.DataFrame) -> str:
     avg_4h = _conflict_avg_optional(row.get("future_4h_net_bps") for row in rows)
     avg_8h = _conflict_avg_optional(row.get("future_8h_net_bps") for row in rows)
     avg_24h = _conflict_avg_optional(row.get("future_24h_net_bps") for row in rows)
+    observable_counts = {
+        horizon: sum(
+            1
+            for row in rows
+            if _optional_float(row.get(f"future_{horizon}h_net_bps")) is not None
+        )
+        for horizon in (4, 8, 24)
+    }
     symbol_counts: dict[str, int] = {}
     for row in rows:
         symbol = str(row.get("symbol") or "UNKNOWN")
@@ -15471,6 +15480,9 @@ def _final_score_vs_alpha6_conflict_summary_md(conflicts: pl.DataFrame) -> str:
             f"- avg_future_4h_net_bps: {_conflict_display_number(avg_4h)}",
             f"- avg_future_8h_net_bps: {_conflict_display_number(avg_8h)}",
             f"- avg_future_24h_net_bps: {_conflict_display_number(avg_24h)}",
+            f"- observable_4h_count: {observable_counts[4]}",
+            f"- observable_8h_count: {observable_counts[8]}",
+            f"- observable_24h_count: {observable_counts[24]}",
             f"- symbol_breakdown: {safe_json_dumps(symbol_counts)}",
             f"- blocked_final_decision_count: {blocked_final_decision_count}",
             f"- negative_expectancy_block_count: {negative_expectancy_block_count}",
@@ -16448,8 +16460,10 @@ def _market_close_at_or_after(
         return None
     for row in market_rows:
         if row["ts"] >= ts:
+            if row["ts"] - ts > MARKET_OUTCOME_MAX_BAR_DELAY:
+                return None
             return _optional_float(row.get("close"))
-    return _optional_float(market_rows[-1].get("close"))
+    return None
 
 
 def _market_close_at_or_before(
@@ -16694,6 +16708,8 @@ def _future_long_pnl_bps(
     target = entry_ts + timedelta(hours=horizon_hours)
     for row in market_rows:
         if row["ts"] >= target:
+            if row["ts"] - target > MARKET_OUTCOME_MAX_BAR_DELAY:
+                return None
             return (float(row["close"]) / entry_price - 1.0) * 10_000.0
     return None
 

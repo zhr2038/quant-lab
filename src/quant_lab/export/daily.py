@@ -15184,9 +15184,94 @@ def _canonical_final_score_alpha6_conflict_for_export(
     )
     persisted = _normalize_final_score_alpha6_conflict_frame(persisted_conflicts)
     # Persisted V5 rows are historical bundle evidence and can contain repeated
-    # materializations. Current candidate events plus current market bars are the
-    # canonical source whenever they are available.
-    return _prefer_frame(recomputed, persisted)
+    # materializations. Recompute current rows when the bounded export snapshot
+    # contains matching market bars, but retain mature V5 labels when that
+    # snapshot starts after the historical candidate event.
+    return _merge_final_score_alpha6_conflict_labels(recomputed, persisted)
+
+
+def _merge_final_score_alpha6_conflict_labels(
+    recomputed: pl.DataFrame,
+    persisted: pl.DataFrame,
+) -> pl.DataFrame:
+    path = "reports/final_score_vs_alpha6_conflict.csv"
+    if recomputed.is_empty():
+        return persisted
+    if persisted.is_empty():
+        return recomputed
+
+    persisted_by_event = {
+        _final_score_alpha6_conflict_event_key(row): row for row in persisted.to_dicts()
+    }
+    rows: list[dict[str, Any]] = []
+    for row in recomputed.to_dicts():
+        prior = persisted_by_event.get(_final_score_alpha6_conflict_event_key(row), {})
+        for horizon in (4, 8, 12, 24):
+            field = f"future_{horizon}h_net_bps"
+            if _optional_float(row.get(field)) is None:
+                prior_value = _optional_float(prior.get(field))
+                if prior_value is not None:
+                    row[field] = prior_value
+        rows.append(_refresh_final_score_alpha6_conflict_labels(row))
+    return (
+        pl.DataFrame(rows, infer_schema_length=None)
+        .select(CSV_SCHEMAS[path])
+        .sort(["ts_utc", "symbol", "run_id"])
+    )
+
+
+def _refresh_final_score_alpha6_conflict_labels(
+    row: dict[str, Any],
+) -> dict[str, Any]:
+    future = {
+        horizon: _optional_float(row.get(f"future_{horizon}h_net_bps"))
+        for horizon in (4, 8, 12, 24)
+    }
+    label_statuses = {
+        horizon: ("complete" if future[horizon] is not None else "pending")
+        for horizon in (4, 8, 12, 24)
+    }
+    observed = [(horizon, value) for horizon, value in future.items() if value is not None]
+    best_future = max(observed, key=lambda item: item[1]) if observed else (None, None)
+    material_profit = bool(best_future[1] is not None and best_future[1] >= 50.0)
+    any_label_complete = bool(observed)
+    all_labels_complete = len(observed) == len(future)
+    row.update(
+        {
+            "max_future_net_bps": best_future[1],
+            "best_future_horizon_hours": best_future[0],
+            "material_profit_flag": material_profit,
+            "label_4h_status": label_statuses[4],
+            "label_8h_status": label_statuses[8],
+            "label_12h_status": label_statuses[12],
+            "label_24h_status": label_statuses[24],
+            "any_label_complete": any_label_complete,
+            "all_labels_complete": all_labels_complete,
+            "label_status": (
+                "complete"
+                if all_labels_complete
+                else "partial_complete"
+                if any_label_complete
+                else "pending"
+            ),
+            "missed_profit_flag": material_profit,
+        }
+    )
+    return row
+
+
+def _final_score_alpha6_conflict_event_key(row: Mapping[str, Any]) -> tuple[str, str, str]:
+    timestamp = readers._coerce_timestamp(row.get("ts_utc") or row.get("ts"))
+    timestamp_key = (
+        timestamp.astimezone(UTC).isoformat()
+        if timestamp is not None
+        else str(row.get("ts_utc") or row.get("ts") or "").strip()
+    )
+    return (
+        str(row.get("run_id") or "").strip(),
+        timestamp_key,
+        normalize_symbol(row.get("symbol")),
+    )
 
 
 def _final_score_vs_alpha6_conflict_for_export(
@@ -18654,10 +18739,30 @@ def _normalize_final_score_alpha6_conflict_frame(frame: pl.DataFrame) -> pl.Data
     normalized = _csv_frame_with_schema(normalized, CSV_SCHEMAS[path])
     event_key = ["run_id", "ts_utc", "symbol"]
     if all(column in normalized.columns for column in event_key):
-        normalized = normalized.unique(
-            subset=event_key,
-            keep="last",
-            maintain_order=True,
+        future_columns = [
+            f"future_{horizon}h_net_bps" for horizon in (4, 8, 12, 24)
+        ]
+        normalized = (
+            normalized.with_row_index("_source_order")
+            .with_columns(
+                pl.sum_horizontal(
+                    [
+                        pl.col(column)
+                        .cast(pl.Float64, strict=False)
+                        .is_finite()
+                        .fill_null(False)
+                        .cast(pl.Int8)
+                        for column in future_columns
+                    ]
+                ).alias("_observable_label_count")
+            )
+            .sort([*event_key, "_observable_label_count", "_source_order"])
+            .unique(
+                subset=event_key,
+                keep="last",
+                maintain_order=True,
+            )
+            .drop(["_source_order", "_observable_label_count"])
         )
     return normalized
 

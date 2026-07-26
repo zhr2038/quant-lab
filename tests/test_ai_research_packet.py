@@ -442,7 +442,10 @@ def test_factor_audit_documents_preserve_complete_candidate_and_validation_rows(
     assert factor.content["forward_validation_count"] == 2
     assert factor.content["forward_validation_rows"][0][0] == "f1"
     assert factor.content["forward_validation_rows"][0][6] == 0.03
-    assert factor.content["schema_version"] == "quant_lab.ai_factor_validation_audit.v5"
+    assert factor.content["schema_version"] == "quant_lab.ai_factor_validation_audit.v6"
+    assert factor.content["forward_validation_row_scope"] == (
+        "current_definition_latest_candidate_date_only"
+    )
     assert factor.content["candidate_forward_mapping_complete"] is True
     assert factor.content["factor_forward_status_rows"][0][0:5] == [
         "f1",
@@ -468,6 +471,94 @@ def test_factor_audit_documents_preserve_complete_candidate_and_validation_rows(
     assert factor.content["paper_ready_candidate_factor_count"] == 1
     assert factor.content["paper_ready_without_forward_pass_factor_count"] == 1
     assert task.preflight.status == "PASS"
+
+
+def test_factor_audit_keeps_current_evidence_when_historical_forward_rows_are_large(
+    tmp_path,
+) -> None:
+    pack = tmp_path / "quant_lab_expert_pack_factor_audit_budget.zip"
+    historical_candidates = "\n".join(
+        f"legacy-{index},KEEP_SHADOW,,,factors.factory.v0.1,2026-07-01"
+        for index in range(1_000)
+    )
+    historical_forward = "\n".join(
+        f"legacy-{index},SOL-USDT,TREND_UP,8,40,0.01,0.01,2.0,-5.0,0.5,"
+        "0.0,0.5,2.0,FORWARD_VALIDATION_WEAK_OR_MIXED,pass"
+        for index in range(1_000)
+    )
+    with zipfile.ZipFile(pack, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("manifest.json", "{}")
+        archive.writestr("provenance.json", "{}")
+        archive.writestr("data_quality.json", "{}")
+        archive.writestr(
+            "reports/alpha_factory_candidates.csv",
+            "candidate_id,template_name,symbol,regime_state,horizon_hours,parameter_json\n"
+            'candidate-a,feature,SOL-USDT,TREND_UP,8,"{""feature"":""current-a""}"\n',
+        )
+        archive.writestr(
+            "reports/alpha_factory_results.csv",
+            "candidate_id,sample_count,avg_net_bps,p25_net_bps,win_rate,"
+            "cost_source_mix,validation_metrics_json,recent_7d_metrics_json,"
+            "decision_reasons,decision\n"
+            'candidate-a,40,12.5,-2.0,0.6,"{""actual"":40}",'
+            '"{""complete_sample_count"":20}",'
+            '"{""complete_sample_count"":8}",'
+            '"[""collect_more_samples""]",KEEP_SHADOW\n',
+        )
+        archive.writestr(
+            "reports/alpha_factory_promotion_queue.csv",
+            "candidate_id,reasons,promotion_state\n"
+            'candidate-a,"[""collect_more_samples""]",KEEP_SHADOW\n',
+        )
+        archive.writestr(
+            "reports/factor_candidates.csv",
+            "factor_id,candidate_state,hypothesis_id,data_snapshot_id,source,as_of_date\n"
+            "current-a,REJECTED,hypothesis-a,snapshot-a,factor_research.nas.v2,"
+            "2026-07-25\n"
+            f"{historical_candidates}\n",
+        )
+        archive.writestr(
+            "reports/factor_definitions.csv",
+            "factor_id,factor_family,input_features_json,template,expression_hash,"
+            "canonical_factor_id,formula_hash,duplicate_of,correlation_cluster_id,"
+            "independence_weight,availability_lag_bars,causal,operator_graph_hash\n"
+            'current-a,momentum,"[""close""]",feature,expr-a,current-a,'
+            "formula-a,,cluster-a,1.0,1,True,graph-a\n",
+        )
+        archive.writestr(
+            "reports/factor_dedupe_decision.csv",
+            "factor_id,correlation_cluster_id,cluster_size,leader_factor_id,"
+            "is_cluster_leader,max_abs_correlation,independence_weight,"
+            "dedupe_decision,dedupe_reason\n"
+            "current-a,cluster-a,1,current-a,True,1.0,1.0,keep_leader,unique\n",
+        )
+        archive.writestr(
+            "reports/factor_forward_validation.csv",
+            "factor_id,symbol,regime,horizon_hours,sample_count,rank_ic,pearson_ic,"
+            "long_short_bps,p25_net_bps,hit_rate,recent_7d_score,regime_stability,"
+            "cost_adjusted_score,recommendation,data_leakage_check\n"
+            f"{historical_forward}\n",
+        )
+
+    task, _ = build_ai_research_task(
+        pack,
+        queue_root=tmp_path / "queue",
+        max_total_chars=150_000,
+    )
+
+    assert task is not None
+    documents = {item.source_member: item for item in task.sections["factor_research"]}
+    assert "derived/alpha_factory_candidate_audit.json" in documents
+    assert "derived/factor_validation_audit.json" in documents
+    factor = documents["derived/factor_validation_audit.json"]
+    assert factor.content["forward_validation_count"] == 1_000
+    assert factor.content["current_definition_forward_validation_count"] == 0
+    assert factor.content["historical_or_noncurrent_forward_validation_count"] == 1_000
+    assert factor.content["forward_validation_rows"] == []
+    assert not any(
+        warning == "skipped_due_to_total_limit:derived/factor_validation_audit.json"
+        for warning in task.warnings
+    )
 
 
 def test_factor_audit_selects_latest_candidate_per_factor_instead_of_global_date(

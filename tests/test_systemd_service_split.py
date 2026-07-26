@@ -26,6 +26,25 @@ def test_export_request_binds_worker_to_snapshot_commit_without_static_sha() -> 
     assert "QUANT_LAB_EXPORT_WORKER_COMMIT" not in environment
 
 
+def test_nas_export_worker_runtime_commit_matches_the_built_image() -> None:
+    dockerfile = (
+        ROOT / "deploy" / "nas_export_worker" / "Dockerfile"
+    ).read_text(encoding="utf-8")
+    compose = (
+        ROOT / "deploy" / "nas_export_worker" / "docker-compose.yml"
+    ).read_text(encoding="utf-8")
+
+    assert "ARG BUILD_GIT_COMMIT\n" in dockerfile
+    assert 'test "${#BUILD_GIT_COMMIT}" = 40' in dockerfile
+    assert "> /app/BUILD_GIT_COMMIT" in dockerfile
+    assert (
+        "BUILD_GIT_COMMIT: ${BUILD_GIT_COMMIT:?set BUILD_GIT_COMMIT "
+        "to the deployed full SHA}"
+    ) in compose
+    assert "/app/BUILD_GIT_COMMIT" in compose
+    assert "os.environ['BUILD_GIT_COMMIT'] == image" in compose
+
+
 SCRIPTS = ROOT / "deploy" / "scripts"
 
 

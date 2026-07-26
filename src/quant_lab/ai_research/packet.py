@@ -35,6 +35,8 @@ DEFAULT_MAX_DOCS_PER_SECTION = 4
 CORE_JSON_MAX_MEMBER_BYTES = 2 * 1024 * 1024
 RESEARCH_CSV_MAX_MEMBER_BYTES = 16 * 1024 * 1024
 FACTOR_AUDIT_TARGET_DOCUMENT_CHARS = 80_000
+FACTOR_FORWARD_REPRESENTATIVE_ROW_LIMIT = 128
+FACTOR_FORWARD_REPRESENTATIVE_ROWS_PER_FACTOR = 4
 
 _ALLOWED_EXTENSIONS = {".json", ".md", ".csv", ".txt"}
 _EXCLUDED_PARTS = {"__macosx", ".git", "secrets", "private", "restricted"}
@@ -327,10 +329,9 @@ def build_ai_research_task(
             consumed_chars += encoded_length
 
         if audit_documents:
-            # The derived documents already carry every current Alpha Factory and
-            # factor-validation row. Keep the large discovery board summary for
-            # population context, but do not spend the packet budget duplicating
-            # its component CSVs or terse Markdown summaries.
+            # The derived documents carry complete factor-level population counts
+            # plus bounded row evidence. Keep the discovery board for broad context,
+            # but do not spend the packet budget duplicating component CSVs.
             selected["factor_research"] = [
                 member
                 for member in selected.get("factor_research", [])
@@ -1469,8 +1470,9 @@ def _build_factor_validation_audit(
             )
         )
     ]
+    representative_forward_rows = _bounded_factor_forward_rows(current_forward_rows)
     current_forward_payload_rows = [
-        _factor_forward_payload_row(row) for row in current_forward_rows
+        _factor_forward_payload_row(row) for row in representative_forward_rows
     ]
     current_forward_object_ids = {id(row) for row in current_forward_rows}
     historical_or_noncurrent_forward_rows = [
@@ -1505,7 +1507,7 @@ def _build_factor_validation_audit(
     if population_status == "CURRENT_FORWARD_EVIDENCE_MISSING":
         warnings.append("current_factor_forward_validation_missing")
     content = {
-        "schema_version": "quant_lab.ai_factor_validation_audit.v6",
+        "schema_version": "quant_lab.ai_factor_validation_audit.v7",
         "source_members": sorted(sources),
         "freshness": {
             "definition_created_at_values": _bounded_distinct_row_values(
@@ -1660,15 +1662,38 @@ def _build_factor_validation_audit(
         "forward_validation_row_scope": (
             "current_definition_latest_candidate_date_only"
         ),
+        "forward_validation_total_current_rows": len(current_forward_rows),
+        "forward_validation_representative_row_count": len(
+            representative_forward_rows
+        ),
+        "forward_validation_omitted_row_count": max(
+            len(current_forward_rows) - len(representative_forward_rows),
+            0,
+        ),
+        "forward_validation_represented_factor_count": len(
+            {
+                str(row.get("factor_id") or "")
+                for row in representative_forward_rows
+                if row.get("factor_id")
+            }
+        ),
+        "forward_validation_sampling_rule": (
+            "up_to_four_diverse_rows_per_factor_then_round_robin_global_cap"
+        ),
         "forward_validation_rows": current_forward_payload_rows,
         "_representation": {
-            "kind": "full_factor_validation_audit",
+            "kind": "bounded_factor_validation_audit",
             "selection_rule": (
                 "all_current_factor_definitions_latest_candidates_dedupe_decisions_"
-                "and_current_forward_rows_plus_historical_population_summaries"
+                "factor_level_forward_counts_and_bounded_current_forward_"
+                "representatives_plus_historical_population_summaries"
             ),
-            "truncated": False,
+            "truncated": len(representative_forward_rows) < len(current_forward_rows),
             "historical_forward_row_payload_omitted_by_design": True,
+            "current_forward_rows_omitted_by_design": max(
+                len(current_forward_rows) - len(representative_forward_rows),
+                0,
+            ),
         },
     }
     encoded_chars = len(canonical_json(content))
@@ -1698,6 +1723,99 @@ def _factor_forward_payload_row(row: dict[str, Any]) -> list[Any]:
         str(row.get("recommendation") or ""),
         str(row.get("data_leakage_check") or ""),
     ]
+
+
+def _bounded_factor_forward_rows(
+    rows: list[dict[str, Any]],
+    *,
+    per_factor_limit: int = FACTOR_FORWARD_REPRESENTATIVE_ROWS_PER_FACTOR,
+    total_limit: int = FACTOR_FORWARD_REPRESENTATIVE_ROW_LIMIT,
+) -> list[dict[str, Any]]:
+    if per_factor_limit <= 0 or total_limit <= 0:
+        return []
+
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        factor_id = str(row.get("factor_id") or "")
+        if factor_id:
+            grouped.setdefault(factor_id, []).append(row)
+
+    per_factor: dict[str, list[dict[str, Any]]] = {}
+    recommendation_order = (
+        "FORWARD_VALIDATION_PASS",
+        "FORWARD_VALIDATION_WEAK_OR_MIXED",
+        "NEEDS_MORE_FORWARD_SAMPLES",
+    )
+    for factor_id, factor_rows in grouped.items():
+        ordered = sorted(factor_rows, key=_factor_forward_representative_sort_key)
+        selected: list[dict[str, Any]] = []
+        selected_ids: set[int] = set()
+
+        leakage_issue = next(
+            (
+                row
+                for row in ordered
+                if str(row.get("data_leakage_check") or "").strip().lower()
+                not in {"", "pass"}
+            ),
+            None,
+        )
+        if leakage_issue is not None:
+            selected.append(leakage_issue)
+            selected_ids.add(id(leakage_issue))
+
+        for recommendation in recommendation_order:
+            match = next(
+                (
+                    row
+                    for row in ordered
+                    if id(row) not in selected_ids
+                    and str(row.get("recommendation") or "").upper()
+                    == recommendation
+                ),
+                None,
+            )
+            if match is not None:
+                selected.append(match)
+                selected_ids.add(id(match))
+            if len(selected) >= per_factor_limit:
+                break
+
+        for row in ordered:
+            if len(selected) >= per_factor_limit:
+                break
+            if id(row) in selected_ids:
+                continue
+            selected.append(row)
+            selected_ids.add(id(row))
+        per_factor[factor_id] = selected
+
+    bounded: list[dict[str, Any]] = []
+    for offset in range(per_factor_limit):
+        for factor_id in sorted(per_factor):
+            factor_rows = per_factor[factor_id]
+            if offset >= len(factor_rows):
+                continue
+            bounded.append(factor_rows[offset])
+            if len(bounded) >= total_limit:
+                return bounded
+    return bounded
+
+
+def _factor_forward_representative_sort_key(
+    row: dict[str, Any],
+) -> tuple[Any, ...]:
+    try:
+        score = abs(float(row.get("cost_adjusted_score") or 0))
+    except (TypeError, ValueError):
+        score = 0.0
+    return (
+        -score,
+        str(row.get("symbol") or ""),
+        str(row.get("regime") or ""),
+        str(row.get("horizon_hours") or ""),
+        str(row.get("recommendation") or ""),
+    )
 
 
 def _factor_validation_population_status(

@@ -442,10 +442,13 @@ def test_factor_audit_documents_preserve_complete_candidate_and_validation_rows(
     assert factor.content["forward_validation_count"] == 2
     assert factor.content["forward_validation_rows"][0][0] == "f1"
     assert factor.content["forward_validation_rows"][0][6] == 0.03
-    assert factor.content["schema_version"] == "quant_lab.ai_factor_validation_audit.v6"
+    assert factor.content["schema_version"] == "quant_lab.ai_factor_validation_audit.v7"
     assert factor.content["forward_validation_row_scope"] == (
         "current_definition_latest_candidate_date_only"
     )
+    assert factor.content["forward_validation_total_current_rows"] == 2
+    assert factor.content["forward_validation_representative_row_count"] == 2
+    assert factor.content["forward_validation_omitted_row_count"] == 0
     assert factor.content["candidate_forward_mapping_complete"] is True
     assert factor.content["factor_forward_status_rows"][0][0:5] == [
         "f1",
@@ -555,6 +558,87 @@ def test_factor_audit_keeps_current_evidence_when_historical_forward_rows_are_la
     assert factor.content["current_definition_forward_validation_count"] == 0
     assert factor.content["historical_or_noncurrent_forward_validation_count"] == 1_000
     assert factor.content["forward_validation_rows"] == []
+    assert not any(
+        warning == "skipped_due_to_total_limit:derived/factor_validation_audit.json"
+        for warning in task.warnings
+    )
+
+
+def test_factor_audit_bounds_large_current_forward_population(tmp_path) -> None:
+    pack = tmp_path / "quant_lab_expert_pack_factor_current_budget.zip"
+    factor_ids = [f"factor-{index:02d}" for index in range(26)]
+    candidates = "\n".join(
+        f"{factor_id},KEEP_SHADOW,hypothesis-{index},snapshot-current,"
+        "factor_research.nas.v2,2026-07-26"
+        for index, factor_id in enumerate(factor_ids)
+    )
+    definitions = "\n".join(
+        f'{factor_id},momentum,"[""close""]",feature,expr-{index},{factor_id},'
+        f"formula-{index},,cluster-{index},1.0,1,True,graph-{index}"
+        for index, factor_id in enumerate(factor_ids)
+    )
+    dedupe = "\n".join(
+        f"{factor_id},cluster-{index},1,{factor_id},True,1.0,1.0,"
+        "keep_leader,unique"
+        for index, factor_id in enumerate(factor_ids)
+    )
+    recommendations = (
+        "FORWARD_VALIDATION_PASS",
+        "FORWARD_VALIDATION_WEAK_OR_MIXED",
+        "NEEDS_MORE_FORWARD_SAMPLES",
+    )
+    forward = "\n".join(
+        f"{factor_id},SOL-USDT,TREND_UP,{4 + (row_index % 4) * 4},"
+        f"40,0.01,0.01,{row_index + 1}.0,-5.0,0.5,0.0,0.5,"
+        f"{row_index + 1}.0,{recommendations[row_index % 3]},pass"
+        for factor_id in factor_ids
+        for row_index in range(30)
+    )
+    with zipfile.ZipFile(pack, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("manifest.json", "{}")
+        archive.writestr("provenance.json", "{}")
+        archive.writestr("data_quality.json", "{}")
+        archive.writestr(
+            "reports/factor_candidates.csv",
+            "factor_id,candidate_state,hypothesis_id,data_snapshot_id,source,"
+            f"as_of_date\n{candidates}\n",
+        )
+        archive.writestr(
+            "reports/factor_definitions.csv",
+            "factor_id,factor_family,input_features_json,template,expression_hash,"
+            "canonical_factor_id,formula_hash,duplicate_of,correlation_cluster_id,"
+            "independence_weight,availability_lag_bars,causal,operator_graph_hash\n"
+            f"{definitions}\n",
+        )
+        archive.writestr(
+            "reports/factor_dedupe_decision.csv",
+            "factor_id,correlation_cluster_id,cluster_size,leader_factor_id,"
+            "is_cluster_leader,max_abs_correlation,independence_weight,"
+            f"dedupe_decision,dedupe_reason\n{dedupe}\n",
+        )
+        archive.writestr(
+            "reports/factor_forward_validation.csv",
+            "factor_id,symbol,regime,horizon_hours,sample_count,rank_ic,pearson_ic,"
+            "long_short_bps,p25_net_bps,hit_rate,recent_7d_score,regime_stability,"
+            "cost_adjusted_score,recommendation,data_leakage_check\n"
+            f"{forward}\n",
+        )
+
+    task, _ = build_ai_research_task(
+        pack,
+        queue_root=tmp_path / "queue",
+        max_total_chars=120_000,
+    )
+
+    assert task is not None
+    documents = {item.source_member: item for item in task.sections["factor_research"]}
+    assert "derived/factor_validation_audit.json" in documents
+    factor = documents["derived/factor_validation_audit.json"]
+    assert factor.content["forward_validation_total_current_rows"] == 780
+    assert factor.content["forward_validation_representative_row_count"] == 104
+    assert factor.content["forward_validation_omitted_row_count"] == 676
+    assert factor.content["forward_validation_represented_factor_count"] == 26
+    assert factor.content["_representation"]["truncated"] is True
     assert not any(
         warning == "skipped_due_to_total_limit:derived/factor_validation_audit.json"
         for warning in task.warnings

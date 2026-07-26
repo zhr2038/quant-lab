@@ -236,6 +236,80 @@ def test_import_validation_accepts_exact_deterministic_preflight_reference() -> 
     _validate_result_against_task(result, task)
 
 
+def test_import_validation_accepts_exact_preflight_reference_with_task_section_alias() -> None:
+    task = _task().model_copy(
+        update={
+            "preflight": TaskPreflight(
+                status="WARN",
+                checked_at=datetime(2026, 7, 25, tzinfo=UTC),
+                available_sections=["factor_research"],
+                warnings=["current_factor_forward_validation_missing"],
+                truncated_document_count=0,
+            )
+        }
+    )
+    task = task.model_copy(update={"packet_sha256": compute_task_packet_sha256(task)})
+    reference = EvidenceReference(
+        section="task",
+        source_member="task.preflight",
+        fields=["status", "warnings"],
+        claim="The deterministic preflight reports a warning.",
+    )
+    base_result = _result(task, _reference())
+    result = base_result.model_copy(
+        update={
+            "diagnosis": base_result.diagnosis.model_copy(
+                update={
+                    "primary_bottlenecks": [
+                        base_result.diagnosis.primary_bottlenecks[0].model_copy(
+                            update={"evidence_refs": [reference]}
+                        )
+                    ]
+                }
+            )
+        }
+    )
+
+    _validate_result_against_task(result, task)
+
+
+def test_import_validation_rejects_non_preflight_task_section_alias() -> None:
+    task = _task().model_copy(
+        update={
+            "preflight": TaskPreflight(
+                status="PASS",
+                checked_at=datetime(2026, 7, 25, tzinfo=UTC),
+                available_sections=["factor_research"],
+                truncated_document_count=0,
+            )
+        }
+    )
+    task = task.model_copy(update={"packet_sha256": compute_task_packet_sha256(task)})
+    reference = EvidenceReference(
+        section="task",
+        source_member="task.not-preflight",
+        fields=["status"],
+        claim="Forged task metadata evidence.",
+    )
+    base_result = _result(task, _reference())
+    result = base_result.model_copy(
+        update={
+            "diagnosis": base_result.diagnosis.model_copy(
+                update={
+                    "primary_bottlenecks": [
+                        base_result.diagnosis.primary_bottlenecks[0].model_copy(
+                            update={"evidence_refs": [reference]}
+                        )
+                    ]
+                }
+            )
+        }
+    )
+
+    with pytest.raises(ValueError, match="evidence section was not routed: task"):
+        _validate_result_against_task(result, task)
+
+
 def test_import_validation_rejects_forged_preflight_source_member() -> None:
     task = _task().model_copy(
         update={

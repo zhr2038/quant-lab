@@ -107,6 +107,11 @@ def main() -> int:
         config.reasoning_effort,
         config.api_base_url,
     )
+    try:
+        recover_interrupted_tasks(config)
+    except Exception:  # noqa: BLE001 - restart until cloud queue is reachable
+        LOG.exception("worker_start_recovery_failed")
+        return 2
 
     while not _STOP:
         try:
@@ -125,6 +130,73 @@ def main() -> int:
         if config.run_once:
             return 0
     return 0
+
+
+def recover_interrupted_tasks(config: Config) -> tuple[int, int]:
+    """Restore tasks interrupted by a worker restart without duplicating results."""
+    root = shlex.quote(config.remote_queue_root)
+    script = f"""
+set -eu
+umask 0007
+root={root}
+mkdir -p "$root/pending" "$root/running" "$root/completed" \
+  "$root/results/inbox" "$root/results/inbox/.staging" "$root/results/imported"
+
+for stage in "$root"/results/inbox/.staging/*; do
+  [ -d "$stage" ] || continue
+  task=$(basename "$stage")
+  case "$task" in
+    *[!A-Za-z0-9_.-]*|'') continue ;;
+  esac
+  inbox="$root/results/inbox/$task"
+  imported="$root/results/imported/$task"
+  if [ -f "$stage/result.json" ] && \
+     [ ! -e "$inbox" ] && [ ! -e "$imported" ]; then
+    mv "$stage" "$inbox"
+    printf 'handoff:%s\\n' "$task"
+  elif [ ! -f "$stage/result.json" ]; then
+    rm -rf "$stage"
+  fi
+done
+
+for running in "$root"/running/*; do
+  [ -d "$running" ] || continue
+  task=$(basename "$running")
+  case "$task" in
+    *[!A-Za-z0-9_.-]*|'') continue ;;
+  esac
+  inbox="$root/results/inbox/$task"
+  imported="$root/results/imported/$task"
+  completed="$root/completed/$task"
+  pending="$root/pending/$task"
+  if [ -f "$inbox/result.json" ] || [ -f "$imported/result.json" ]; then
+    if [ ! -e "$completed" ]; then
+      mv "$running" "$completed"
+    fi
+    printf 'handoff:%s\\n' "$task"
+  elif [ ! -e "$pending" ]; then
+    mv "$running" "$pending"
+    printf 'requeued:%s\\n' "$task"
+  fi
+done
+"""
+    result = _ssh(config, ["sh", "-lc", script])
+    recovered = 0
+    handed_off = 0
+    for line in result.stdout.splitlines():
+        if line.startswith("requeued:"):
+            recovered += 1
+            LOG.warning(
+                "requeued interrupted AI task task_id=%s",
+                line.removeprefix("requeued:"),
+            )
+        elif line.startswith("handoff:"):
+            handed_off += 1
+            LOG.info(
+                "completed interrupted AI handoff task_id=%s",
+                line.removeprefix("handoff:"),
+            )
+    return recovered, handed_off
 
 
 def claim_next_task(config: Config) -> str | None:
@@ -618,19 +690,19 @@ def _upload_result(config: Config, task_id: str, local_result: Path) -> None:
             f"chmod 0640 {shlex.quote(remote_temp)}; "
             f"mv {shlex.quote(remote_temp)} {shlex.quote(staged_result)}; "
             'if [ -f "$imported/result.json" ]; then '
-            'cmp -s "$stage/result.json" "$imported/result.json"; rm -rf "$stage"; exit 0; '
-            "fi; "
-            'if [ -f "$publish/result.json" ]; then '
-            'cmp -s "$stage/result.json" "$publish/result.json"; rm -rf "$stage"; exit 0; '
-            "fi; "
+            'cmp -s "$stage/result.json" "$imported/result.json"; rm -rf "$stage"; '
+            'elif [ -f "$publish/result.json" ]; then '
+            'cmp -s "$stage/result.json" "$publish/result.json"; rm -rf "$stage"; '
+            "else "
             '[ ! -e "$publish" ] || { echo "incomplete publish directory exists" >&2; exit 24; }; '
+            'mv "$stage" "$publish"; '
+            "fi; "
             'if [ -d "$running" ]; then '
             '[ ! -e "$completed" ] || { echo "completed task already exists" >&2; exit 25; }; '
             'mv "$running" "$completed"; '
             'elif [ ! -d "$completed" ]; then '
-            'echo "task state missing before result publish" >&2; exit 26; '
-            "fi; "
-            'mv "$stage" "$publish"',
+            'echo "task state missing after result publish" >&2; exit 26; '
+            "fi",
         ],
     )
 

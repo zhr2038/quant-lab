@@ -1048,13 +1048,33 @@ def _validate_evidence_references(
         for section, documents in task.sections.items()
     }
     for reference in references:
-        if reference.section not in allowed_sections:
+        reference_section = _canonical_evidence_reference_section(
+            section=reference.section,
+            source_member=reference.source_member,
+            allowed_sections=allowed_sections,
+        )
+        if reference_section not in allowed_sections:
             raise ValueError(f"evidence section was not routed: {reference.section}")
-        if reference.source_member not in members_by_section.get(reference.section, set()):
+        if reference.source_member not in members_by_section.get(reference_section, set()):
             raise ValueError(
                 "evidence source member is not present in the task: "
                 f"{reference.section}/{reference.source_member}"
             )
+
+
+def _canonical_evidence_reference_section(
+    *,
+    section: str,
+    source_member: str,
+    allowed_sections: set[str],
+) -> str:
+    if (
+        section == "task"
+        and source_member == "task.preflight"
+        and "task.preflight" in allowed_sections
+    ):
+        return "task.preflight"
+    return section
 
 
 def _result_evidence_members(

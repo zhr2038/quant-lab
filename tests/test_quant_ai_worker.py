@@ -209,6 +209,36 @@ def test_upload_result_stages_before_atomic_inbox_publish(monkeypatch, tmp_path)
     publish_script = ssh_calls[1][2]
     assert 'mv "$running" "$completed"' in publish_script
     assert 'mv "$stage" "$publish"' in publish_script
-    assert publish_script.index('mv "$running" "$completed"') < publish_script.index(
-        'mv "$stage" "$publish"'
+    assert publish_script.index('mv "$stage" "$publish"') < publish_script.index(
+        'mv "$running" "$completed"'
     )
+
+
+def test_worker_start_recovery_requeues_orphan_and_finishes_visible_handoff(
+    monkeypatch,
+) -> None:
+    ssh_calls: list[list[str]] = []
+    config = SimpleNamespace(remote_queue_root="/var/lib/quant-lab/ai_queue")
+
+    def _fake_ssh(
+        _config: object,
+        args: list[str],
+        **_kwargs: object,
+    ) -> SimpleNamespace:
+        ssh_calls.append(args)
+        return SimpleNamespace(
+            stdout="requeued:task-orphan\nhandoff:task-visible\n",
+            stderr="",
+            returncode=0,
+        )
+
+    monkeypatch.setattr(worker, "_ssh", _fake_ssh)
+
+    assert worker.recover_interrupted_tasks(config) == (1, 1)
+
+    script = ssh_calls[0][2]
+    assert "results/inbox/.staging" in script
+    assert 'mv "$stage" "$inbox"' in script
+    assert '[ -f "$inbox/result.json" ] || [ -f "$imported/result.json" ]' in script
+    assert 'mv "$running" "$completed"' in script
+    assert 'mv "$running" "$pending"' in script

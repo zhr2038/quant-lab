@@ -552,6 +552,39 @@ def test_lake_file_index_fails_closed_when_source_changes_during_index(
         build_lake_file_index(lake, ["silver/trade_print"])
 
 
+def test_lake_file_index_retries_one_transient_source_change(
+    tmp_path,
+    monkeypatch,
+):
+    lake = tmp_path / "lake"
+    source = lake / "silver/trade_print"
+    source.mkdir(parents=True)
+    target = source / "changing-once.parquet"
+    pl.DataFrame(
+        [{"symbol": "BTC-USDT", "ts": datetime(2026, 5, 31, 9, tzinfo=UTC)}]
+    ).write_parquet(target)
+    original_sha = file_index_module.sha256_file
+    calls = 0
+
+    def mutate_once(path):
+        nonlocal calls
+        digest = original_sha(path)
+        calls += 1
+        if calls == 1:
+            stat = Path(path).stat()
+            os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000))
+        return digest
+
+    monkeypatch.setattr(file_index_module, "sha256_file", mutate_once)
+    monkeypatch.setattr(file_index_module.time, "sleep", lambda _seconds: None)
+
+    result = build_lake_file_index(lake, ["silver/trade_print"])
+
+    assert result.height == 1
+    assert calls == 2
+    assert result.item(0, "path") == "silver/trade_print/changing-once.parquet"
+
+
 @pytest.mark.skipif(os.name == "nt", reason="POSIX directory permissions required")
 def test_lake_file_index_refresh_keeps_read_only_bronze_parent_untouched(tmp_path):
     lake = tmp_path / "lake"

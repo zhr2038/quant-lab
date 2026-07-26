@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 from collections.abc import Iterable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -19,6 +20,8 @@ LAKE_FILE_INDEX = Path("bronze") / "lake_file_index"
 TIMESTAMP_COLUMNS = ("ts", "timestamp", "received_at", "created_at", "minute_ts")
 INDEX_VERSION = "lake_file_index.v0.4"
 SCOPE_METADATA_VERSION = "lake_file_scope_metadata.v1"
+SOURCE_STABILITY_MAX_ATTEMPTS = 3
+SOURCE_STABILITY_RETRY_SECONDS = 0.1
 
 
 def build_lake_file_index(
@@ -187,68 +190,90 @@ def _index_dataset(
         resolved_dataset = dataset_path.resolve(strict=True)
         if lake_root not in resolved_dataset.parents or resolved_dataset not in resolved.parents:
             raise ValueError(f"lake_file_index_source_path_escape:{relative_path}")
-        try:
-            stat = file_path.stat()
-        except OSError as exc:
-            raise RuntimeError(f"lake_file_index_source_stat_failed:{relative_path}") from exc
         existing = existing_by_key.get((dataset, relative_path))
-        if (
-            existing is not None
-            and _int_value(existing.get("mtime_ns")) == stat.st_mtime_ns
-            and _int_value(existing.get("size_bytes") or existing.get("file_size")) == stat.st_size
-            and (
-                _stable_index_identity_present(existing)
-                or (not content_identity and _metadata_index_identity_present(existing))
-            )
-        ):
-            rows.append(_reuse_index_row(existing, stat=stat, indexed_at=indexed_at))
-            continue
-        try:
-            if content_identity:
-                min_ts, max_ts, row_count = _file_time_bounds(file_path)
-                source_sha = sha256_file(file_path)
-                schema_fingerprint = _parquet_schema_fingerprint(file_path)
-                uncompressed_bytes = _parquet_uncompressed_bytes(file_path)
-                scope_metadata_json = _file_scope_metadata(file_path, dataset=dataset)
-                identity_mode = "content"
-            else:
-                min_ts, max_ts, row_count = _file_metadata_time_bounds(file_path)
-                source_sha = ""
-                schema_fingerprint = ""
-                uncompressed_bytes = 0
-                scope_metadata_json = json.dumps(
-                    {"schema_version": SCOPE_METADATA_VERSION, "scopes": []},
-                    ensure_ascii=True,
-                    sort_keys=True,
-                    separators=(",", ":"),
+        for attempt in range(SOURCE_STABILITY_MAX_ATTEMPTS):
+            try:
+                stat = file_path.stat()
+            except OSError as exc:
+                if attempt + 1 < SOURCE_STABILITY_MAX_ATTEMPTS:
+                    time.sleep(SOURCE_STABILITY_RETRY_SECONDS)
+                    continue
+                raise RuntimeError(
+                    f"lake_file_index_source_stat_failed:{relative_path}"
+                ) from exc
+            if (
+                existing is not None
+                and _int_value(existing.get("mtime_ns")) == stat.st_mtime_ns
+                and _int_value(existing.get("size_bytes") or existing.get("file_size"))
+                == stat.st_size
+                and (
+                    _stable_index_identity_present(existing)
+                    or (
+                        not content_identity
+                        and _metadata_index_identity_present(existing)
+                    )
                 )
-                identity_mode = "metadata"
-            after = file_path.stat()
-        except Exception as exc:
-            raise RuntimeError(f"lake_file_index_source_read_failed:{relative_path}") from exc
-        if (stat.st_size, stat.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
-            raise RuntimeError(f"lake_file_index_source_changed:{relative_path}")
-        rows.append(
-            {
-                "dataset": dataset,
-                "path": relative_path,
-                "min_ts": _iso(min_ts),
-                "max_ts": _iso(max_ts),
-                "row_count": row_count,
-                "file_size": stat.st_size,
-                "size_bytes": stat.st_size,
-                "mtime_ns": stat.st_mtime_ns,
-                "sha256": source_sha,
-                "source_sha": source_sha,
-                "schema_fingerprint": schema_fingerprint,
-                "uncompressed_bytes": uncompressed_bytes,
-                "scope_metadata_json": scope_metadata_json,
-                "indexed_at": indexed_at,
-                "index_version": INDEX_VERSION,
-                "identity_mode": identity_mode,
-                "reused_from_previous_index": False,
-            }
-        )
+            ):
+                rows.append(_reuse_index_row(existing, stat=stat, indexed_at=indexed_at))
+                break
+            try:
+                if content_identity:
+                    min_ts, max_ts, row_count = _file_time_bounds(file_path)
+                    source_sha = sha256_file(file_path)
+                    schema_fingerprint = _parquet_schema_fingerprint(file_path)
+                    uncompressed_bytes = _parquet_uncompressed_bytes(file_path)
+                    scope_metadata_json = _file_scope_metadata(file_path, dataset=dataset)
+                    identity_mode = "content"
+                else:
+                    min_ts, max_ts, row_count = _file_metadata_time_bounds(file_path)
+                    source_sha = ""
+                    schema_fingerprint = ""
+                    uncompressed_bytes = 0
+                    scope_metadata_json = json.dumps(
+                        {"schema_version": SCOPE_METADATA_VERSION, "scopes": []},
+                        ensure_ascii=True,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    )
+                    identity_mode = "metadata"
+                after = file_path.stat()
+            except Exception as exc:
+                if attempt + 1 < SOURCE_STABILITY_MAX_ATTEMPTS:
+                    time.sleep(SOURCE_STABILITY_RETRY_SECONDS)
+                    continue
+                raise RuntimeError(
+                    f"lake_file_index_source_read_failed:{relative_path}"
+                ) from exc
+            if (stat.st_size, stat.st_mtime_ns) != (
+                after.st_size,
+                after.st_mtime_ns,
+            ):
+                if attempt + 1 < SOURCE_STABILITY_MAX_ATTEMPTS:
+                    time.sleep(SOURCE_STABILITY_RETRY_SECONDS)
+                    continue
+                raise RuntimeError(f"lake_file_index_source_changed:{relative_path}")
+            rows.append(
+                {
+                    "dataset": dataset,
+                    "path": relative_path,
+                    "min_ts": _iso(min_ts),
+                    "max_ts": _iso(max_ts),
+                    "row_count": row_count,
+                    "file_size": stat.st_size,
+                    "size_bytes": stat.st_size,
+                    "mtime_ns": stat.st_mtime_ns,
+                    "sha256": source_sha,
+                    "source_sha": source_sha,
+                    "schema_fingerprint": schema_fingerprint,
+                    "uncompressed_bytes": uncompressed_bytes,
+                    "scope_metadata_json": scope_metadata_json,
+                    "indexed_at": indexed_at,
+                    "index_version": INDEX_VERSION,
+                    "identity_mode": identity_mode,
+                    "reused_from_previous_index": False,
+                }
+            )
+            break
     return rows
 
 

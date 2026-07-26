@@ -10,6 +10,8 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+    environment:
+      BUILD_GIT_COMMIT: ${BUILD_GIT_COMMIT:?set BUILD_GIT_COMMIT to the deployed full SHA}
     cpus: 3.0
     mem_limit: ${NAS_EXPORT_WORKER_MEMORY_LIMIT:-8g}
     pids_limit: 256
@@ -27,7 +29,11 @@ services:
       - ./secrets/nas_export_signing_key:/run/secrets/nas_export_signing_key:ro
       - ./secrets/cloud_export_public_key:/run/secrets/cloud_export_public_key:ro
     healthcheck:
-      test: ["CMD", "python", "-c", "import pathlib; assert pathlib.Path('/data').is_dir()"]
+      test:
+        - CMD
+        - python
+        - -c
+        - "import os,pathlib; image=pathlib.Path('/app/BUILD_GIT_COMMIT').read_text().strip(); assert pathlib.Path('/data').is_dir(); assert len(image) == 40; assert os.environ['BUILD_GIT_COMMIT'] == image"
       interval: 30s
       timeout: 5s
       retries: 3

@@ -16,8 +16,12 @@ COPY pyproject.toml README.md /app/
 COPY src /app/src
 RUN pip install --no-cache-dir .
 
-ARG BUILD_GIT_COMMIT=unknown
+ARG BUILD_GIT_COMMIT
 ARG BUILD_TIMESTAMP=unknown
+RUN test -n "$BUILD_GIT_COMMIT" \
+    && test "${#BUILD_GIT_COMMIT}" = 40 \
+    && printf '%s\n' "$BUILD_GIT_COMMIT" > /app/BUILD_GIT_COMMIT \
+    && chmod 0444 /app/BUILD_GIT_COMMIT
 ENV BUILD_GIT_COMMIT=${BUILD_GIT_COMMIT} \
     BUILD_TIMESTAMP=${BUILD_TIMESTAMP}
 

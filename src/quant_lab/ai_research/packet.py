@@ -1404,26 +1404,6 @@ def _build_factor_validation_audit(
         ]
         for row in dedupe
     ]
-    forward_rows = [
-        [
-            str(row.get("factor_id") or ""),
-            str(row.get("symbol") or ""),
-            str(row.get("regime") or ""),
-            _compact_number(row.get("horizon_hours")),
-            _compact_number(row.get("sample_count")),
-            _compact_number(row.get("rank_ic")),
-            _compact_number(row.get("pearson_ic")),
-            _compact_number(row.get("long_short_bps")),
-            _compact_number(row.get("p25_net_bps")),
-            _compact_number(row.get("hit_rate")),
-            _compact_number(row.get("recent_7d_score")),
-            _compact_number(row.get("regime_stability")),
-            _compact_number(row.get("cost_adjusted_score")),
-            str(row.get("recommendation") or ""),
-            str(row.get("data_leakage_check") or ""),
-        ]
-        for row in forward
-    ]
     definition_ids = {str(row.get("factor_id") or "") for row in definitions}
     candidate_ids = {str(row.get("factor_id") or "") for row in candidates}
     forward_ids = {str(row.get("factor_id") or "") for row in forward}
@@ -1489,6 +1469,13 @@ def _build_factor_validation_audit(
             )
         )
     ]
+    current_forward_payload_rows = [
+        _factor_forward_payload_row(row) for row in current_forward_rows
+    ]
+    current_forward_object_ids = {id(row) for row in current_forward_rows}
+    historical_or_noncurrent_forward_rows = [
+        row for row in forward if id(row) not in current_forward_object_ids
+    ]
     current_forward_ids = sorted(
         {str(row.get("factor_id") or "") for row in current_forward_rows if row.get("factor_id")}
     )
@@ -1518,7 +1505,7 @@ def _build_factor_validation_audit(
     if population_status == "CURRENT_FORWARD_EVIDENCE_MISSING":
         warnings.append("current_factor_forward_validation_missing")
     content = {
-        "schema_version": "quant_lab.ai_factor_validation_audit.v5",
+        "schema_version": "quant_lab.ai_factor_validation_audit.v6",
         "source_members": sorted(sources),
         "freshness": {
             "definition_created_at_values": _bounded_distinct_row_values(
@@ -1576,6 +1563,14 @@ def _build_factor_validation_audit(
         ],
         "dedupe_decision_count": len(dedupe),
         "forward_validation_count": len(forward),
+        "current_definition_forward_validation_count": len(current_forward_rows),
+        "historical_or_noncurrent_forward_validation_count": len(
+            historical_or_noncurrent_forward_rows
+        ),
+        "historical_or_noncurrent_forward_recommendation_counts": _value_counts_rows(
+            historical_or_noncurrent_forward_rows,
+            "recommendation",
+        ),
         "current_definition_forward_factor_count": len(current_forward_ids),
         "current_definition_forward_factor_ids": current_forward_ids,
         "historical_or_unmapped_forward_factor_ids": historical_forward_ids,
@@ -1662,14 +1657,18 @@ def _build_factor_validation_audit(
             "recommendation",
             "data_leakage_check",
         ],
-        "forward_validation_rows": forward_rows,
+        "forward_validation_row_scope": (
+            "current_definition_latest_candidate_date_only"
+        ),
+        "forward_validation_rows": current_forward_payload_rows,
         "_representation": {
             "kind": "full_factor_validation_audit",
             "selection_rule": (
-                "all_factor_definitions_candidates_dedupe_decisions_and_"
-                "forward_validation_rows"
+                "all_current_factor_definitions_latest_candidates_dedupe_decisions_"
+                "and_current_forward_rows_plus_historical_population_summaries"
             ),
             "truncated": False,
+            "historical_forward_row_payload_omitted_by_design": True,
         },
     }
     encoded_chars = len(canonical_json(content))
@@ -1679,6 +1678,26 @@ def _build_factor_validation_audit(
             f"{encoded_chars}>{FACTOR_AUDIT_TARGET_DOCUMENT_CHARS}"
         )
     return content, complete, warnings
+
+
+def _factor_forward_payload_row(row: dict[str, Any]) -> list[Any]:
+    return [
+        str(row.get("factor_id") or ""),
+        str(row.get("symbol") or ""),
+        str(row.get("regime") or ""),
+        _compact_number(row.get("horizon_hours")),
+        _compact_number(row.get("sample_count")),
+        _compact_number(row.get("rank_ic")),
+        _compact_number(row.get("pearson_ic")),
+        _compact_number(row.get("long_short_bps")),
+        _compact_number(row.get("p25_net_bps")),
+        _compact_number(row.get("hit_rate")),
+        _compact_number(row.get("recent_7d_score")),
+        _compact_number(row.get("regime_stability")),
+        _compact_number(row.get("cost_adjusted_score")),
+        str(row.get("recommendation") or ""),
+        str(row.get("data_leakage_check") or ""),
+    ]
 
 
 def _factor_validation_population_status(

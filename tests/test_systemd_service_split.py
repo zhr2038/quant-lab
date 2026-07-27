@@ -558,6 +558,25 @@ def test_trade_level_history_uses_bounded_nas_request_and_shadow_control():
     )
 
 
+def test_nas_research_worker_deploy_binds_image_to_repository_head():
+    script = (
+        ROOT / "deploy" / "nas_research_worker" / "deploy_current_head.sh"
+    ).read_text(encoding="utf-8")
+    readme = (
+        ROOT / "deploy" / "nas_research_worker" / "README.md"
+    ).read_text(encoding="utf-8")
+
+    assert 'git -C "${REPOSITORY_ROOT}" rev-parse --verify HEAD' in script
+    assert "NAS_RESEARCH_IMAGE_GIT_COMMIT=" in script
+    assert "docker compose build --pull quant-research-worker" in script
+    assert "docker compose up -d --force-recreate quant-research-worker" in script
+    assert 'IMAGE_COMMIT}" != "${DEPLOYED_COMMIT}' in script
+    assert 'RUNTIME_COMMIT}" != "${DEPLOYED_COMMIT}' in script
+    assert 'MOUNTED_REPOSITORY_COMMIT}" != "${DEPLOYED_COMMIT}' in script
+    assert "docker compose stop quant-research-worker" in script
+    assert "./deploy_current_head.sh" in readme
+
+
 def test_scheduled_compaction_covers_hot_ws_datasets():
     unit = _unit("quant-lab-lake-compaction.service")
     timer = _unit("quant-lab-lake-compaction.timer")

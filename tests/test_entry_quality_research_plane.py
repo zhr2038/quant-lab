@@ -1783,6 +1783,91 @@ def test_worker_code_mismatch_is_rejected_without_retry(
     assert "/pending/" not in commands[-1]
 
 
+def test_explicit_request_requeues_worker_code_mismatch_task(
+    tmp_path: Path,
+) -> None:
+    queue = ensure_research_queue_layout(tmp_path / "queue")
+    task_id = "entry-quality-history-old-code"
+    failed = queue / "failed" / task_id
+    failed.mkdir()
+    (failed / "task.json").write_text("{}", encoding="utf-8")
+    rejected = ResearchTaskStatus(
+        task_id=task_id,
+        snapshot_id="entry-quality-history-snapshot-test",
+        start_date=date(2026, 6, 19),
+        end_date=date(2026, 7, 18),
+        mode="recent_30d",
+        cost_mode="conservative",
+        state=ResearchTaskState.REJECTED,
+        requested_at=GENERATED_AT,
+        worker_id="nas-research-worker-old",
+        claimed_at=GENERATED_AT,
+        heartbeat_at=GENERATED_AT,
+        completed_at=GENERATED_AT,
+        attempt=1,
+        max_attempts=3,
+        downloaded_bytes=123,
+        output_rows=45,
+        import_status="worker_rejected_code_mismatch",
+        last_error="ValueError:worker_code_mismatch",
+    )
+    write_research_status(queue, rejected)
+    lease = queue / "lease" / f"{task_id}.json"
+    lease.write_text("{}", encoding="utf-8")
+
+    task_directory, pending = queue_module._requeue_worker_code_mismatch_task(
+        queue,
+        failed,
+        rejected,
+    )
+
+    assert task_directory == queue / "pending" / task_id
+    assert task_directory.is_dir()
+    assert not failed.exists()
+    assert not lease.exists()
+    assert pending.state is ResearchTaskState.PENDING
+    assert pending.attempt == 1
+    assert pending.worker_id is None
+    assert pending.claimed_at is None
+    assert pending.completed_at is None
+    assert pending.downloaded_bytes == 0
+    assert pending.output_rows == 0
+    assert pending.import_status == "waiting_for_nas"
+    assert pending.last_error is None
+
+
+def test_explicit_request_does_not_requeue_other_rejections(
+    tmp_path: Path,
+) -> None:
+    queue = ensure_research_queue_layout(tmp_path / "queue")
+    task_id = "entry-quality-history-invalid-result"
+    failed = queue / "failed" / task_id
+    failed.mkdir()
+    rejected = ResearchTaskStatus(
+        task_id=task_id,
+        snapshot_id="entry-quality-history-snapshot-test",
+        start_date=date(2026, 6, 19),
+        end_date=date(2026, 7, 18),
+        mode="recent_30d",
+        cost_mode="conservative",
+        state=ResearchTaskState.REJECTED,
+        requested_at=GENERATED_AT,
+        attempt=1,
+        max_attempts=3,
+        import_status="rejected_validation",
+    )
+
+    task_directory, unchanged = queue_module._requeue_worker_code_mismatch_task(
+        queue,
+        failed,
+        rejected,
+    )
+
+    assert task_directory == failed
+    assert failed.is_dir()
+    assert unchanged == rejected
+
+
 def test_worker_prevalidation_failure_counts_attempt_before_retry(
     tmp_path: Path,
     monkeypatch,

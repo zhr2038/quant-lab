@@ -259,6 +259,49 @@ class TradeLevelHistoryTaskRequestResult:
         }
 
 
+def _requeue_worker_code_mismatch_task(
+    queue: Path,
+    task_directory: Path,
+    status: ResearchTaskStatus,
+) -> tuple[Path, ResearchTaskStatus]:
+    """Retry an immutable task only after an explicit request recreates it."""
+    if (
+        task_directory.parent.name != "failed"
+        or status.state is not ResearchTaskState.REJECTED
+        or status.import_status != "worker_rejected_code_mismatch"
+        or status.attempt >= status.max_attempts
+    ):
+        return task_directory, status
+
+    pending = queue / "pending" / status.task_id
+    if pending.exists():
+        raise RuntimeError("research_task_requeue_destination_exists")
+    os.replace(task_directory, pending)
+    (queue / "lease" / f"{status.task_id}.json").unlink(missing_ok=True)
+    refreshed = status.model_copy(
+        update={
+            "state": ResearchTaskState.PENDING,
+            "worker_id": None,
+            "claimed_at": None,
+            "heartbeat_at": None,
+            "completed_at": None,
+            "lease_expires_at": None,
+            "downloaded_bytes": 0,
+            "cache_hit_bytes": 0,
+            "output_rows": 0,
+            "output_bytes": 0,
+            "peak_rss_bytes": 0,
+            "compute_duration_seconds": 0.0,
+            "anti_leakage_status": None,
+            "import_status": "waiting_for_nas",
+            "last_error": None,
+            "gold_generation_id": None,
+        }
+    )
+    write_research_status(queue, refreshed)
+    return pending, refreshed
+
+
 def create_trade_level_history_task(
     lake_root: str | Path,
     queue_root: str | Path,
@@ -400,6 +443,11 @@ def create_trade_level_history_task(
         )
         status = ResearchTaskStatus.model_validate_json(
             (queue / "status" / f"{task_id}.json").read_text("utf-8")
+        )
+        existing, status = _requeue_worker_code_mismatch_task(
+            queue,
+            existing,
+            status,
         )
         result = TradeLevelHistoryTaskRequestResult(
             state="coalesced",
@@ -654,6 +702,11 @@ def create_v5_candidate_evidence_task(
         )
         status = ResearchTaskStatus.model_validate_json(
             (queue / "status" / f"{task_id}.json").read_text("utf-8")
+        )
+        existing, status = _requeue_worker_code_mismatch_task(
+            queue,
+            existing,
+            status,
         )
         result = V5CandidateEvidenceTaskRequestResult(
             state="coalesced",
@@ -928,6 +981,11 @@ def create_factor_factory_task(
         task = FactorFactoryTask.model_validate_json((existing / "task.json").read_text("utf-8"))
         status = ResearchTaskStatus.model_validate_json(
             (queue / "status" / f"{task_id}.json").read_text("utf-8")
+        )
+        existing, status = _requeue_worker_code_mismatch_task(
+            queue,
+            existing,
+            status,
         )
         result = FactorFactoryTaskRequestResult(
             state="task_created",
@@ -1672,6 +1730,11 @@ def create_factor_research_task(
         status = ResearchTaskStatus.model_validate_json(
             (queue / "status" / f"{task_id}.json").read_text("utf-8")
         )
+        existing, status = _requeue_worker_code_mismatch_task(
+            queue,
+            existing,
+            status,
+        )
         return task, status
 
     requested_at = datetime.now(UTC)
@@ -1821,6 +1884,11 @@ def create_alpha_factory_task(
         status = ResearchTaskStatus.model_validate_json(
             (queue / "status" / f"{task_id}.json").read_text("utf-8")
         )
+        existing, status = _requeue_worker_code_mismatch_task(
+            queue,
+            existing,
+            status,
+        )
         return task, status
     snapshot = seal_alpha_factory_snapshot(
         root,
@@ -1962,6 +2030,11 @@ def create_entry_quality_history_task(
         task = ResearchTask.model_validate_json((existing / "task.json").read_text("utf-8"))
         status = ResearchTaskStatus.model_validate_json(
             (queue / "status" / f"{task_id}.json").read_text("utf-8")
+        )
+        existing, status = _requeue_worker_code_mismatch_task(
+            queue,
+            existing,
+            status,
         )
         return task, status
 

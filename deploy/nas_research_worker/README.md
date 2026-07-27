@@ -50,12 +50,16 @@ directory of that exact checked-out repository. Do not add a runtime
 commit file, both image-provided commit environment values, and repository HEAD
 before it polls or claims any task. The repository ACL above is read-only for
 UID 10004 and its default directory entries keep future Git objects readable;
-do not grant the worker write access to the repository. Then:
+do not grant the worker write access to the repository.
+
+Deploying by hand can leave `.env` pinned to an older image commit even after
+the repository has advanced. Use the deployment helper to derive the commit
+from repository HEAD, update only the non-secret image commit field, rebuild,
+recreate, and verify image/runtime/mounted-repository provenance:
 
 ```bash
-docker compose build --pull
+./deploy_current_head.sh
 docker compose run --rm -e RUN_ONCE=true quant-research-worker
-docker compose up -d
 docker compose logs -f quant-research-worker
 ```
 

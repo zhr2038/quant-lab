@@ -44,6 +44,7 @@ from quant_lab.research.strategy_evidence import (
 from quant_lab.research_plane.alpha_factory_publish import (
     ALPHA_FACTORY_GENERATION_POINTER,
     ALPHA_FACTORY_GENERATION_SCHEMA,
+    ALPHA_FACTORY_PUBLISH_DUCKDB_MEMORY_LIMIT,
     ALPHA_FACTORY_SHARED_MANAGED_SCOPES,
     verify_alpha_factory_generation,
 )
@@ -81,6 +82,16 @@ COMMIT = "c" * 40
 TASK_KEY_ID = "cloud-research-v1"
 WORKER_KEY_ID = "nas-research-v1"
 BUNDLE_ID = "v5-bundle-sha256:" + "d" * 64
+
+
+def test_alpha_factory_publish_duckdb_budget_fits_importer_service() -> None:
+    unit = Path(
+        "deploy/systemd/quant-lab-research-result-import.service"
+    ).read_text(encoding="utf-8")
+
+    assert ALPHA_FACTORY_PUBLISH_DUCKDB_MEMORY_LIMIT == "1GB"
+    assert "MemoryHigh=2560M" in unit
+    assert "MemoryMax=3G" in unit
 
 
 def create_alpha_factory_task(

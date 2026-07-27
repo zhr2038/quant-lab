@@ -49,6 +49,7 @@ from quant_lab.research_plane.signatures import model_content_sha256
 ALPHA_FACTORY_GENERATION_POINTER = Path("gold") / "alpha_factory_generation.json"
 ALPHA_FACTORY_GENERATION_SCHEMA = "alpha_factory_generation.v2"
 ALPHA_FACTORY_TRANSACTION_NAME = "alpha_factory"
+ALPHA_FACTORY_PUBLISH_DUCKDB_MEMORY_LIMIT = "1GB"
 ALPHA_FACTORY_SHARED_MANAGED_SCOPES = {
     "strategy_evidence_sample": {
         "scope": "managed_source",
@@ -368,7 +369,9 @@ def _stage_alpha_factory_shared_evidence(
     try:
         connection.execute("SET threads = 1")
         connection.execute("SET preserve_insertion_order = false")
-        connection.execute("SET memory_limit = '512MB'")
+        connection.execute(
+            f"SET memory_limit = '{ALPHA_FACTORY_PUBLISH_DUCKDB_MEMORY_LIMIT}'"
+        )
         connection.execute(f"SET temp_directory = {_sql_literal(spill)}")
         connection.execute(
             f"COPY ({query}) TO {_sql_literal(output_path)} "
@@ -650,7 +653,9 @@ def _alpha_factory_managed_shared_duplicate_rows(
             connection.execute("SET threads = 1")
             connection.execute("SET preserve_insertion_order = false")
             connection.execute("SET enable_progress_bar = false")
-            connection.execute("SET memory_limit = '512MB'")
+            connection.execute(
+                f"SET memory_limit = '{ALPHA_FACTORY_PUBLISH_DUCKDB_MEMORY_LIMIT}'"
+            )
             connection.execute(
                 f"SET temp_directory = {_sql_literal(Path(temp_root) / 'duckdb')}"
             )

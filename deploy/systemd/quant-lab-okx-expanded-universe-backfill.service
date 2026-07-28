@@ -9,7 +9,10 @@ User=quantlab
 Group=quantlab
 WorkingDirectory=/opt/quant-lab
 Environment=PYTHONUNBUFFERED=1
+Environment=POLARS_MAX_THREADS=1
+Environment=MALLOC_ARENA_MAX=2
 TimeoutStartSec=26min
-MemoryMax=1536M
+MemoryHigh=1792M
+MemoryMax=2G
 CPUQuota=80%
-ExecStart=/bin/bash -lc 'set -euo pipefail; /opt/quant-lab/.venv/bin/qlab okx-backfill-expanded-universe --lake-root /var/lib/quant-lab/lake --bar 1H --max-symbols 30 --history-pages 8 --gap-repair-pages 20 --limit 100 --min-quote-volume-24h 1000000 --max-spread-bps 20 && /opt/quant-lab/.venv/bin/qlab build-expanded-universe-shadow --lake-root /var/lib/quant-lab/lake --max-candidates 30 --min-quote-volume-24h 1000000 --max-spread-bps 20'
+ExecStart=/bin/bash -lc 'set -euo pipefail; /usr/bin/flock -E 75 -w 30 /var/lock/quant-lab-heavy.lock /usr/bin/timeout 24m /bin/bash -lc "/opt/quant-lab/.venv/bin/qlab okx-backfill-expanded-universe --lake-root /var/lib/quant-lab/lake --bar 1H --max-symbols 30 --history-pages 8 --gap-repair-pages 20 --limit 100 --min-quote-volume-24h 1000000 --max-spread-bps 20 && /opt/quant-lab/.venv/bin/qlab build-expanded-universe-shadow --lake-root /var/lib/quant-lab/lake --max-candidates 30 --min-quote-volume-24h 1000000 --max-spread-bps 20" || { code="$?"; if [ "$${code}" = "75" ]; then echo "SKIP_EXPANDED_UNIVERSE_BACKFILL_LOCK_BUSY"; exit 0; fi; exit "$${code}"; }'

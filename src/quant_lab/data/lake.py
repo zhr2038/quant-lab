@@ -102,6 +102,50 @@ def write_parquet_dataset(
         return _write_parquet_dataset_unlocked(df, path, partition_by=partition_by)
 
 
+def replace_parquet_dataset_from_lazy(
+    frame: pl.LazyFrame,
+    dataset_path: str | Path,
+    *,
+    row_group_size: int = 100_000,
+) -> Path:
+    """Atomically replace a dataset from a streaming LazyFrame computation."""
+
+    path = Path(dataset_path)
+    with _dataset_lock(path, timeout_seconds=120.0):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _ensure_lake_dir_permissions(path.parent)
+        staging = path.parent / f"__{path.name}_lazy_write_{uuid.uuid4().hex}"
+        backup = path.parent / f"__{path.name}_backup_{uuid.uuid4().hex}"
+        try:
+            staging.mkdir(parents=True, exist_ok=False)
+            _ensure_lake_dir_permissions(staging)
+            frame.sink_parquet(
+                staging / "data.parquet",
+                compression="zstd",
+                row_group_size=max(int(row_group_size), 1),
+                maintain_order=False,
+                mkdir=True,
+                engine="streaming",
+            )
+            _ensure_internal_tree_permissions(staging)
+            if path.exists():
+                _replace_path(path, backup)
+            try:
+                _replace_path(staging, path)
+                _ensure_internal_tree_permissions(path)
+            except Exception:
+                if backup.exists() and not path.exists():
+                    _replace_path(backup, path)
+                raise
+            _remove_internal_path(backup)
+            return path
+        except Exception:
+            _remove_internal_path(staging)
+            if backup.exists() and not path.exists():
+                _replace_path(backup, path)
+            raise
+
+
 def write_single_file_parquet_dataset_in_place(
     df: pl.DataFrame,
     dataset_path: str | Path,

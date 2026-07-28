@@ -1866,6 +1866,7 @@ def create_alpha_factory_task(
     task_seed = model_content_sha256(
         {
             "task_type": ALPHA_FACTORY_TASK_TYPE,
+            "as_of_date": parameters.as_of_date.isoformat(),
             "factor_generation_id": factor_binding["factor_generation_id"],
             "factor_generation_digest": factor_binding["factor_generation_digest"],
             "hypothesis_registry_digest": factor_binding["hypothesis_registry_digest"],
@@ -1873,6 +1874,7 @@ def create_alpha_factory_task(
             "lookback_days": parameters.lookback_days,
             "max_candidates": parameters.max_candidates,
             "template_registry_digest": registry_digest,
+            "selected_v5_bundle_id": selected_bundle,
             "quant_lab_commit": quant_lab_commit,
             "signature_key_id": signature_key_id,
         }

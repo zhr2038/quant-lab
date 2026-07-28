@@ -14,9 +14,9 @@ from quant_lab.data.lake import (
     append_parquet_dataset,
     read_parquet_dataset,
     read_parquet_lazy,
+    replace_parquet_dataset_from_lazy,
     upsert_parquet_dataset,
     write_parquet_dataset,
-    write_snapshot_meta,
 )
 from quant_lab.strategy_telemetry.models import V5TelemetryAnalysisResult
 from quant_lab.symbols import normalize_symbol
@@ -748,31 +748,25 @@ def _repair_gold_mirror_if_needed(
         and silver_latest is not None
         and gold_latest is not None
         and silver_latest != gold_latest
+    ) or (
+        0 < gold_rows < silver_rows
+        and silver_latest is not None
+        and gold_latest is not None
+        and silver_latest == gold_latest
     )
     if not inconsistent:
         return False
-    if silver_rows > _mirror_repair_max_rows():
+    try:
+        silver = read_parquet_lazy(silver_path)
+        silver.collect_schema()
+    except Exception:
         return False
-    silver = _safe_read_dataset(silver_path)
-    if silver.is_empty():
-        return False
-    write_parquet_dataset(
-        _with_bundle_day(silver, analysis_date),
+    replace_parquet_dataset_from_lazy(
+        _with_bundle_day_lazy(silver, analysis_date),
         gold_path,
-        partition_by="bundle_day",
     )
     _write_gold_snapshot_meta(gold_path, gold_name)
     return True
-
-
-def _mirror_repair_max_rows() -> int:
-    raw = os.environ.get("QUANT_LAB_V5_MIRROR_REPAIR_MAX_ROWS")
-    if raw is None or not raw.strip():
-        return 200_000
-    try:
-        return max(int(raw), 0)
-    except ValueError:
-        return 200_000
 
 
 def _read_incremental_mirror_frame(
@@ -850,8 +844,49 @@ def _append_gold_mirror_rows(
 
 
 def _write_gold_snapshot_meta(path: Path, dataset_name: str) -> None:
-    frame = _safe_read_dataset(path)
-    write_snapshot_meta(path, dataset_name=dataset_name, frame=frame)
+    files = sorted(
+        candidate
+        for candidate in path.rglob("*.parquet")
+        if candidate.is_file()
+        and all(
+            not part.startswith((".", "__"))
+            for part in candidate.relative_to(path).parts
+        )
+    )
+    latest = _latest_dataset_time(path)
+    generated_at = (
+        latest.astimezone(UTC).isoformat().replace("+00:00", "Z")
+        if latest is not None
+        else ""
+    )
+    row_count = _dataset_row_count(path)
+    digest = hashlib.sha256()
+    digest.update(str(dataset_name).encode("utf-8"))
+    digest.update(b"\0")
+    digest.update(generated_at.encode("utf-8"))
+    digest.update(b"\0")
+    digest.update(str(row_count).encode("ascii"))
+    for file_path in files:
+        digest.update(file_path.relative_to(path).as_posix().encode("utf-8"))
+        with file_path.open("rb") as handle:
+            while chunk := handle.read(1024 * 1024):
+                digest.update(chunk)
+    payload = {
+        "dataset": str(dataset_name),
+        "generated_at": generated_at,
+        "expires_at": "",
+        "row_count": row_count,
+        "source_sha": digest.hexdigest(),
+        "file_count": len(files),
+        "schema_version": str(dataset_name),
+        "created_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+    }
+    temporary = path / f"._snapshot_meta.{os.getpid()}.tmp"
+    temporary.write_text(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")),
+        encoding="utf-8",
+    )
+    os.replace(temporary, path / "_snapshot_meta.json")
 
 
 def _with_bundle_day(frame: pl.DataFrame, analysis_date: str) -> pl.DataFrame:
@@ -859,6 +894,29 @@ def _with_bundle_day(frame: pl.DataFrame, analysis_date: str) -> pl.DataFrame:
         return frame
     candidates = [
         column for column in ["bundle_ts", "ingest_ts", "ts_utc", "ts"] if column in frame.columns
+    ]
+    if not candidates:
+        return frame.with_columns(pl.lit(str(analysis_date)[:10]).alias("bundle_day"))
+    expressions = [
+        pl.col(column)
+        .cast(pl.Utf8, strict=False)
+        .str.to_datetime(time_zone="UTC", strict=False)
+        for column in candidates
+    ]
+    return frame.with_columns(
+        pl.coalesce(expressions)
+        .dt.strftime("%Y-%m-%d")
+        .fill_null(str(analysis_date)[:10])
+        .alias("bundle_day")
+    )
+
+
+def _with_bundle_day_lazy(frame: pl.LazyFrame, analysis_date: str) -> pl.LazyFrame:
+    available = set(frame.collect_schema().names())
+    if "bundle_day" in available:
+        return frame
+    candidates = [
+        column for column in ["bundle_ts", "ingest_ts", "ts_utc", "ts"] if column in available
     ]
     if not candidates:
         return frame.with_columns(pl.lit(str(analysis_date)[:10]).alias("bundle_day"))

@@ -189,6 +189,63 @@ def test_v5_gold_mirror_repairs_equal_count_but_stale_gold(tmp_path):
     assert meta["generated_at"] == "2026-05-10T00:00:00Z"
 
 
+def test_v5_gold_mirror_streams_repair_when_gold_has_extra_rows(tmp_path, monkeypatch):
+    lake = tmp_path / "lake"
+    silver = lake / "silver" / "v5_final_score_vs_alpha6_conflict"
+    gold_path = lake / "gold" / "v5_final_score_vs_alpha6_conflict"
+    source = pl.DataFrame(
+        [
+            {
+                "run_id": "run-old",
+                "symbol": "BNB/USDT",
+                "bundle_ts": datetime(2026, 5, 9, tzinfo=UTC),
+            },
+            {
+                "run_id": "run-current",
+                "symbol": "BNB/USDT",
+                "bundle_ts": datetime(2026, 5, 10, tzinfo=UTC),
+            },
+        ]
+    )
+    write_parquet_dataset(source, silver)
+    write_parquet_dataset(
+        pl.concat(
+            [
+                source,
+                pl.DataFrame(
+                    [
+                        {
+                            "run_id": "stale-extra",
+                            "symbol": "BNB/USDT",
+                            "bundle_ts": datetime(2026, 5, 8, tzinfo=UTC),
+                        }
+                    ]
+                ),
+            ]
+        ),
+        gold_path,
+    )
+
+    monkeypatch.setattr(
+        analyze_module,
+        "_safe_read_dataset",
+        lambda _path: (_ for _ in ()).throw(AssertionError("full dataset read")),
+    )
+
+    repaired = analyze_module._repair_gold_mirror_if_needed(
+        silver,
+        gold_path,
+        gold_name="v5_final_score_vs_alpha6_conflict",
+        analysis_date="2026-05-10",
+    )
+
+    assert repaired is True
+    gold = read_parquet_dataset(gold_path)
+    assert gold.height == 2
+    assert sorted(gold["run_id"].to_list()) == ["run-current", "run-old"]
+    assert "bundle_day" in gold.columns
+
+
 def test_analyze_flags_reconcile_failure(tmp_path):
     lake = tmp_path / "lake"
     _write_manifest(lake)

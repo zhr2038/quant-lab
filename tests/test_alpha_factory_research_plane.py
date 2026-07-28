@@ -120,7 +120,7 @@ def test_alpha_factory_task_requires_validated_factor_generation(tmp_path: Path)
         )
 
 
-def test_alpha_factory_task_reuses_same_factor_generation(tmp_path: Path) -> None:
+def test_alpha_factory_task_is_idempotent_per_day_but_not_across_days(tmp_path: Path) -> None:
     lake = tmp_path / "lake"
     lake.mkdir()
     seed_verified_factor_generation(lake, as_of_date=date(2026, 7, 18))
@@ -134,6 +134,24 @@ def test_alpha_factory_task_reuses_same_factor_generation(tmp_path: Path) -> Non
         quant_lab_commit=COMMIT,
         selected_v5_bundle_id=BUNDLE_ID,
     )
+    duplicate, _ = _create_alpha_factory_task(
+        lake,
+        tmp_path / "queue",
+        as_of_date=date(2026, 7, 18),
+        signing_key=key,
+        signature_key_id=TASK_KEY_ID,
+        quant_lab_commit=COMMIT,
+        selected_v5_bundle_id=BUNDLE_ID,
+    )
+    different_bundle, _ = _create_alpha_factory_task(
+        lake,
+        tmp_path / "queue",
+        as_of_date=date(2026, 7, 18),
+        signing_key=key,
+        signature_key_id=TASK_KEY_ID,
+        quant_lab_commit=COMMIT,
+        selected_v5_bundle_id="v5-live-followup-20260718T010000Z",
+    )
     second, _ = _create_alpha_factory_task(
         lake,
         tmp_path / "queue",
@@ -143,8 +161,12 @@ def test_alpha_factory_task_reuses_same_factor_generation(tmp_path: Path) -> Non
         quant_lab_commit=COMMIT,
         selected_v5_bundle_id=BUNDLE_ID,
     )
-    assert second.task_id == first.task_id
-    assert second.snapshot_id == first.snapshot_id
+    assert duplicate.task_id == first.task_id
+    assert duplicate.snapshot_id == first.snapshot_id
+    assert different_bundle.task_id != first.task_id
+    assert different_bundle.snapshot_id != first.snapshot_id
+    assert second.task_id != first.task_id
+    assert second.snapshot_id != first.snapshot_id
     assert second.factor_generation_id == "factor-research-test-generation"
     assert second.factor_generation_hypothesis_ids == ("hypothesis.test",)
 

@@ -68,8 +68,8 @@ def test_v5_health_analysis_stays_lightweight():
     assert "flock -E 75 -w 5" in unit
     assert "/var/lock/quant-lab-v5-daily-analysis.lock" in unit
     assert "TimeoutStartSec=10min" in unit
-    assert "MemoryHigh=2G" in unit
-    assert "MemoryMax=2G" in unit
+    assert "MemoryHigh=2560M" in unit
+    assert "MemoryMax=3G" in unit
     assert "/var/lock/quant-lab-v5-research.lock" not in unit
     assert "/usr/bin/timeout 8m" in unit
     assert "build-v5-candidate-labels" not in unit
@@ -154,6 +154,12 @@ def test_expanded_universe_backfill_stays_within_bigscreen_freshness_window():
     assert "OnUnitActiveSec=6h" not in timer
     assert "okx-backfill-expanded-universe" in service
     assert "build-expanded-universe-shadow" in service
+    assert "POLARS_MAX_THREADS=1" in service
+    assert "MALLOC_ARENA_MAX=2" in service
+    assert "MemoryHigh=1792M" in service
+    assert "MemoryMax=2G" in service
+    assert "flock -E 75 -w 30 /var/lock/quant-lab-heavy.lock" in service
+    assert "SKIP_EXPANDED_UNIVERSE_BACKFILL_LOCK_BUSY" in service
 
 
 def test_factor_research_request_backfills_locked_history_before_sealing_snapshot():

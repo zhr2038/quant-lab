@@ -1989,6 +1989,7 @@ def test_research_plane_deployment_examples_share_keys_paths_and_memory_limit() 
     assert "QUANT_RESEARCH_TASK_KEY_ID=cloud-research-v1" in nas_env
     assert "QUANT_LAB_RESEARCH_WORKER_KEY_ID=nas-research-v1" in cloud_env
     assert "QUANT_RESEARCH_WORKER_KEY_ID=nas-research-v1" in nas_env
+    assert "SCP_TIMEOUT_SECONDS=3600" in nas_env
     assert f"QUANT_LAB_RESEARCH_MAX_RESULT_BYTES={DEFAULT_RESEARCH_MAX_RESULT_BYTES}" in cloud_env
     assert f"MAX_RESULT_BYTES={DEFAULT_RESEARCH_MAX_RESULT_BYTES}" in nas_env
 

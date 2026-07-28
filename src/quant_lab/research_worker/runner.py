@@ -190,7 +190,7 @@ class Config:
     runtime_worker_commit: str | None = None
     repository_commit: str | None = None
     ssh_timeout_seconds: int = 90
-    scp_timeout_seconds: int = 900
+    scp_timeout_seconds: int = 3600
 
     @classmethod
     def from_env(cls) -> Config:
@@ -384,7 +384,7 @@ class Config:
             ),
             batch_fetch_workers=max(1, min(4, int(os.environ.get("BATCH_FETCH_WORKERS", "3")))),
             ssh_timeout_seconds=max(10, int(os.environ.get("SSH_TIMEOUT_SECONDS", "90"))),
-            scp_timeout_seconds=max(30, int(os.environ.get("SCP_TIMEOUT_SECONDS", "900"))),
+            scp_timeout_seconds=max(30, int(os.environ.get("SCP_TIMEOUT_SECONDS", "3600"))),
         )
 
 

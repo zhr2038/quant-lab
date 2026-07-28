@@ -709,6 +709,12 @@ def _mirror_v5_consistency_gold(
         if frame.is_empty():
             continue
         _append_gold_mirror_rows(frame, gold_path, gold_name, analysis_date)
+        _repair_gold_mirror_if_needed(
+            silver_path,
+            gold_path,
+            gold_name=gold_name,
+            analysis_date=analysis_date,
+        )
         if gold_name == "v5_bnb_paper_strategy_daily":
             previous_latest = _safe_read_dataset(
                 lake_root / GOLD_DATASETS["v5_bnb_paper_strategy_daily_latest"]

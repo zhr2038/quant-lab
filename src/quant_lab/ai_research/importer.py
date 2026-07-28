@@ -19,6 +19,7 @@ from quant_lab.ai_research.contracts import (
     compute_task_packet_sha256,
 )
 from quant_lab.data.lake import upsert_parquet_dataset
+from quant_lab.export_plane.cloud_index import load_cloud_index, write_cloud_index
 
 AI_RUN_DATASET = Path("gold") / "ai_research_run"
 AI_FINDING_DATASET = Path("gold") / "ai_research_finding"
@@ -329,6 +330,7 @@ def import_ai_research_results(
     queue_root: str | Path,
     *,
     lake_root: str | Path,
+    export_queue_root: str | Path | None = None,
     max_results: int = 20,
 ) -> dict[str, Any]:
     queue = Path(queue_root)
@@ -359,6 +361,7 @@ def import_ai_research_results(
         "rejected": 0,
         "task_ids": [],
         "errors": [],
+        "warnings": [],
     }
 
     for result_dir in candidates[: max(0, int(max_results))]:
@@ -367,6 +370,7 @@ def import_ai_research_results(
             result = _load_result(result_dir / "result.json")
             task = _load_task_for_result(queue, result.task_id)
             _validate_result_against_task(result, task)
+            _validate_source_pack_reference(task, export_queue_root)
             _publish_result(result, task=task, lake_root=Path(lake_root))
             _atomic_write_json(
                 queue / "state" / "latest_research_context.json",
@@ -386,6 +390,23 @@ def import_ai_research_results(
                     "live_order_effect": LIVE_ORDER_EFFECT,
                 },
             )
+            try:
+                if not _mark_source_pack_ai_consumed(task, export_queue_root):
+                    if export_queue_root is not None and task.source_location == "nas_accepted":
+                        summary["warnings"].append(
+                            {
+                                "task_id": result.task_id,
+                                "warning": "source_pack_ai_consumed_not_updated",
+                            }
+                        )
+            except (OSError, ValueError) as exc:
+                summary["warnings"].append(
+                    {
+                        "task_id": result.task_id,
+                        "warning": "source_pack_ai_consumed_update_failed",
+                        "message": str(exc),
+                    }
+                )
             summary["imported"] += 1
             summary["task_ids"].append(result.task_id)
         except Exception as exc:  # noqa: BLE001 - result isolation is intentional
@@ -408,6 +429,52 @@ def import_ai_research_results(
                 }
             )
     return summary
+
+
+def _validate_source_pack_reference(
+    task: AIResearchTask,
+    export_queue_root: str | Path | None,
+) -> None:
+    if export_queue_root is None or task.source_location != "nas_accepted":
+        return
+    row = next(
+        (
+            item
+            for item in load_cloud_index(export_queue_root)
+            if item.pack_id == task.source_pack_id
+        ),
+        None,
+    )
+    if row is None:
+        raise ValueError("AI task source pack is absent from the export cloud index")
+    if row.pack_sha256 != task.source_pack_sha256:
+        raise ValueError("AI task source pack SHA does not match the export cloud index")
+    if row.snapshot_id != task.source_snapshot_id:
+        raise ValueError("AI task source snapshot does not match the export cloud index")
+
+
+def _mark_source_pack_ai_consumed(
+    task: AIResearchTask,
+    export_queue_root: str | Path | None,
+) -> bool:
+    if export_queue_root is None or task.source_location != "nas_accepted":
+        return True
+    rows = load_cloud_index(export_queue_root)
+    updated = False
+    next_rows = []
+    for row in rows:
+        if row.pack_id != task.source_pack_id:
+            next_rows.append(row)
+            continue
+        if row.pack_sha256 != task.source_pack_sha256:
+            raise ValueError("AI task source pack SHA changed before consumption update")
+        if row.snapshot_id != task.source_snapshot_id:
+            raise ValueError("AI task source snapshot changed before consumption update")
+        next_rows.append(row.model_copy(update={"ai_consumed": True}))
+        updated = True
+    if updated:
+        write_cloud_index(export_queue_root, next_rows)
+    return updated
 
 
 def _publish_result(

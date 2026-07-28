@@ -43,6 +43,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     import_results.add_argument("--queue-root", required=True, type=Path)
     import_results.add_argument("--lake-root", required=True, type=Path)
+    import_results.add_argument("--export-queue-root", type=Path)
     import_results.add_argument("--max-results", type=int, default=20)
 
     status = subparsers.add_parser("status", help="Show queue state without reading the lake.")
@@ -92,6 +93,7 @@ def main(argv: list[str] | None = None) -> int:
         payload = import_ai_research_results(
             args.queue_root,
             lake_root=args.lake_root,
+            export_queue_root=args.export_queue_root,
             max_results=max(1, args.max_results),
         )
         print(json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2))

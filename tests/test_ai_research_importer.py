@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from pathlib import Path
 
 import polars as pl
 import pytest
@@ -28,6 +29,8 @@ from quant_lab.ai_research.importer import (
     import_ai_research_results,
 )
 from quant_lab.data.lake import read_parquet_dataset, write_parquet_dataset
+from quant_lab.export_plane.cloud_index import load_cloud_index, write_cloud_index
+from quant_lab.export_plane.contracts import ExportPackIndexEntry
 
 
 def _task() -> AIResearchTask:
@@ -146,6 +149,73 @@ def test_import_ignores_result_directory_until_atomic_payload_is_present(tmp_pat
     assert summary["examined"] == 0
     assert summary["rejected"] == 0
     assert incomplete.is_dir()
+
+
+def test_import_marks_exact_nas_source_pack_as_ai_consumed(tmp_path: Path) -> None:
+    queue_root = tmp_path / "ai-queue"
+    export_queue_root = tmp_path / "export-queue"
+    base_task = _task()
+    task = base_task.model_copy(
+        update={
+            "source_pack_id": "expert-pack-test",
+            "source_snapshot_id": "export-snapshot-test",
+            "source_location": "nas_accepted",
+            "preflight": TaskPreflight(
+                status="PASS",
+                checked_at=datetime(2026, 7, 14, tzinfo=UTC),
+                truncated_document_count=0,
+            ),
+        }
+    )
+    task = task.model_copy(update={"packet_sha256": compute_task_packet_sha256(task)})
+    task_dir = queue_root / "running" / task.task_id
+    task_dir.mkdir(parents=True)
+    (task_dir / "task.json").write_text(task.model_dump_json(), encoding="utf-8")
+    result_dir = queue_root / "results" / "inbox" / task.task_id
+    result_dir.mkdir(parents=True)
+    result = _result(task, _reference()).model_copy(
+        update={"effective_preflight": task.preflight}
+    )
+    (result_dir / "result.json").write_text(
+        result.model_dump_json(),
+        encoding="utf-8",
+    )
+    write_cloud_index(
+        export_queue_root,
+        [
+            ExportPackIndexEntry(
+                pack_id=task.source_pack_id,
+                task_id="export-task-test",
+                pack_name=task.source_pack_name,
+                export_date=datetime(2026, 7, 14, tzinfo=UTC).date(),
+                generated_at=datetime(2026, 7, 14, tzinfo=UTC),
+                accepted_at=datetime(2026, 7, 14, 1, tzinfo=UTC),
+                pack_sha256=task.source_pack_sha256,
+                pack_size_bytes=1024,
+                snapshot_id=task.source_snapshot_id,
+                authoritative_input_snapshot=True,
+                nas_artifact_validated=True,
+                control_plane_receipt_verified=True,
+                download_ready=True,
+                download_relative_path="2026/07/14/expert-pack-test/expert.zip",
+                selected_v5_bundle_sha256="b" * 64,
+                acceptance_set_id="acceptance-test",
+                worker_id="nas-export-worker-test",
+                worker_commit="c" * 40,
+            )
+        ],
+    )
+
+    summary = import_ai_research_results(
+        queue_root,
+        lake_root=tmp_path / "lake",
+        export_queue_root=export_queue_root,
+    )
+
+    assert summary["imported"] == 1
+    assert summary["rejected"] == 0
+    assert summary["warnings"] == []
+    assert load_cloud_index(export_queue_root)[0].ai_consumed is True
 
 
 def test_import_validation_rejects_hallucinated_evidence_members() -> None:

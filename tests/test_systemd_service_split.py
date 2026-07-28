@@ -337,8 +337,8 @@ def test_candidate_research_refresh_is_separate_from_alpha_evidence():
     assert "/usr/bin/timeout 45m" in refresh_unit
     assert "TimeoutStartSec=55min" in refresh_unit
     assert "CPUQuota=40%" in refresh_unit
-    assert "MemoryHigh=900M" in refresh_unit
-    assert "MemoryMax=1200M" in refresh_unit
+    assert "MemoryHigh=1280M" in refresh_unit
+    assert "MemoryMax=1536M" in refresh_unit
 
     assert "build-regime-router" in regime_unit
     assert "/var/lock/quant-lab-v5-regime-router.lock" in regime_unit

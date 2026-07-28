@@ -30,6 +30,7 @@ from quant_lab.export_plane.contracts import (
     ExportTaskState,
     ExportTaskStatus,
 )
+from quant_lab.export_plane.receipt import import_export_receipts
 from quant_lab.export_plane.signatures import (
     load_public_key,
     load_signing_key,
@@ -1165,6 +1166,53 @@ def test_worker_uploads_are_group_readable_for_cloud_services(
     assert commands[0][0] == "scp"
     assert commands[1][0] == "ssh"
     assert commands[1][-1] == "chmod 0660 /queue/status/task.json.partial"
+
+
+def test_worker_scp_upload_retries_transient_failures(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    commands: list[list[str]] = []
+    sleeps: list[int] = []
+
+    def fake_run(command, **_kwargs):
+        commands.append(command)
+        if command[0] == "scp" and sum(item[0] == "scp" for item in commands) < 3:
+            raise export_runner.subprocess.CalledProcessError(1, command)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(export_runner.subprocess, "run", fake_run)
+    monkeypatch.setattr(export_runner, "_sleep", sleeps.append)
+    config = SimpleNamespace(
+        ssh_host="cloud.example",
+        ssh_port=22,
+        ssh_user="quant-export",
+        ssh_key_path=tmp_path / "id_ed25519",
+        known_hosts_path=tmp_path / "known_hosts",
+    )
+    local = tmp_path / "receipt.json"
+    local.write_text("{}\n", encoding="utf-8")
+
+    export_runner._scp_to(config, local, "/queue/receipts/receipt.json")  # noqa: SLF001
+
+    assert [command[0] for command in commands] == ["scp", "scp", "scp", "ssh"]
+    assert sleeps == [1, 2]
+
+
+def test_receipt_importer_ignores_hidden_partial_uploads(tmp_path: Path) -> None:
+    _, worker_public_key = _keys(tmp_path)
+    hidden = tmp_path / "queue" / "receipts" / "inbox" / ".task.123.partial"
+    hidden.mkdir(parents=True)
+
+    report = import_export_receipts(
+        queue_root=tmp_path / "queue",
+        worker_public_key_path=worker_public_key,
+        worker_key_id="nas-export-v1",
+    )
+
+    assert report == {"imported": [], "rejected": [], "pack_count": 0}
+    assert hidden.is_dir()
+    assert not (tmp_path / "queue" / "receipts" / "rejected" / hidden.name).exists()
 
 
 def test_worker_status_uploads_are_serialized(tmp_path: Path, monkeypatch) -> None:

@@ -38,9 +38,12 @@ def import_export_receipts(
     index = load_cloud_index(root)
     indexed = {item.pack_id: item for item in index}
     inbox = root / "receipts" / "inbox"
-    for receipt_dir in sorted(inbox.iterdir())[: max(1, max_receipts)]:
-        if not receipt_dir.is_dir():
-            continue
+    receipt_dirs = sorted(
+        path
+        for path in inbox.iterdir()
+        if path.is_dir() and not path.name.startswith(".")
+    )
+    for receipt_dir in receipt_dirs[: max(1, max_receipts)]:
         try:
             receipt = ExportWorkerReceipt.model_validate_json(
                 (receipt_dir / "receipt.json").read_text(encoding="utf-8")

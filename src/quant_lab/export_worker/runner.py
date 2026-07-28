@@ -591,7 +591,19 @@ def _scp_to(config: Config, local_path: Path, remote_path: str) -> None:
         str(local_path),
         f"{config.ssh_user}@{config.ssh_host}:{remote_path}",
     ]
-    subprocess.run(command, check=True, capture_output=True, text=True, timeout=300)
+    for attempt in range(1, 4):
+        try:
+            subprocess.run(command, check=True, capture_output=True, text=True, timeout=300)
+            break
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+            if attempt == 3:
+                raise
+            LOG.warning(
+                "scp_upload_retry attempt=%s remote_path=%s",
+                attempt,
+                remote_path,
+            )
+            _sleep(attempt)
     _ssh(config, ["chmod", "0660", remote_path])
 
 

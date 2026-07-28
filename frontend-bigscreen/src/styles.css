@@ -185,7 +185,7 @@ html[data-web-v2-layout="fluid"] .page-strategy .market{height:auto;min-height:0
   .research-compute-panel{border-right:0;border-bottom:1px solid rgba(80,169,255,.28);padding:0 0 18px}
   .research-compute-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
 }
-.ai-research{min-width:0;display:grid;grid-template-rows:auto auto 96px 94px minmax(0,1fr);gap:12px}
+.ai-research{min-width:0;display:grid;grid-template-rows:auto auto 96px minmax(94px,auto) minmax(0,1fr);gap:12px}
 .ai-research>*,.ai-work-grid>*,.ai-evidence-grid>*{min-width:0}
 .ai-head{min-width:0;display:flex;align-items:flex-start;justify-content:space-between;gap:16px}
 .ai-status{height:34px;display:flex;align-items:center;gap:8px;border:1px solid rgba(80,169,255,.46);border-radius:8px;padding:0 12px;background:rgba(7,29,53,.72);font-size:12px;font-weight:800}

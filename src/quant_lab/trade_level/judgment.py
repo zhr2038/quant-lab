@@ -65,6 +65,7 @@ V5_CANDIDATE_EVENT_DATASET = Path("silver") / "v5_candidate_event"
 V5_TRADE_EVENT_DATASET = Path("silver") / "v5_trade_event"
 V5_ROUNDTRIP_DATASET = Path("silver") / "v5_roundtrip"
 V5_ORDER_LIFECYCLE_DATASET = Path("silver") / "v5_order_lifecycle"
+V5_DECISION_AUDIT_DATASET = Path("silver") / "v5_decision_audit"
 V5_CANDIDATE_LABEL_DATASET = Path("gold") / "v5_candidate_label"
 RISK_PERMISSION_DATASET = Path("gold") / "risk_permission"
 TRADE_LEVEL_CONTROL_OUTPUT_SPECS = (
@@ -292,6 +293,11 @@ def build_and_publish_trade_level_judgment(
         v5_trades=read_parquet_dataset(root / V5_TRADE_EVENT_DATASET),
         v5_roundtrips=read_parquet_dataset(root / V5_ROUNDTRIP_DATASET),
         order_lifecycles=read_parquet_dataset(root / V5_ORDER_LIFECYCLE_DATASET),
+        decision_audits=(
+            read_parquet_dataset(root / V5_DECISION_AUDIT_DATASET)
+            if (root / V5_DECISION_AUDIT_DATASET).exists()
+            else pl.DataFrame()
+        ),
         as_of_date=day,
         created_at=generated_at,
     )
@@ -589,6 +595,7 @@ def build_trade_level_frames_from_sources(
     v5_trades: pl.DataFrame,
     v5_roundtrips: pl.DataFrame | None = None,
     order_lifecycles: pl.DataFrame | None = None,
+    decision_audits: pl.DataFrame | None = None,
     as_of_date: str | date | None = None,
     created_at: datetime | None = None,
 ) -> dict[str, pl.DataFrame]:
@@ -602,6 +609,7 @@ def build_trade_level_frames_from_sources(
         risk_permissions=risk_permissions,
         v5_trades=v5_trades,
         order_lifecycles=order_lifecycles if order_lifecycles is not None else pl.DataFrame(),
+        decision_audits=decision_audits if decision_audits is not None else pl.DataFrame(),
         created_at=generated_at,
     )
     labels = build_trade_opportunity_labels(
@@ -879,6 +887,7 @@ def build_trade_opportunity_events(
     risk_permissions: pl.DataFrame | None = None,
     v5_trades: pl.DataFrame | None = None,
     order_lifecycles: pl.DataFrame | None = None,
+    decision_audits: pl.DataFrame | None = None,
     created_at: datetime | None = None,
 ) -> pl.DataFrame:
     if candidate_events.is_empty():
@@ -888,6 +897,9 @@ def build_trade_opportunity_events(
     trade_frame = v5_trades if v5_trades is not None else pl.DataFrame()
     lifecycle_frame = order_lifecycles if order_lifecycles is not None else pl.DataFrame()
     risk_rows = risk_frame.to_dicts()
+    audit_permissions = _decision_audit_permission_lookup(
+        decision_audits if decision_audits is not None else pl.DataFrame()
+    )
     actual_lookup = _actual_submission_lookup(trade_frame, lifecycle_frame)
     rows: list[dict[str, Any]] = []
     for raw in candidate_events.to_dicts():
@@ -900,6 +912,9 @@ def build_trade_opportunity_events(
             payload,
             risk_rows,
             decision_ts=decision_ts,
+            decision_audit_context=audit_permissions.get(
+                _text(_first(raw, payload, "run_id"))
+            ),
         )
         row = _candidate_event_row(raw, payload, risk_row, actual_lookup, created)
         rows.append(row)
@@ -1576,18 +1591,46 @@ def _actual_submission_lookup(
     return lookup
 
 
+def _decision_audit_permission_lookup(
+    decision_audits: pl.DataFrame,
+) -> dict[str, dict[str, Any]]:
+    lookup: dict[str, dict[str, Any]] = {}
+    if decision_audits.is_empty():
+        return lookup
+    ordered = sorted(
+        decision_audits.to_dicts(),
+        key=lambda row: _timestamp(
+            row.get("bundle_ts")
+            or row.get("ingest_ts")
+            or row.get("ts_utc")
+        )
+        or datetime.min.replace(tzinfo=UTC),
+    )
+    for row in ordered:
+        payload = _payload(row)
+        run_id = _text(_first(row, payload, "run_id"))
+        if not run_id:
+            continue
+        context = _signed_risk_permission_context(row, payload)
+        if context:
+            lookup[run_id] = dict(context)
+    return lookup
+
+
 def _risk_permission_at_decision(
     raw: dict[str, Any],
     payload: dict[str, Any],
     risk_rows: list[dict[str, Any]],
     *,
     decision_ts: datetime | None,
+    decision_audit_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     signed = _signed_risk_permission_context(raw, payload)
     if signed:
         signed_as_of = _timestamp(
             signed.get("as_of_ts")
             or signed.get("risk_permission_as_of_ts")
+            or signed.get("remote_permission_as_of_ts")
             or signed.get("generated_at")
         )
         if decision_ts is not None and (
@@ -1597,6 +1640,20 @@ def _risk_permission_at_decision(
                 signed,
                 source="candidate_event_signed_context",
                 as_of_ts=signed_as_of,
+            )
+
+    if decision_audit_context:
+        audit_as_of = _timestamp(
+            decision_audit_context.get("remote_permission_as_of_ts")
+            or decision_audit_context.get("risk_permission_as_of_ts")
+            or decision_audit_context.get("as_of_ts")
+            or decision_audit_context.get("response_ts")
+        )
+        if decision_ts is not None and audit_as_of is not None and audit_as_of <= decision_ts:
+            return _normalized_risk_permission_context(
+                decision_audit_context,
+                source="v5_decision_audit_run_context",
+                as_of_ts=audit_as_of,
             )
 
     eligible: list[tuple[datetime, dict[str, Any]]] = []
@@ -1649,6 +1706,8 @@ def _signed_risk_permission_context(
                 "quant_lab_permission",
                 "risk_permission_status",
                 "quant_lab_permission_status",
+                "raw_permission_decision",
+                "raw_permission_status",
             )
         ):
             contexts.append(source)
@@ -1657,11 +1716,14 @@ def _signed_risk_permission_context(
             context.get("permission")
             or context.get("quant_lab_permission")
             or context.get("risk_permission_value")
+            or context.get("raw_permission_decision")
         )
         status = _text(
             context.get("permission_status")
             or context.get("risk_permission_status")
             or context.get("quant_lab_permission_status")
+            or context.get("raw_permission_status")
+            or context.get("remote_permission_status")
         )
         if permission or status:
             return context
@@ -1678,11 +1740,14 @@ def _normalized_risk_permission_context(
         context.get("permission")
         or context.get("quant_lab_permission")
         or context.get("risk_permission_value")
+        or context.get("raw_permission_decision")
     ).upper()
     status = _text(
         context.get("permission_status")
         or context.get("risk_permission_status")
         or context.get("quant_lab_permission_status")
+        or context.get("raw_permission_status")
+        or context.get("remote_permission_status")
     ).upper()
     return {
         "permission": permission or "UNKNOWN",

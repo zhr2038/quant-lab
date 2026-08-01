@@ -352,6 +352,43 @@ def test_trade_opportunity_event_prefers_signed_permission_context():
     assert "signed_context_block" in event["quant_lab_live_block_reasons"]
 
 
+def test_trade_opportunity_event_backfills_permission_from_same_run_decision_audit():
+    candidate = _sol_candidate()
+    candidate["decision_ts"] = datetime(2026, 7, 1, 10, tzinfo=UTC)
+    candidate["ts_utc"] = candidate["decision_ts"]
+    event = build_trade_opportunity_events(
+        pl.DataFrame([candidate]),
+        risk_permissions=pl.DataFrame(),
+        v5_trades=pl.DataFrame(),
+        decision_audits=pl.DataFrame(
+            [
+                {
+                    "run_id": "run-sol",
+                    "bundle_ts": datetime(2026, 7, 1, 10, 5, tzinfo=UTC),
+                    "raw_payload_json": json.dumps(
+                        {
+                            "run_id": "run-sol",
+                            "quant_lab": {
+                                "raw_permission_decision": "ABORT",
+                                "raw_permission_status": "ACTIVE_ABORT",
+                                "remote_permission_as_of_ts": "2026-07-01T09:59:00Z",
+                                "live_block_reasons": ["no_strategy_live_small_ready"],
+                                "allowed_live_modes": [],
+                            },
+                        }
+                    ),
+                }
+            ]
+        ),
+        created_at=datetime(2026, 7, 1, 12, tzinfo=UTC),
+    ).row(0, named=True)
+
+    assert event["quant_lab_permission"] == "ABORT"
+    assert event["quant_lab_permission_status"] == "ACTIVE_ABORT"
+    assert event["risk_permission_source"] == "v5_decision_audit_run_context"
+    assert event["risk_permission_as_of_ts"] == datetime(2026, 7, 1, 9, 59, tzinfo=UTC)
+
+
 def test_missing_point_in_time_risk_permission_fails_closed():
     candidate = _sol_candidate()
     candidate["decision_ts"] = datetime(2026, 7, 1, 10, tzinfo=UTC)
@@ -606,11 +643,11 @@ def test_sol_live_success_becomes_learning_sample_not_live_allow():
         v5_roundtrips=pl.DataFrame(
             [
                 {
-                    "open_run_id": "run-sol",
-                    "close_run_id": "run-sol-exit",
+                    "run_id": "run-sol-exit",
                     "symbol": "SOL-USDT",
-                    "open_time_utc": datetime(2026, 6, 29, 13, 0, 51, tzinfo=UTC),
-                    "close_time_utc": datetime(2026, 6, 29, 18, 1, tzinfo=UTC),
+                    "entry_ts": datetime(2026, 6, 29, 13, 0, 51, tzinfo=UTC),
+                    "exit_ts": datetime(2026, 6, 29, 18, 1, tzinfo=UTC),
+                    "roundtrip_status": "closed",
                     "net_bps": "9.66",
                     "net_pnl_usdt": "0.01527",
                 }
@@ -683,6 +720,25 @@ def test_live_sample_prefers_actual_roundtrip_over_negative_fixed_horizon_label(
     candidate = _sol_candidate()
     candidate["decision_ts"] = datetime(2026, 6, 29, 13, 0, 51, tzinfo=UTC)
     candidate["ts_utc"] = candidate["decision_ts"]
+    exit_lifecycle = {
+        "run_id": "run-sol-exit",
+        "symbol": "SOL-USDT",
+        "ts_utc": datetime(2026, 6, 29, 18, 1, tzinfo=UTC),
+        "side": "sell",
+        "intent": "CLOSE_LONG",
+        "lifecycle_id": "olc-sol-exit",
+        "avg_fill_px": "75.18",
+        "filled_qty": "0.213491",
+        "notional_usdt": "16.05025338",
+        "fee_usdt": "0.01605025338",
+        "exit_reason": "protect_profit_lock_trailing",
+        "raw_payload_json": (
+            '{"exit_reason":"protect_profit_lock_trailing",'
+            '"realized_total_cost_bps":24.6,'
+            '"first_fill_ts":"2026-06-29T18:01:00Z",'
+            '"last_fill_ts":"2026-06-29T18:01:00Z"}'
+        ),
+    }
     frames = build_trade_level_frames_from_sources(
         candidate_events=pl.DataFrame([candidate]),
         candidate_labels=pl.DataFrame(
@@ -752,28 +808,7 @@ def test_live_sample_prefers_actual_roundtrip_over_negative_fixed_horizon_label(
                 }
             ]
         ),
-        order_lifecycles=pl.DataFrame(
-            [
-                {
-                    "run_id": "run-sol-exit",
-                    "symbol": "SOL-USDT",
-                    "ts_utc": datetime(2026, 6, 29, 18, 1, tzinfo=UTC),
-                    "side": "sell",
-                    "intent": "CLOSE_LONG",
-                    "avg_fill_px": "75.18",
-                    "filled_qty": "0.213491",
-                    "notional_usdt": "16.05025338",
-                    "fee_usdt": "0.01605025338",
-                    "exit_reason": "protect_profit_lock_trailing",
-                    "raw_payload_json": (
-                        '{"exit_reason":"protect_profit_lock_trailing",'
-                        '"realized_total_cost_bps":24.6,'
-                        '"first_fill_ts":"2026-06-29T18:01:00Z",'
-                        '"last_fill_ts":"2026-06-29T18:01:00Z"}'
-                    ),
-                }
-            ]
-        ),
+        order_lifecycles=pl.DataFrame([exit_lifecycle, dict(exit_lifecycle)]),
         created_at=datetime(2026, 6, 29, 19, tzinfo=UTC),
     )
 
@@ -806,6 +841,93 @@ def test_live_sample_prefers_actual_roundtrip_over_negative_fixed_horizon_label(
     assert audit["false_block"] is True
     assert opportunity["after_cost_bps"] == pytest.approx(expected_bps)
     assert opportunity["regret_type"] == "false_block"
+
+
+def test_open_canonical_roundtrip_rejects_descriptive_exit_reason_as_real_exit():
+    candidate = _sol_candidate()
+    candidate["decision_ts"] = datetime(2026, 6, 8, 2, 0, tzinfo=UTC)
+    candidate["ts_utc"] = candidate["decision_ts"]
+    lifecycle = {
+        "run_id": "run-sol",
+        "symbol": "SOL-USDT",
+        "ts_utc": datetime(2026, 6, 8, 2, 1, tzinfo=UTC),
+        "side": "buy",
+        "intent": "OPEN_LONG",
+        "lifecycle_id": "olc-entry-only",
+        "avg_fill_px": "100.0",
+        "filled_qty": "0.1",
+        "notional_usdt": "10.0",
+        "fee_usdt": "0.01",
+        "exit_reason": "market_impulse_probe",
+    }
+    frames = build_trade_level_frames_from_sources(
+        candidate_events=pl.DataFrame([candidate]),
+        candidate_labels=pl.DataFrame(
+            [
+                {
+                    "candidate_id": "sol-cand-1",
+                    "run_id": "run-sol",
+                    "symbol": "SOL-USDT",
+                    "strategy_candidate": "v5.local_alpha6",
+                    "horizon_hours": 24,
+                    "net_bps_after_cost": 292.4,
+                    "label_status": "complete",
+                    "label_reason": "ok",
+                }
+            ]
+        ),
+        risk_permissions=pl.DataFrame(
+            [
+                {
+                    "permission": "ABORT",
+                    "permission_status": "ACTIVE_ABORT",
+                    "as_of_ts": datetime(2026, 6, 8, 1, 59, tzinfo=UTC),
+                    "live_block_reasons": '["no_strategy_live_small_ready"]',
+                    "allowed_live_modes": "[]",
+                }
+            ]
+        ),
+        v5_trades=pl.DataFrame(
+            [
+                {
+                    "run_id": "run-sol",
+                    "symbol": "SOL-USDT",
+                    "ts_utc": datetime(2026, 6, 8, 2, 1, tzinfo=UTC),
+                    "side": "buy",
+                    "intent": "OPEN_LONG",
+                    "action": "open_long",
+                    "trade_id": "trade-entry-only",
+                    "price": "100.0",
+                    "qty": "0.1",
+                    "notional_usdt": "10.0",
+                    "fee_usdt": "0.01",
+                }
+            ]
+        ),
+        v5_roundtrips=pl.DataFrame(
+            [
+                {
+                    "run_id": "run-sol",
+                    "symbol": "SOL-USDT",
+                    "roundtrip_status": "open",
+                    "exit_ts": "not_observable",
+                    "net_bps": "not_observable",
+                }
+            ]
+        ),
+        order_lifecycles=pl.DataFrame([lifecycle, dict(lifecycle)]),
+        created_at=datetime(2026, 6, 9, 3, tzinfo=UTC),
+    )
+
+    sample = frames["v5_trade_learning_sample"].row(0, named=True)
+    opportunity = frames["quant_lab_opportunity_cost_event"].row(0, named=True)
+
+    assert sample["sample_type"] == "LIVE_PENDING"
+    assert sample["actual_exit_ts"] is None
+    assert sample["actual_roundtrip_net_bps"] is None
+    assert sample["learning_return_basis"] == "actual_roundtrip_pending"
+    assert sample["fixed_horizon_net_bps"] == pytest.approx(292.4)
+    assert opportunity["after_cost_bps"] == pytest.approx(292.4)
 
 
 def test_learning_sample_schema_does_not_infer_nullable_float_as_null():

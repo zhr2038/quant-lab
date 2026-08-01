@@ -94,7 +94,8 @@ def build_v5_trade_learning_samples(
         lifecycle_frame,
     )
     roundtrip_lookup = _roundtrip_lookup(
-        v5_roundtrips if v5_roundtrips is not None else pl.DataFrame()
+        v5_roundtrips if v5_roundtrips is not None else pl.DataFrame(),
+        fills=fill_lookup,
     )
     lifecycle_lookup = _lifecycle_lookup(
         lifecycle_frame,
@@ -116,7 +117,13 @@ def build_v5_trade_learning_samples(
         lifecycle = lifecycle_lookup.get(
             (_text(event.get("run_id")), _text(event.get("symbol"))), {}
         )
-        actual = _actual_roundtrip_outcome(fill, lifecycle, decision_ts)
+        actual = (
+            {}
+            if _canonical_roundtrip_is_open(roundtrip)
+            else _actual_roundtrip_outcome(fill, lifecycle, decision_ts)
+        )
+        if not _canonical_roundtrip_is_open(roundtrip):
+            actual = _merge_canonical_roundtrip(actual, roundtrip, decision_ts)
         actual_net_bps = _float(actual.get("actual_roundtrip_net_bps"))
         actual_net_pnl = _float(actual.get("actual_roundtrip_net_pnl_usdt"))
         fill_to_fill_net_bps = _float(roundtrip.get("fill_to_fill_net_bps"))
@@ -127,6 +134,8 @@ def build_v5_trade_learning_samples(
         primary_pnl = actual_net_pnl if actual_submitted else None
         learning_return_basis = (
             "actual_execution_adjusted_roundtrip"
+            if actual_submitted and actual_net_bps is not None
+            else "actual_roundtrip_pending"
             if actual_submitted
             else "counterfactual_fixed_horizon_after_cost"
         )
@@ -238,14 +247,25 @@ def build_v5_trade_learning_samples(
     return _frame(rows, V5_TRADE_LEARNING_SAMPLE_SCHEMA)
 
 
-def _roundtrip_lookup(frame: pl.DataFrame) -> dict[tuple[str, str], dict[str, Any]]:
+def _roundtrip_lookup(
+    frame: pl.DataFrame,
+    *,
+    fills: dict[tuple[str, str], dict[str, Any]] | None = None,
+) -> dict[tuple[str, str], dict[str, Any]]:
     lookup: dict[tuple[str, str], dict[str, Any]] = {}
     if frame.is_empty():
         return lookup
+    closed_by_symbol: dict[str, list[dict[str, Any]]] = {}
     for row in sorted(
         frame.to_dicts(),
         key=lambda item: _timestamp(
-            item.get("close_time_utc") or item.get("close_ts") or item.get("ts_utc")
+            item.get("bundle_ts")
+            or item.get("ingest_ts")
+            or item.get("close_time_utc")
+            or item.get("close_ts")
+            or item.get("exit_ts")
+            or item.get("ts_utc")
+            or item.get("timestamp")
         )
         or datetime.min.replace(tzinfo=UTC),
     ):
@@ -253,7 +273,32 @@ def _roundtrip_lookup(frame: pl.DataFrame) -> dict[tuple[str, str], dict[str, An
         run_id = _text(row.get("open_run_id") or row.get("run_id"))
         if not run_id or not symbol:
             continue
-        lookup[(run_id, symbol)] = {
+        status = _text(
+            row.get("roundtrip_status")
+            or row.get("execution_status")
+            or row.get("status")
+        ).lower()
+        details = {
+            "roundtrip_status": status,
+            "entry_ts": _timestamp(
+                row.get("open_time_utc")
+                or row.get("open_ts")
+                or row.get("entry_ts")
+            ),
+            "exit_ts": _timestamp(
+                row.get("close_time_utc")
+                or row.get("close_ts")
+                or row.get("exit_ts")
+            ),
+            "exit_reason": _text(row.get("exit_reason")),
+            "hold_minutes": _first_float(row.get("hold_minutes")),
+            "observed_at": _timestamp(
+                row.get("bundle_ts")
+                or row.get("ingest_ts")
+                or row.get("close_time_utc")
+                or row.get("close_ts")
+                or row.get("exit_ts")
+            ),
             "fill_to_fill_net_bps": _first_float(
                 row.get("fill_to_fill_net_bps"),
                 row.get("net_bps"),
@@ -265,6 +310,32 @@ def _roundtrip_lookup(frame: pl.DataFrame) -> dict[tuple[str, str], dict[str, An
                 row.get("roundtrip_net_pnl_usdt"),
             ),
         }
+        lookup[(run_id, symbol)] = details
+        if _canonical_roundtrip_is_closed(details):
+            closed_by_symbol.setdefault(symbol, []).append(details)
+
+    for key, fill in (fills or {}).items():
+        entry_ts = _timestamp(fill.get("entry_ts"))
+        if entry_ts is None:
+            continue
+        candidates = [
+            candidate
+            for candidate in closed_by_symbol.get(key[1], [])
+            if candidate.get("entry_ts") is not None
+            and abs((candidate["entry_ts"] - entry_ts).total_seconds()) <= 300
+        ]
+        if not candidates:
+            continue
+        lookup[key] = min(
+            candidates,
+            key=lambda candidate: (
+                abs((candidate["entry_ts"] - entry_ts).total_seconds()),
+                -(
+                    candidate.get("observed_at")
+                    or datetime(1970, 1, 1, tzinfo=UTC)
+                ).timestamp(),
+            ),
+        )
     return lookup
 
 
@@ -293,7 +364,10 @@ def _fill_lookup(
 
 
 def _run_fill_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
-    ordered = sorted(rows, key=lambda row: _row_ts(row) or datetime.min.replace(tzinfo=UTC))
+    ordered = sorted(
+        _dedupe_execution_rows(rows),
+        key=lambda row: _row_ts(row) or datetime.min.replace(tzinfo=UTC),
+    )
     entry_rows = [row for row in ordered if _is_entry_row(row)]
     exit_rows = [row for row in ordered if _is_exit_row(row)]
     entry = entry_rows[0] if entry_rows else {}
@@ -344,7 +418,7 @@ def _lifecycle_exit_lookup(frame: pl.DataFrame) -> dict[tuple[str, str], dict[st
     if frame.is_empty():
         return lookup
     grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
-    for row in frame.to_dicts():
+    for row in _dedupe_execution_rows(frame.to_dicts()):
         if not _is_exit_row(row):
             continue
         key = (_text(row.get("run_id")), _text(row.get("symbol") or row.get("normalized_symbol")))
@@ -471,7 +545,7 @@ def _lifecycle_lookup(frame: pl.DataFrame) -> dict[tuple[str, str], dict[str, An
     if frame.is_empty():
         return lookup
     for row in sorted(
-        frame.to_dicts(),
+        _dedupe_execution_rows(frame.to_dicts()),
         key=lambda item: _timestamp(item.get("ts_utc")) or datetime.min.replace(tzinfo=UTC),
     ):
         key = (_text(row.get("run_id")), _text(row.get("symbol") or row.get("normalized_symbol")))
@@ -552,11 +626,119 @@ def _is_exit_row(row: dict[str, Any]) -> bool:
         or payload.get("action")
     ).lower()
     exit_reason = _text(row.get("exit_reason") or payload.get("exit_reason"))
-    return (
-        side == "sell"
-        or any(token in action for token in ("exit", "close", "sell"))
-        or bool(exit_reason)
+    if side == "sell" or any(token in action for token in ("exit", "close", "sell")):
+        return True
+    if side == "buy" or any(token in action for token in ("entry", "open_long", "open")):
+        return False
+    return bool(exit_reason)
+
+
+def _canonical_roundtrip_is_open(roundtrip: dict[str, Any]) -> bool:
+    status = _text(roundtrip.get("roundtrip_status")).lower()
+    return status in {
+        "open",
+        "pending",
+        "entry_only",
+        "not_observable",
+        "incomplete",
+        "recovery_required",
+    } and _timestamp(roundtrip.get("exit_ts")) is None
+
+
+def _canonical_roundtrip_is_closed(roundtrip: dict[str, Any]) -> bool:
+    status = _text(roundtrip.get("roundtrip_status")).lower()
+    has_exit = _timestamp(roundtrip.get("exit_ts")) is not None
+    has_result = _float(roundtrip.get("fill_to_fill_net_bps")) is not None
+    return has_exit and (
+        status in {"closed", "closed_flat", "complete", "completed"}
+        or (not status and has_result)
     )
+
+
+def _merge_canonical_roundtrip(
+    actual: dict[str, Any],
+    roundtrip: dict[str, Any],
+    decision_ts: datetime | None,
+) -> dict[str, Any]:
+    if not _canonical_roundtrip_is_closed(roundtrip):
+        return actual
+    merged = dict(actual)
+    exit_ts = _timestamp(roundtrip.get("exit_ts"))
+    entry_ts = _timestamp(roundtrip.get("entry_ts")) or decision_ts
+    merged["actual_exit_ts"] = merged.get("actual_exit_ts") or exit_ts
+    merged["actual_exit_reason"] = (
+        merged.get("actual_exit_reason") or _text(roundtrip.get("exit_reason"))
+    )
+    merged["actual_roundtrip_net_bps"] = _first_float(
+        merged.get("actual_roundtrip_net_bps"),
+        roundtrip.get("fill_to_fill_net_bps"),
+    )
+    merged["actual_roundtrip_net_pnl_usdt"] = _first_float(
+        merged.get("actual_roundtrip_net_pnl_usdt"),
+        roundtrip.get("fill_to_fill_net_pnl_usdt"),
+    )
+    if merged.get("actual_hold_minutes") is None:
+        merged["actual_hold_minutes"] = _first_float(roundtrip.get("hold_minutes"))
+        if merged["actual_hold_minutes"] is None and entry_ts is not None and exit_ts is not None:
+            merged["actual_hold_minutes"] = max(
+                0.0, (exit_ts - entry_ts).total_seconds() / 60.0
+            )
+    return merged
+
+
+def _dedupe_execution_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    selected: dict[tuple[str, ...], dict[str, Any]] = {}
+    anonymous: list[dict[str, Any]] = []
+    for row in rows:
+        identity = _execution_row_identity(row)
+        if identity is None:
+            anonymous.append(row)
+            continue
+        existing = selected.get(identity)
+        if existing is None or _execution_row_quality(row) > _execution_row_quality(existing):
+            selected[identity] = row
+    return [*selected.values(), *anonymous]
+
+
+def _execution_row_identity(row: dict[str, Any]) -> tuple[str, ...] | None:
+    payload = _payload(row)
+    symbol = _text(row.get("symbol") or row.get("normalized_symbol")).upper()
+    side = _text(row.get("side") or payload.get("side")).lower()
+    for field in (
+        "lifecycle_id",
+        "trade_id",
+        "trade_ids",
+        "exchange_order_id",
+        "order_id",
+        "cl_ord_id",
+    ):
+        value = _text(row.get(field) or payload.get(field))
+        if value:
+            return (field, value, symbol, side)
+    return None
+
+
+def _execution_row_quality(row: dict[str, Any]) -> tuple[int, datetime]:
+    payload = _payload(row)
+    fields = (
+        "trade_id",
+        "trade_ids",
+        "first_fill_ts",
+        "last_fill_ts",
+        "filled_qty",
+        "qty",
+        "avg_fill_px",
+        "fill_px",
+        "price",
+        "notional_usdt",
+        "fee_usdt",
+    )
+    richness = sum(
+        1
+        for field in fields
+        if _text(row.get(field) or payload.get(field))
+    )
+    return richness, _row_ts(row) or datetime.min.replace(tzinfo=UTC)
 
 
 def _row_ts(row: dict[str, Any]) -> datetime | None:

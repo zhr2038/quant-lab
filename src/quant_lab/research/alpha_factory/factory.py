@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -47,6 +48,9 @@ from quant_lab.symbols import normalize_symbol
 SOURCE_NAME = "research.alpha_factory.v0.1"
 SCHEMA_VERSION = "alpha_factory.v0.1"
 MAX_DAILY_CANDIDATES = 200
+LOCAL_ALPHA_FACTORY_OVERWRITE_ENV = (
+    "QUANT_LAB_ALLOW_LOCAL_ALPHA_FACTORY_OVERWRITE"
+)
 FACTOR_BRIDGE_TEMPLATE_FAMILY = "factor_strategy_bridge"
 FACTOR_BRIDGE_CANDIDATE_PREFIX = "v5.factor_bridge."
 FAST_MICROSTRUCTURE_BRIDGE_CANDIDATE_PREFIX = "v5.fast_microstructure_bridge."
@@ -741,6 +745,7 @@ def build_and_publish_alpha_factory(
     max_candidates: int = MAX_DAILY_CANDIDATES,
 ) -> AlphaFactoryBuildResult:
     root = Path(lake_root)
+    _guard_nas_managed_alpha_factory(root)
     day = _parse_day(as_of_date)
     generated_at = datetime.now(UTC)
     registry = publish_alpha_factory_template_registry(root, generated_at=generated_at)
@@ -802,6 +807,33 @@ def build_and_publish_alpha_factory(
         warnings=list(second_stage.warnings)
         + ([] if candidates.height <= max_candidates else ["alpha_factory_candidate_cap_applied"]),
     )
+
+
+def _guard_nas_managed_alpha_factory(root: Path) -> None:
+    """Keep the legacy local builder from replacing NAS-owned Gold."""
+
+    if os.environ.get(LOCAL_ALPHA_FACTORY_OVERWRITE_ENV, "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        return
+    from quant_lab.research_plane.alpha_factory_publish import (
+        ALPHA_FACTORY_GENERATION_POINTER,
+    )
+
+    ownership_markers = [root / ALPHA_FACTORY_GENERATION_POINTER]
+    ownership_markers.extend(
+        root / spec.relative_path / "_research_generation.json"
+        for spec in ALPHA_FACTORY_COMPUTE_OUTPUT_SPECS
+    )
+    if any(path.is_file() for path in ownership_markers):
+        raise RuntimeError(
+            "nas_managed_alpha_factory_requires_research_plane; "
+            f"set {LOCAL_ALPHA_FACTORY_OVERWRITE_ENV}=1 only for "
+            "an approved break-glass replacement"
+        )
 
 
 def build_alpha_factory_candidates(

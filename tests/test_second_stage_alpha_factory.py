@@ -40,6 +40,27 @@ from quant_lab.research_worker.result_writer import write_alpha_factory_result_b
 from tests.helpers.factor_research import seed_verified_factor_generation
 
 
+def test_local_alpha_factory_builder_refuses_nas_managed_generation(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.delenv(
+        "QUANT_LAB_ALLOW_LOCAL_ALPHA_FACTORY_OVERWRITE",
+        raising=False,
+    )
+    pointer = tmp_path / "lake" / "gold" / "alpha_factory_generation.json"
+    pointer.parent.mkdir(parents=True, exist_ok=True)
+    pointer.write_text("{}", encoding="utf-8")
+
+    with pytest.raises(
+        RuntimeError,
+        match="nas_managed_alpha_factory_requires_research_plane",
+    ):
+        build_and_publish_alpha_factory(tmp_path / "lake")
+
+    assert pointer.is_file()
+
+
 def create_alpha_factory_task(
     lake_root,
     queue_root,

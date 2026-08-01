@@ -4865,7 +4865,6 @@ def test_refresh_v5_derived_outputs_uses_incremental_research_builds(
 ):
     import quant_lab.reports.enforce_readiness as enforce_readiness
     import quant_lab.research.alpha_discovery as alpha_discovery
-    import quant_lab.research.alpha_factory as alpha_factory
     import quant_lab.research.candidate_labels as candidate_labels
     import quant_lab.research.diagnostics_refresh as diagnostics_refresh
     import quant_lab.research.entry_quality as entry_quality
@@ -4875,6 +4874,7 @@ def test_refresh_v5_derived_outputs_uses_incremental_research_builds(
     import quant_lab.research.regime_router as regime_router
     import quant_lab.research.strategy_evidence as strategy_evidence
     import quant_lab.strategy_telemetry.analyze as telemetry_analyze
+    import quant_lab.trade_level.judgment as trade_level_judgment
 
     calls: dict[str, list[dict[str, object]]] = {}
 
@@ -4895,6 +4895,11 @@ def test_refresh_v5_derived_outputs_uses_incremental_research_builds(
         strategy_evidence,
         "build_and_publish_strategy_evidence",
         capture("strategy_evidence"),
+    )
+    monkeypatch.setattr(
+        trade_level_judgment,
+        "build_and_publish_trade_level_control",
+        capture("trade_level_control"),
     )
     monkeypatch.setattr(
         expanded_universe,
@@ -4925,11 +4930,6 @@ def test_refresh_v5_derived_outputs_uses_incremental_research_builds(
         entry_quality,
         "build_and_publish_entry_quality",
         capture("entry_quality"),
-    )
-    monkeypatch.setattr(
-        alpha_factory,
-        "build_and_publish_alpha_factory",
-        capture("alpha_factory"),
     )
     monkeypatch.setattr(
         regime_router,
@@ -4969,11 +4969,22 @@ def test_refresh_v5_derived_outputs_uses_incremental_research_builds(
         call["kwargs"].get("include_legacy_outcome_counts") is False
         for call in calls["alpha_discovery"]
     )
-    assert calls["alpha_factory"][0]["kwargs"] == {
+    assert calls["trade_level_control"][0]["kwargs"] == {
         "as_of_date": export_day,
-        "lookback_days": daily_export_module.EXPORT_V5_ALPHA_FACTORY_LOOKBACK_DAYS,
-        "max_candidates": daily_export_module.EXPORT_V5_ALPHA_FACTORY_MAX_CANDIDATES,
     }
+    assert "alpha_factory" not in calls
+
+
+def test_v5_derived_refresh_never_recomputes_nas_managed_generations():
+    bodies = dict(daily_export_module._v5_derived_refresh_step_bodies())
+
+    assert "build_trade_level_control" in bodies
+    assert "build_and_publish_trade_level_control" in bodies["build_trade_level_control"]
+    assert all(
+        "build_and_publish_trade_level_judgment" not in body
+        and "build_and_publish_alpha_factory" not in body
+        for body in bodies.values()
+    )
 
 
 def test_refresh_v5_derived_outputs_subprocess_uses_web_memory_limit_default(

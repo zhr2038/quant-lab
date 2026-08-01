@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from collections import Counter
 from collections.abc import Mapping
 from datetime import UTC, date, datetime, timedelta
@@ -60,6 +61,9 @@ OPPORTUNITY_COST_BY_BUCKET_DATASET = Path("gold") / "opportunity_cost_by_bucket"
 DECISION_REGRET_DATASET = Path("gold") / "quant_lab_decision_regret"
 TRADE_LEVEL_CONTROL_STATUS = Path("gold") / "trade_level_control_status.json"
 DEFAULT_TRADE_LEVEL_HISTORY_MAX_AGE_HOURS = 36
+LOCAL_TRADE_LEVEL_HISTORY_OVERWRITE_ENV = (
+    "QUANT_LAB_ALLOW_LOCAL_TRADE_LEVEL_HISTORY_OVERWRITE"
+)
 
 V5_CANDIDATE_EVENT_DATASET = Path("silver") / "v5_candidate_event"
 V5_TRADE_EVENT_DATASET = Path("silver") / "v5_trade_event"
@@ -284,6 +288,7 @@ def build_and_publish_trade_level_judgment(
     as_of_date: str | date | None = None,
 ) -> TradeLevelBuildResult:
     root = Path(lake_root)
+    _guard_nas_managed_trade_level_history(root)
     day = _parse_day(as_of_date)
     generated_at = datetime.now(UTC)
     frames = build_trade_level_frames_from_sources(
@@ -347,6 +352,35 @@ def build_and_publish_trade_level_judgment(
         decision_regret_rows=frames["quant_lab_decision_regret"].height,
         warnings=warnings,
     )
+
+
+def _guard_nas_managed_trade_level_history(root: Path) -> None:
+    """Keep the maintenance builder from replacing NAS-owned Gold."""
+
+    if os.environ.get(LOCAL_TRADE_LEVEL_HISTORY_OVERWRITE_ENV, "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        return
+    from quant_lab.research_plane.trade_level_history_publish import (
+        TRADE_LEVEL_HISTORY_DATASETS,
+        TRADE_LEVEL_HISTORY_GENERATION_POINTER,
+        TRADE_LEVEL_HISTORY_SIDECAR,
+    )
+
+    ownership_markers = [root / TRADE_LEVEL_HISTORY_GENERATION_POINTER]
+    ownership_markers.extend(
+        root / relative_path / TRADE_LEVEL_HISTORY_SIDECAR
+        for relative_path in TRADE_LEVEL_HISTORY_DATASETS.values()
+    )
+    if any(path.is_file() for path in ownership_markers):
+        raise RuntimeError(
+            "nas_managed_trade_level_history_requires_research_plane; "
+            f"set {LOCAL_TRADE_LEVEL_HISTORY_OVERWRITE_ENV}=1 only for "
+            "an approved break-glass replacement"
+        )
 
 
 def build_and_publish_trade_level_control(

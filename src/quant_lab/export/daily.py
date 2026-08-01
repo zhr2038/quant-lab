@@ -10285,8 +10285,6 @@ def _parse_v5_context_ts(value: Any) -> datetime | None:
 
 
 EXPORT_V5_DERIVED_LOOKBACK_DAYS = 8
-EXPORT_V5_ALPHA_FACTORY_LOOKBACK_DAYS = 30
-EXPORT_V5_ALPHA_FACTORY_MAX_CANDIDATES = 200
 
 
 def _refresh_v5_derived_outputs(lake_root: Path, export_day: date) -> list[str]:
@@ -10331,11 +10329,11 @@ def _refresh_v5_derived_outputs(lake_root: Path, export_day: date) -> list[str]:
             ),
         ),
         (
-            "build_trade_level_judgment",
+            "build_trade_level_control",
             lambda: __import__(
                 "quant_lab.trade_level.judgment",
-                fromlist=["build_and_publish_trade_level_judgment"],
-            ).build_and_publish_trade_level_judgment(lake_root, as_of_date=export_day),
+                fromlist=["build_and_publish_trade_level_control"],
+            ).build_and_publish_trade_level_control(lake_root, as_of_date=export_day),
         ),
         (
             "build_expanded_universe_automation",
@@ -10397,19 +10395,7 @@ def _refresh_v5_derived_outputs(lake_root: Path, export_day: date) -> list[str]:
             ).build_and_publish_entry_quality(lake_root, as_of_date=export_day),
         ),
         (
-            "build_alpha_factory",
-            lambda: __import__(
-                "quant_lab.research.alpha_factory",
-                fromlist=["build_and_publish_alpha_factory"],
-            ).build_and_publish_alpha_factory(
-                lake_root,
-                as_of_date=export_day,
-                lookback_days=EXPORT_V5_ALPHA_FACTORY_LOOKBACK_DAYS,
-                max_candidates=EXPORT_V5_ALPHA_FACTORY_MAX_CANDIDATES,
-            ),
-        ),
-        (
-            "refresh_alpha_discovery_board_after_alpha_factory",
+            "refresh_alpha_discovery_board_from_current_alpha_generation",
             lambda: __import__(
                 "quant_lab.research.alpha_discovery",
                 fromlist=["build_and_publish_alpha_discovery_board"],
@@ -10472,12 +10458,6 @@ def _refresh_v5_derived_outputs_subprocess(lake_root: Path, export_day: date) ->
                     "QUANT_LAB_DERIVED_REFRESH_LAKE_ROOT": str(lake_root),
                     "QUANT_LAB_DERIVED_REFRESH_DATE": export_day.isoformat(),
                     "QUANT_LAB_DERIVED_REFRESH_LOOKBACK_DAYS": str(EXPORT_V5_DERIVED_LOOKBACK_DAYS),
-                    "QUANT_LAB_DERIVED_REFRESH_ALPHA_FACTORY_LOOKBACK_DAYS": str(
-                        EXPORT_V5_ALPHA_FACTORY_LOOKBACK_DAYS
-                    ),
-                    "QUANT_LAB_DERIVED_REFRESH_ALPHA_FACTORY_MAX_CANDIDATES": str(
-                        EXPORT_V5_ALPHA_FACTORY_MAX_CANDIDATES
-                    ),
                     "QUANT_LAB_DERIVED_REFRESH_MEMORY_MB": os.environ.get(
                         "QUANT_LAB_EXPORT_DERIVED_REFRESH_STEP_MEMORY_MB",
                         os.environ.get("QUANT_LAB_WEB_EXPORT_MEMORY_LIMIT_MB", "0"),
@@ -10537,12 +10517,6 @@ def _v5_derived_refresh_subprocess_code(body: str) -> str:
         "lake_root = Path(os.environ['QUANT_LAB_DERIVED_REFRESH_LAKE_ROOT'])\n"
         "export_day = date.fromisoformat(os.environ['QUANT_LAB_DERIVED_REFRESH_DATE'])\n"
         "lookback_days = int(os.environ['QUANT_LAB_DERIVED_REFRESH_LOOKBACK_DAYS'])\n"
-        "alpha_factory_lookback_days = int("
-        "os.environ['QUANT_LAB_DERIVED_REFRESH_ALPHA_FACTORY_LOOKBACK_DAYS']"
-        ")\n"
-        "alpha_factory_max_candidates = int("
-        "os.environ['QUANT_LAB_DERIVED_REFRESH_ALPHA_FACTORY_MAX_CANDIDATES']"
-        ")\n"
         f"{body}\n"
     )
 
@@ -10580,10 +10554,10 @@ def _v5_derived_refresh_step_bodies() -> list[tuple[str, str]]:
             ")",
         ),
         (
-            "build_trade_level_judgment",
+            "build_trade_level_control",
             "from quant_lab.trade_level.judgment import "
-            "build_and_publish_trade_level_judgment\n"
-            "build_and_publish_trade_level_judgment(lake_root, as_of_date=export_day)",
+            "build_and_publish_trade_level_control\n"
+            "build_and_publish_trade_level_control(lake_root, as_of_date=export_day)",
         ),
         (
             "build_expanded_universe_automation",
@@ -10632,17 +10606,7 @@ def _v5_derived_refresh_step_bodies() -> list[tuple[str, str]]:
             "build_and_publish_entry_quality(lake_root, as_of_date=export_day)",
         ),
         (
-            "build_alpha_factory",
-            "from quant_lab.research.alpha_factory import build_and_publish_alpha_factory\n"
-            "build_and_publish_alpha_factory("
-            "lake_root, "
-            "as_of_date=export_day, "
-            "lookback_days=alpha_factory_lookback_days, "
-            "max_candidates=alpha_factory_max_candidates"
-            ")",
-        ),
-        (
-            "refresh_alpha_discovery_board_after_alpha_factory",
+            "refresh_alpha_discovery_board_from_current_alpha_generation",
             "from quant_lab.research.alpha_discovery import "
             "build_and_publish_alpha_discovery_board\n"
             "build_and_publish_alpha_discovery_board("

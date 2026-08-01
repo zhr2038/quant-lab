@@ -9,6 +9,7 @@ import pytest
 from quant_lab.opportunity_cost.ledger import build_opportunity_cost_frames
 from quant_lab.trade_level.bucket_policy import build_trade_level_bucket_policy
 from quant_lab.trade_level.judgment import (
+    build_and_publish_trade_level_judgment,
     build_trade_level_frames_from_sources,
     build_trade_level_judgments,
     build_trade_opportunity_events,
@@ -16,6 +17,35 @@ from quant_lab.trade_level.judgment import (
 from quant_lab.trade_level.labels import build_trade_opportunity_labels
 from quant_lab.trade_level.opportunity_queue import build_trade_level_opportunity_queue
 from quant_lab.trade_level.similarity import build_trade_level_similarity_outcome
+
+
+@pytest.mark.parametrize(
+    "marker",
+    [
+        "gold/trade_level_history_generation.json",
+        "gold/trade_opportunity_event/_trade_level_history_generation.json",
+    ],
+)
+def test_local_trade_level_builder_refuses_nas_managed_generation(
+    tmp_path,
+    monkeypatch,
+    marker,
+):
+    monkeypatch.delenv(
+        "QUANT_LAB_ALLOW_LOCAL_TRADE_LEVEL_HISTORY_OVERWRITE",
+        raising=False,
+    )
+    marker_path = tmp_path / "lake" / marker
+    marker_path.parent.mkdir(parents=True, exist_ok=True)
+    marker_path.write_text("{}", encoding="utf-8")
+
+    with pytest.raises(
+        RuntimeError,
+        match="nas_managed_trade_level_history_requires_research_plane",
+    ):
+        build_and_publish_trade_level_judgment(tmp_path / "lake")
+
+    assert marker_path.is_file()
 
 
 def test_sol_high_confidence_abort_becomes_micro_canary_review():

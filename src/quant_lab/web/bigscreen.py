@@ -18,6 +18,7 @@ from typing import Any
 
 import polars as pl
 
+from quant_lab.ai_research.packet import ai_task_retry_status
 from quant_lab.data.market_bar_time import (
     DEFAULT_MARKET_BAR_TIMEFRAME,
     market_bar_close_ts,
@@ -869,9 +870,18 @@ def _ai_queue_status() -> dict[str, Any]:
             state_payload = _json_value(raw)
     except (OSError, json.JSONDecodeError):
         pass
+    retry_status = {}
+    task_id = str(state_payload.get("task_id") or "")
+    if task_id:
+        retry_status = ai_task_retry_status(
+            root,
+            task_id=task_id,
+            source_pack_sha256=str(state_payload.get("source_pack_sha256") or ""),
+        )
     return {
         "counts": counts,
         "last_task": state_payload,
+        "retry": retry_status,
         "warnings": warnings,
     }
 

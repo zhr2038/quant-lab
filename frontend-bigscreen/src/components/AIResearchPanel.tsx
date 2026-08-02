@@ -16,6 +16,8 @@ export function AIResearchPanel({ research }: { research: Record<string, unknown
   const counts = (research.counts ?? {}) as Record<string, unknown>;
   const queue = (research.queue ?? {}) as Record<string, unknown>;
   const queueCounts = (queue.counts ?? {}) as Record<string, unknown>;
+  const retry = (queue.retry ?? {}) as Record<string, unknown>;
+  const lastTask = (queue.last_task ?? {}) as Record<string, unknown>;
   const latest = (research.latest_run ?? {}) as Record<string, unknown>;
   const continuity = (research.continuity ?? {}) as Record<string, unknown>;
   const status = stringValue(research.status, "WAITING_FOR_FIRST_RESULT");
@@ -40,6 +42,10 @@ export function AIResearchPanel({ research }: { research: Record<string, unknown
   const sourcePackFreshness = stringValue(research.source_pack_freshness_status, "NOT_OBSERVABLE");
   const sourcePackIsStale = sourcePackFreshness === "STALE_SOURCE_PACK";
   const latestAvailablePackName = stringValue(research.latest_available_pack_name, "");
+  const retryState = stringValue(retry.retry_state, "NOT_FAILED");
+  const retryFailure = stringValue(retry.failure_summary, "");
+  const sourceAttempt = Number(lastTask.source_attempt ?? retry.attempt_count ?? 0);
+  const retryingLatestPack = Boolean(stringValue(lastTask.retry_of_task_id, ""));
   const stage1State = hasResult ? "COMPLETE" : "WAITING";
   const stage2State = !hasResult ? "WAITING" : stage2Allowed ? (stage2Attempts > 0 ? "COMPLETE" : "PENDING") : "GATED";
   const preflightStatus = stringValue(latest.preflight_status, "NOT_AVAILABLE");
@@ -62,8 +68,21 @@ export function AIResearchPanel({ research }: { research: Record<string, unknown
     : pending > 0 && hasResult
       ? `PENDING · ${sourcePackIsStale ? "OLD RESULT" : "LAST RESULT"}`
       : sourcePackIsStale
-        ? "STALE SOURCE PACK"
+        ? retryState === "EXHAUSTED"
+          ? "AUTO RETRY EXHAUSTED"
+          : retryState === "RETRY_DUE" || retryState === "COOLDOWN"
+            ? "AUTO RETRY SCHEDULED"
+            : "STALE SOURCE PACK"
       : status.replace(/_/g, " ");
+  const staleSourceMessage = retryingLatestPack && (pending > 0 || running > 0)
+    ? `最新权威包正在进行第 ${Math.max(sourceAttempt, 2)} 次自动尝试；旧结论仅作历史参考。`
+    : retryState === "RETRY_DUE"
+      ? `最新权威包上次因临时模型服务故障失败，系统将在下个调度周期自动重试。${retryFailure ? ` ${retryFailure}` : ""}`
+      : retryState === "COOLDOWN"
+        ? `最新权威包上次因临时模型服务故障失败，自动重试正在冷却。${retryFailure ? ` ${retryFailure}` : ""}`
+        : retryState === "EXHAUSTED"
+          ? `最新权威包的自动重试次数已用尽，需要人工复核模型代理。${retryFailure ? ` ${retryFailure}` : ""}`
+          : `最新权威包 ${latestAvailablePackName || "已生成"} 正在等待或进行 AI 消费；下方旧结论不代表当前状态。`;
 
   return (
     <section className="card pad ai-research">
@@ -79,7 +98,7 @@ export function AIResearchPanel({ research }: { research: Record<string, unknown
         <ShieldCheck size={17} />
         <b>{sourcePackIsStale ? "只读历史结果" : "只读研究"}</b>
         <span>{sourcePackIsStale
-          ? `最新权威包 ${latestAvailablePackName || "已生成"} 正在等待或进行 AI 消费；下方旧结论不代表当前状态。`
+          ? staleSourceMessage
           : `不生成交易信号 · 不修改 V5 · 不自动晋级 · live effect ${stringValue(research.live_order_effect, "none")}`}</span>
       </div>
 

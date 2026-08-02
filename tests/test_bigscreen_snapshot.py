@@ -299,6 +299,61 @@ def test_bigscreen_latest_authoritative_export_pack_accepts_nas_frame():
     assert row["pack_sha256"] == "c" * 64
 
 
+def test_bigscreen_ai_discloses_retryable_latest_task_failure(monkeypatch, tmp_path):
+    lake = tmp_path / "lake"
+    queue = tmp_path / "ai_queue"
+    task_id = "task-new-pack-failed"
+    failed = queue / "failed" / task_id
+    failed.mkdir(parents=True)
+    task_payload = {
+        "task_id": task_id,
+        "source_pack_sha256": "b" * 64,
+    }
+    (failed / "task.json").write_text(json.dumps(task_payload), encoding="utf-8")
+    state = queue / "state"
+    state.mkdir(parents=True)
+    (state / "last_task.json").write_text(json.dumps(task_payload), encoding="utf-8")
+    rejected = queue / "results" / "rejected" / task_id
+    rejected.mkdir(parents=True)
+    (rejected / "worker_error.json").write_text(
+        json.dumps(
+            {
+                "task_id": task_id,
+                "failed_at": "2026-07-17T00:10:00+00:00",
+                "error_type": "RuntimeError",
+                "message": "stage1 model call failed after retries: Responses API HTTP 503",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("QUANT_LAB_AI_QUEUE_ROOT", str(queue))
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "task_id": "task-old-pack",
+                    "source_pack_name": "expert-old.zip",
+                    "source_pack_sha256": "a" * 64,
+                    "completed_at": datetime(2026, 7, 16, tzinfo=UTC),
+                    "system_state": "READY_FOR_PROPOSALS",
+                }
+            ]
+        ),
+        lake / "gold" / "ai_research_run",
+    )
+
+    ai = bigscreen_module._safe_ai_research_summary(
+        lake,
+        generated_at=datetime(2026, 7, 17, 1, tzinfo=UTC),
+        latest_expert_pack={"name": "expert-new.zip", "pack_sha256": "b" * 64},
+    )
+
+    assert ai["status"] == "AI_RESULT_STALE"
+    assert ai["queue"]["retry"]["retry_state"] == "RETRY_DUE"
+    assert ai["queue"]["retry"]["failure_class"] == "TRANSIENT_MODEL_PROVIDER_FAILURE"
+    assert ai["queue"]["retry"]["http_status"] == 503
+
+
 def test_bigscreen_ai_queue_excludes_hidden_atomic_result_staging(monkeypatch, tmp_path):
     lake = tmp_path / "lake"
     queue = tmp_path / "ai_queue"

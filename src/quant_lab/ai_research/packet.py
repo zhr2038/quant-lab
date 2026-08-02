@@ -10,7 +10,7 @@ import shutil
 import tempfile
 import zipfile
 from collections import defaultdict
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -37,6 +37,25 @@ RESEARCH_CSV_MAX_MEMBER_BYTES = 16 * 1024 * 1024
 FACTOR_AUDIT_TARGET_DOCUMENT_CHARS = 80_000
 FACTOR_FORWARD_REPRESENTATIVE_ROW_LIMIT = 128
 FACTOR_FORWARD_REPRESENTATIVE_ROWS_PER_FACTOR = 4
+AI_AUTOMATIC_RETRY_MAX_ATTEMPTS = 3
+AI_AUTOMATIC_RETRY_COOLDOWN = timedelta(minutes=30)
+
+_TRANSIENT_WORKER_FAILURE_MARKERS = (
+    "responses api http 408",
+    "responses api http 429",
+    "responses api http 500",
+    "responses api http 502",
+    "responses api http 503",
+    "responses api http 504",
+    "auth_unavailable",
+    "server_is_overloaded",
+    "service_unavailable",
+    "connection reset",
+    "connection refused",
+    "connecttimeout",
+    "readtimeout",
+    "timed out",
+)
 
 _ALLOWED_EXTENSIONS = {".json", ".md", ".csv", ".txt"}
 _EXCLUDED_PARTS = {"__macosx", ".git", "secrets", "private", "restricted"}
@@ -236,23 +255,39 @@ def build_ai_research_task(
     previous = _read_json_object(state_path)
     pack_stat = pack.stat()
     previous_task = str(previous.get("task_id") or "")
+    created = (now or datetime.now(UTC)).astimezone(UTC)
+    retry_status: dict[str, Any] = {}
     same_file_fingerprint = (
         previous.get("source_pack_name") == pack.name
         and int(previous.get("source_pack_size_bytes") or -1) == pack_stat.st_size
         and int(previous.get("source_pack_mtime_ns") or -1) == pack_stat.st_mtime_ns
     )
-    if not force and same_file_fingerprint and previous_task and _task_exists(queue, previous_task):
+    if (
+        not force
+        and same_file_fingerprint
+        and previous_task
+        and _task_exists(queue, previous_task)
+        and _task_state(queue, previous_task) != "failed"
+    ):
         return None, None
 
     pack_sha = _sha256_file(pack)
     if not force and previous.get("source_pack_sha256") == pack_sha:
         if previous_task and _task_exists(queue, previous_task):
-            return None, None
+            retry_status = ai_task_retry_status(
+                queue,
+                task_id=previous_task,
+                source_pack_sha256=pack_sha,
+                now=created,
+            )
+            if not retry_status.get("retry_due"):
+                return None, None
 
-    created = (now or datetime.now(UTC)).astimezone(UTC)
     task_id = _task_id(pack, pack_sha, created)
     sections: dict[str, list[EvidenceDocument]] = defaultdict(list)
     warnings: list[str] = []
+    if retry_status:
+        warnings.append("automatic_retry_of_transient_model_provider_failure")
     consumed_chars = 0
 
     with zipfile.ZipFile(pack) as archive:
@@ -401,6 +436,9 @@ def build_ai_research_task(
     )
     packet_sha = compute_task_packet_sha256(provisional_task)
     task = provisional_task.model_copy(update={"packet_sha256": packet_sha})
+    source_attempt = (
+        int(retry_status.get("attempt_count") or 0) + 1 if retry_status else 1
+    )
 
     task_dir = pending_root / task_id
     if task_dir.exists():
@@ -420,6 +458,9 @@ def build_ai_research_task(
                 "task_id": task_id,
                 "source_pack_sha256": pack_sha,
                 "packet_sha256": packet_sha,
+                "source_attempt": source_attempt,
+                "retry_of_task_id": previous_task if retry_status else None,
+                "retry_failure_class": retry_status.get("failure_class"),
                 "published_at": created.isoformat(),
             },
         )
@@ -442,6 +483,9 @@ def build_ai_research_task(
             "source_pack_size_bytes": pack_stat.st_size,
             "source_pack_mtime_ns": pack_stat.st_mtime_ns,
             "packet_sha256": packet_sha,
+            "source_attempt": source_attempt,
+            "retry_of_task_id": previous_task if retry_status else None,
+            "retry_failure_class": retry_status.get("failure_class"),
             "created_at": created.isoformat(),
         },
     )
@@ -566,11 +610,25 @@ def build_task_from_nas_pack_reference(
     staging_root.mkdir(parents=True, exist_ok=True)
     previous = _read_json_object(state_root / "last_task.json")
     previous_task = str(previous.get("task_id") or "")
+    created = (now or datetime.now(UTC)).astimezone(UTC)
+    retry_status: dict[str, Any] = {}
     if not force and previous.get("source_pack_sha256") == pack.pack_sha256:
         if previous_task and _task_exists(queue, previous_task):
-            return None, None
-    created = (now or datetime.now(UTC)).astimezone(UTC)
+            retry_status = ai_task_retry_status(
+                queue,
+                task_id=previous_task,
+                source_pack_sha256=pack.pack_sha256,
+                now=created,
+            )
+            if not retry_status.get("retry_due"):
+                return None, None
     task_id = _task_id(Path(pack.pack_name), pack.pack_sha256, created)
+    source_attempt = (
+        int(retry_status.get("attempt_count") or 0) + 1 if retry_status else 1
+    )
+    task_warnings = ["evidence_materialized_on_nas_worker"]
+    if retry_status:
+        task_warnings.append("automatic_retry_of_transient_model_provider_failure")
     base_payload = {
         "schema_version": "quant_lab.ai_research_task.v1",
         "prompt_version": AI_PROMPT_VERSION,
@@ -588,7 +646,7 @@ def build_task_from_nas_pack_reference(
         ),
         "allowed_hypothesis_families": _ALLOWED_HYPOTHESIS_FAMILIES,
         "prohibited_actions": list(PROHIBITED_ACTIONS),
-        "warnings": ["evidence_materialized_on_nas_worker"],
+        "warnings": task_warnings,
         "packet_sha256": "0" * 64,
     }
     provisional = AIResearchTask.model_validate(base_payload)
@@ -609,6 +667,9 @@ def build_task_from_nas_pack_reference(
                 "source_snapshot_id": pack.snapshot_id,
                 "source_location": "nas_accepted",
                 "packet_sha256": task.packet_sha256,
+                "source_attempt": source_attempt,
+                "retry_of_task_id": previous_task if retry_status else None,
+                "retry_failure_class": retry_status.get("failure_class"),
                 "published_at": created,
             },
         )
@@ -625,6 +686,9 @@ def build_task_from_nas_pack_reference(
             "source_pack_sha256": pack.pack_sha256,
             "source_snapshot_id": pack.snapshot_id,
             "packet_sha256": task.packet_sha256,
+            "source_attempt": source_attempt,
+            "retry_of_task_id": previous_task if retry_status else None,
+            "retry_failure_class": retry_status.get("failure_class"),
             "created_at": created,
         },
     )
@@ -659,6 +723,104 @@ def hydrate_nas_ai_research_task(
     )
 
 
+def ai_task_retry_status(
+    queue_root: str | Path,
+    *,
+    task_id: str,
+    source_pack_sha256: str,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    root = Path(queue_root)
+    state = _task_state(root, task_id)
+    status: dict[str, Any] = {
+        "task_id": task_id,
+        "task_state": state,
+        "source_pack_sha256": source_pack_sha256,
+        "retry_state": "NOT_FAILED",
+        "retryable": False,
+        "retry_due": False,
+        "attempt_count": 0,
+        "max_attempts": AI_AUTOMATIC_RETRY_MAX_ATTEMPTS,
+        "failure_class": None,
+        "failure_summary": None,
+        "failed_at": None,
+        "retry_after": None,
+    }
+    if state != "failed":
+        return status
+
+    failure = _read_json_object(root / "results" / "rejected" / task_id / "worker_error.json")
+    message = str(failure.get("message") or "").strip()
+    error_type = str(failure.get("error_type") or "").strip()
+    failed_at = _parse_utc_timestamp(failure.get("failed_at"))
+    if failed_at is None:
+        try:
+            failed_at = datetime.fromtimestamp(
+                (root / "failed" / task_id).stat().st_mtime,
+                tz=UTC,
+            )
+        except OSError:
+            failed_at = None
+    failed_attempts = _failed_source_attempt_count(root, source_pack_sha256)
+    status.update(
+        {
+            "attempt_count": failed_attempts,
+            "error_type": error_type or None,
+            "failed_at": failed_at.isoformat() if failed_at else None,
+        }
+    )
+    if not failure:
+        status.update(
+            {
+                "retry_state": "FAILURE_NOT_OBSERVABLE",
+                "failure_class": "MISSING_WORKER_ERROR",
+                "failure_summary": (
+                    "Worker failure metadata is missing; automatic retry is fail-closed."
+                ),
+            }
+        )
+        return status
+
+    transient = _is_transient_worker_failure(message)
+    if not transient:
+        status.update(
+            {
+                "retry_state": "NON_RETRYABLE",
+                "failure_class": "NON_RETRYABLE_WORKER_FAILURE",
+                "failure_summary": (
+                    "Worker failed with a non-transient error; operator review is required."
+                ),
+            }
+        )
+        return status
+
+    http_status = _worker_failure_http_status(message)
+    failure_summary = "Model provider was temporarily unavailable."
+    if http_status is not None:
+        failure_summary = f"Model provider was temporarily unavailable (HTTP {http_status})."
+    status.update(
+        {
+            "retryable": True,
+            "failure_class": "TRANSIENT_MODEL_PROVIDER_FAILURE",
+            "failure_summary": failure_summary,
+            "http_status": http_status,
+        }
+    )
+    if failed_attempts >= AI_AUTOMATIC_RETRY_MAX_ATTEMPTS:
+        status["retry_state"] = "EXHAUSTED"
+        return status
+
+    retry_after = failed_at + AI_AUTOMATIC_RETRY_COOLDOWN if failed_at else None
+    status["retry_after"] = retry_after.isoformat() if retry_after else None
+    current = (now or datetime.now(UTC)).astimezone(UTC)
+    if retry_after is not None and current < retry_after:
+        status["retry_state"] = "COOLDOWN"
+        return status
+    status["retry_state"] = "RETRY_DUE"
+    status["retry_due"] = True
+    return status
+
+
 def queue_status(queue_root: str | Path) -> dict[str, Any]:
     root = Path(queue_root)
     counts = {}
@@ -681,10 +843,17 @@ def queue_status(queue_root: str | Path) -> dict[str, Any]:
         if result_imported.exists()
         else 0
     )
+    last_task = _read_json_object(root / "state" / "last_task.json")
+    retry = ai_task_retry_status(
+        root,
+        task_id=str(last_task.get("task_id") or ""),
+        source_pack_sha256=str(last_task.get("source_pack_sha256") or ""),
+    ) if last_task.get("task_id") else {}
     return {
         "queue_root": str(root),
         "counts": counts,
-        "last_task": _read_json_object(root / "state" / "last_task.json"),
+        "last_task": last_task,
+        "retry": retry,
     }
 
 
@@ -2219,6 +2388,43 @@ def _task_id(pack: Path, pack_sha: str, created: datetime) -> str:
     stem = _TASK_ID_RE.sub("-", pack.stem).strip("-.")[-64:] or "expert-pack"
     stamp = created.strftime("%Y%m%dT%H%M%SZ")
     return f"ai-{stamp}-{pack_sha[:12]}-{stem}"
+
+
+def _task_state(queue_root: Path, task_id: str) -> str | None:
+    if not task_id:
+        return None
+    for state in ("pending", "running", "completed", "failed"):
+        if (queue_root / state / task_id).is_dir():
+            return state
+    return None
+
+
+def _failed_source_attempt_count(queue_root: Path, source_pack_sha256: str) -> int:
+    if not source_pack_sha256:
+        return 0
+    failed_root = queue_root / "failed"
+    try:
+        task_dirs = [item for item in failed_root.iterdir() if item.is_dir()]
+    except OSError:
+        return 0
+    return sum(
+        1
+        for task_dir in task_dirs
+        if _read_json_object(task_dir / "task.json").get("source_pack_sha256")
+        == source_pack_sha256
+    )
+
+
+def _is_transient_worker_failure(message: str) -> bool:
+    normalized = message.strip().lower()
+    return bool(normalized) and any(
+        marker in normalized for marker in _TRANSIENT_WORKER_FAILURE_MARKERS
+    )
+
+
+def _worker_failure_http_status(message: str) -> int | None:
+    match = re.search(r"responses api http\s+(\d{3})", message, flags=re.IGNORECASE)
+    return int(match.group(1)) if match else None
 
 
 def _task_exists(queue_root: Path, task_id: str) -> bool:

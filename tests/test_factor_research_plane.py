@@ -9,7 +9,10 @@ from pathlib import Path
 import polars as pl
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from typer.testing import CliRunner
 
+from quant_lab import cli as cli_module
+from quant_lab.cli import app
 from quant_lab.data.file_index import build_lake_file_index
 from quant_lab.data.lake import read_parquet_dataset
 from quant_lab.research.factor_research.registry import (
@@ -43,6 +46,58 @@ COMMIT = "a" * 40
 NEXT_COMMIT = "c" * 40
 TASK_KEY_ID = "cloud-research-v1"
 BUNDLE_ID = "v5-bundle-sha256:" + "b" * 64
+CLI_RUNNER = CliRunner()
+
+
+def test_factor_research_request_treats_no_approved_hypotheses_as_no_work(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    signing_key_path = tmp_path / "task-signing.key"
+    signing_key_path.write_text("test-key", encoding="utf-8")
+    monkeypatch.setenv("QUANT_LAB_NAS_RESEARCH_ENABLED", "1")
+    monkeypatch.setenv("QUANT_LAB_NAS_FACTOR_RESEARCH_ENABLED", "1")
+    monkeypatch.setattr(
+        cli_module,
+        "load_signing_key",
+        lambda _path: Ed25519PrivateKey.generate(),
+    )
+
+    def no_work(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("no_approved_factor_research_hypotheses")
+
+    monkeypatch.setattr(cli_module, "create_factor_research_task", no_work)
+    result = CLI_RUNNER.invoke(
+        app,
+        [
+            "request-factor-research",
+            "--lake-root",
+            str(tmp_path / "lake"),
+            "--queue-root",
+            str(tmp_path / "queue"),
+            "--signing-key-path",
+            str(signing_key_path),
+            "--key-id",
+            TASK_KEY_ID,
+            "--quant-lab-commit",
+            COMMIT,
+            "--date",
+            "2026-08-07",
+        ],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["task"] is None
+    assert payload["status"] == {
+        "as_of_date": "2026-08-07",
+        "live_order_effect": "none",
+        "reason": "no_approved_factor_research_hypotheses",
+        "research_only": True,
+        "state": "no_work",
+        "task_created": False,
+        "task_type": "factor_research",
+    }
 
 
 def test_factor_research_correlation_replaces_same_day_research_rows() -> None:

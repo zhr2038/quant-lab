@@ -2012,17 +2012,41 @@ def request_factor_research_command(
     day = datetime.now(UTC).date() if as_of_date == "auto" else date.fromisoformat(as_of_date)
     start_day = None if start_date == "auto" else date.fromisoformat(start_date)
     end_day = None if end_date == "auto" else date.fromisoformat(end_date)
-    task, status = create_factor_research_task(
-        lake_root,
-        queue_root,
-        as_of_date=day,
-        start_date=start_day,
-        end_date=end_day,
-        max_history_days=max_history_days,
-        signing_key=load_signing_key(signing_key_path),
-        signature_key_id=key_id,
-        quant_lab_commit=quant_lab_commit,
-    )
+    try:
+        task, status = create_factor_research_task(
+            lake_root,
+            queue_root,
+            as_of_date=day,
+            start_date=start_day,
+            end_date=end_day,
+            max_history_days=max_history_days,
+            signing_key=load_signing_key(signing_key_path),
+            signature_key_id=key_id,
+            quant_lab_commit=quant_lab_commit,
+        )
+    except RuntimeError as exc:
+        if str(exc) != "no_approved_factor_research_hypotheses":
+            raise
+        typer.echo(
+            json.dumps(
+                {
+                    "task": None,
+                    "status": {
+                        "as_of_date": day.isoformat(),
+                        "live_order_effect": "none",
+                        "reason": "no_approved_factor_research_hypotheses",
+                        "research_only": True,
+                        "state": "no_work",
+                        "task_created": False,
+                        "task_type": "factor_research",
+                    },
+                },
+                ensure_ascii=True,
+                sort_keys=True,
+                indent=2,
+            )
+        )
+        return
     typer.echo(
         json.dumps(
             {

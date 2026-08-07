@@ -1576,7 +1576,7 @@ def prune_storage_retention_command(
     keep_redacted_archive_days: Annotated[
         int,
         typer.Option("--keep-redacted-archive-days", min=1),
-    ] = 3,
+    ] = 1,
     keep_restricted_archive_days: Annotated[
         int,
         typer.Option("--keep-restricted-archive-days", min=1),
@@ -1595,7 +1595,7 @@ def prune_storage_retention_command(
             ),
         ),
     ] = False,
-    keep_inbox_days: Annotated[int, typer.Option("--keep-inbox-days", min=1)] = 2,
+    keep_inbox_days: Annotated[int, typer.Option("--keep-inbox-days", min=1)] = 1,
     keep_export_packs: Annotated[int, typer.Option("--keep-export-packs", min=1)] = 5,
     keep_export_terminal_snapshot_hours: Annotated[
         int,

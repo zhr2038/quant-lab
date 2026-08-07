@@ -252,13 +252,28 @@ def test_storage_retention_does_not_create_root_owned_lake_files():
     assert "SupplementaryGroups=quant-export" in unit
     assert "PermissionsStartOnly=true" in unit
     assert "prune-storage-retention --base-dir /var/lib/quant-lab" in unit
+    assert "--keep-redacted-archive-days 1" in unit
     assert "--keep-restricted-archive-days 7" in unit
     assert "--keep-high-frequency-archive-days 30" in unit
     assert "--preserve-high-frequency-archive" in unit
+    assert "--keep-inbox-days 1" in unit
     assert "--keep-export-terminal-snapshot-hours 24" in unit
     assert "--max-export-terminal-snapshot-bytes 5368709120" in unit
     assert "journalctl --vacuum-size=200M" in unit
     assert "OnCalendar=*-*-* 09:20:00" in timer
+
+
+def test_nas_redacted_archive_is_pull_only_and_checksum_verified():
+    script = (
+        ROOT / "deploy" / "nas_archive" / "pull_qyun2_redacted_v5.sh"
+    ).read_text(encoding="utf-8")
+
+    assert "archive/v5/bundles" in script
+    assert "archive_restricted" not in script
+    assert "--remove-source-files" not in script
+    assert "cmp --silent" in script
+    assert ".archive_manifest.sha256" in script
+    assert "QUANT_ARCHIVE_RETENTION_DAYS:-45" in script
 
 
 def test_lake_permission_repair_script_targets_service_user():

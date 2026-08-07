@@ -70,6 +70,23 @@ V5_CANDIDATE_EVIDENCE_ANTI_LEAKAGE_CHECKS = (
     "live_order_effect_is_none_read_only_research",
 )
 
+V5_CANDIDATE_EVENT_PRIMARY_KEYS = (
+    "candidate_id",
+    "run_id",
+    "ts_utc",
+    "symbol",
+)
+V5_CANDIDATE_EVENT_VERSION_ORDER = (
+    "ts_utc",
+    "bundle_ts",
+    "ingest_ts",
+    "run_id",
+    "symbol",
+    "bundle_sha256",
+    "row_index",
+    "source_path_inside_bundle",
+)
+
 
 @dataclass(frozen=True)
 class StagedV5CandidateEvidenceDataset:
@@ -145,10 +162,12 @@ def compute_v5_candidate_evidence_result(
         manifest,
         "silver/market_bar",
     )
-    events = _scan_paths(event_paths)
+    raw_events = _scan_paths(event_paths)
     markets = _scan_paths(market_paths)
-    event_columns = events.collect_schema().names()
+    event_columns = raw_events.collect_schema().names()
     market_columns = markets.collect_schema().names()
+    collapsed_event_versions = _candidate_event_version_count(raw_events)
+    events = _canonical_candidate_events(raw_events)
     normalized_events = events.with_columns(
         candidate_event_symbol_expr(event_columns).alias("_normalized_symbol")
     )
@@ -173,6 +192,8 @@ def compute_v5_candidate_evidence_result(
         violations["worker_symbol_groups_match_snapshot_manifest"] += 1
         raise ValueError("v5_candidate_evidence_snapshot_symbol_binding_mismatch")
     warnings: list[str] = []
+    if collapsed_event_versions:
+        warnings.append(f"candidate_event_versions_collapsed:{collapsed_event_versions}")
     label_paths: list[Path] = []
     sample_paths: list[Path] = []
     label_rows = 0
@@ -264,8 +285,8 @@ def compute_v5_candidate_evidence_result(
     stage_durations["computing_samples"] = time.perf_counter() - samples_started
 
     violations["candidate_event_primary_keys_are_unique"] += _duplicate_count_lazy(
-        events,
-        ["candidate_id"],
+        raw_events,
+        list(V5_CANDIDATE_EVENT_PRIMARY_KEYS),
     )
     violations["candidate_label_primary_keys_are_unique"] += _duplicate_count_paths(
         label_paths,
@@ -320,6 +341,10 @@ def compute_v5_candidate_evidence_result(
         "snapshot_id": manifest.snapshot_id,
         "input_fingerprint_digest": manifest.input_fingerprint_digest,
         "candidate_event_rows": manifest.candidate_event_row_count,
+        "canonical_candidate_event_rows": (
+            manifest.candidate_event_row_count - collapsed_event_versions
+        ),
+        "candidate_event_version_rows_collapsed": collapsed_event_versions,
         "market_bar_rows": manifest.market_bar_row_count,
         "run_summary_rows": manifest.run_summary_row_count,
         "run_summary_run_ids": list(manifest.run_summary_run_ids),
@@ -683,6 +708,44 @@ def _scan_paths(paths: list[Path]) -> pl.LazyFrame:
         missing_columns="insert",
         extra_columns="ignore",
     )
+
+
+def _candidate_event_version_count(events: pl.LazyFrame) -> int:
+    columns = events.collect_schema().names()
+    if "candidate_id" not in columns:
+        return 0
+    identified = events.filter(
+        pl.col("candidate_id").cast(pl.Utf8, strict=False).fill_null("").str.strip_chars() != ""
+    )
+    return _duplicate_count_lazy(identified, ["candidate_id"])
+
+
+def _canonical_candidate_events(events: pl.LazyFrame) -> pl.LazyFrame:
+    """Select the latest signed version of each stable V5 candidate identity."""
+
+    columns = events.collect_schema().names()
+    if "candidate_id" not in columns:
+        return events
+    identified = events.filter(
+        pl.col("candidate_id").cast(pl.Utf8, strict=False).fill_null("").str.strip_chars() != ""
+    )
+    unidentified = events.filter(
+        pl.col("candidate_id").cast(pl.Utf8, strict=False).fill_null("").str.strip_chars() == ""
+    )
+    order_columns = [
+        column for column in V5_CANDIDATE_EVENT_VERSION_ORDER if column in columns
+    ]
+    if order_columns:
+        identified = identified.sort(
+            ["candidate_id", *order_columns],
+            nulls_last=False,
+        )
+    identified = identified.unique(
+        subset=["candidate_id"],
+        keep="last",
+        maintain_order=True,
+    )
+    return pl.concat([identified, unidentified], how="vertical_relaxed")
 
 
 def _duplicate_count_paths(paths: list[Path], keys: list[str]) -> int:

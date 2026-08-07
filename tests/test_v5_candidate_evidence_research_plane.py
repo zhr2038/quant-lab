@@ -1300,6 +1300,59 @@ def test_v5_candidate_evidence_snapshot_worker_and_labels_share_symbol_fallback(
     assert all(row["complete_sample_count"] == 1 for row in refreshed_summary)
 
 
+def test_v5_candidate_evidence_worker_collapses_versioned_candidate_events(
+    tmp_path: Path,
+) -> None:
+    lake = tmp_path / "lake"
+    queue = tmp_path / "queue"
+    _seed_snapshot_sources(lake)
+    event_path = lake / "silver" / "v5_candidate_event" / "events.parquet"
+    first = pl.read_parquet(event_path).to_dicts()[0]
+    latest = first | {
+        "ts_utc": datetime(2026, 7, 9, 0, 45, tzinfo=UTC),
+        "cost_bps": 12.0,
+        "bundle_sha256": "c" * 64,
+    }
+    _write_rows(event_path, [first, latest])
+
+    created = create_v5_candidate_evidence_task(
+        lake,
+        queue,
+        as_of_date=date(2026, 7, 10),
+        signing_key=Ed25519PrivateKey.generate(),
+        signature_key_id="test-cloud-key",
+        quant_lab_commit=COMMIT,
+        max_input_bytes=10 * 1024 * 1024,
+        max_input_uncompressed_bytes=10 * 1024 * 1024,
+        max_input_rows=10_000,
+    )
+    assert created.task is not None
+    snapshot = V5CandidateEvidenceSnapshotManifest.model_validate_json(
+        (queue / "snapshots" / created.snapshot_id / "manifest.json").read_text("utf-8")
+    )
+    compute = compute_v5_candidate_evidence_result(
+        queue / "snapshots" / created.snapshot_id,
+        snapshot,
+        created.task,
+        max_snapshot_bytes=10 * 1024 * 1024,
+        max_input_uncompressed_bytes=10 * 1024 * 1024,
+        max_input_rows=10_000,
+        min_free_disk_bytes=0,
+        work_dir=tmp_path / "worker-versioned-events",
+    )
+
+    labels = compute.labels.collect(LABEL_SCHEMA)
+    assert labels.height == len(V5_CANDIDATE_EVIDENCE_HORIZONS)
+    assert labels.get_column("ts_utc").unique().to_list() == [latest["ts_utc"]]
+    assert labels.get_column("cost_bps").unique().to_list() == [12.0]
+    assert labels.get_column("source_event_bundle_sha256").unique().to_list() == ["c" * 64]
+    assert compute.anti_leakage["status"] == "PASS"
+    assert compute.worker_report["candidate_event_rows"] == 2
+    assert compute.worker_report["canonical_candidate_event_rows"] == 1
+    assert compute.worker_report["candidate_event_version_rows_collapsed"] == 1
+    assert "candidate_event_versions_collapsed:1" in compute.warnings
+
+
 def test_v5_candidate_evidence_six_gold_tables_match_legacy_fixed_fixture(
     tmp_path: Path,
 ) -> None:

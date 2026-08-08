@@ -291,6 +291,54 @@ def test_alpha_factory_snapshot_seals_only_latest_expanded_quality_day(
     assert quality.get_column("symbol").to_list() == ["BNB-USDT"]
 
 
+def test_alpha_factory_snapshot_filters_evidence_by_event_time_not_rebuild_time(
+    tmp_path: Path,
+) -> None:
+    lake = tmp_path / "lake"
+    queue = tmp_path / "queue"
+    lake.mkdir()
+    registry = build_default_template_registry(datetime(2026, 7, 18, tzinfo=UTC))
+    write_parquet_dataset(registry, lake / ALPHA_FACTORY_TEMPLATE_REGISTRY_DATASET)
+    evidence_root = lake / STRATEGY_EVIDENCE_SAMPLE_DATASET
+    evidence_root.mkdir(parents=True)
+    rebuilt_at = datetime(2026, 7, 18, 12, tzinfo=UTC)
+    pl.DataFrame(
+        {
+            "as_of_date": ["2026-05-01", "2026-07-17"],
+            "ts_utc": [
+                datetime(2026, 5, 1, tzinfo=UTC),
+                datetime(2026, 7, 17, tzinfo=UTC),
+            ],
+            "candidate_id": ["stale", "current"],
+            "symbol": ["BTC-USDT", "SOL-USDT"],
+            "created_at": [rebuilt_at, rebuilt_at],
+        }
+    ).write_parquet(evidence_root / "part-history.parquet")
+
+    manifest = seal_alpha_factory_snapshot(
+        lake,
+        queue,
+        as_of_date=date(2026, 7, 18),
+        lookback_days=30,
+        max_candidates=200,
+        selected_v5_bundle_id=BUNDLE_ID,
+        effective_registry=registry,
+        signing_key=Ed25519PrivateKey.generate(),
+        signature_key_id=TASK_KEY_ID,
+        quant_lab_commit=COMMIT,
+    )
+
+    references = [
+        reference
+        for reference in manifest.files
+        if reference.dataset_name == "gold/strategy_evidence_sample"
+    ]
+    assert len(references) == 1
+    snapshot_root = queue / "snapshots" / manifest.snapshot_id / "files"
+    evidence = pl.read_parquet(snapshot_root / references[0].relative_path)
+    assert evidence.get_column("candidate_id").to_list() == ["current"]
+
+
 def test_alpha_factory_empty_result_cloud_derivation_and_import(tmp_path: Path) -> None:
     lake = tmp_path / "lake"
     queue = tmp_path / "queue"

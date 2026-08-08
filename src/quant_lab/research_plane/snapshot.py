@@ -397,9 +397,10 @@ SNAPSHOT_TIME_COLUMNS = {
         "created_at",
     ),
     str(STRATEGY_EVIDENCE_SAMPLE_DATASET).replace("\\", "/"): (
-        "sample_ts",
-        "created_at",
+        "ts_utc",
+        "decision_ts",
         "as_of_date",
+        "created_at",
     ),
     str(FACTOR_CANDIDATE_DATASET).replace("\\", "/"): ("as_of_date",),
     str(FACTOR_VALUE_DATASET).replace("\\", "/"): (

@@ -6,7 +6,7 @@ import polars as pl
 from fastapi.testclient import TestClient
 
 import quant_lab.api.main as api_main
-from quant_lab.api.cache import StrategyOpportunityAdvisoryResponseCache
+from quant_lab.api.cache import ExactKeyCache, StrategyOpportunityAdvisoryResponseCache
 from quant_lab.api.main import app
 from quant_lab.contracts.v5_quant_lab import V5_QUANT_LAB_CONTRACT_VERSION
 from quant_lab.data.lake import write_parquet_dataset
@@ -50,6 +50,19 @@ V5_ADVISORY_FIELDS = {
     "max_paper_notional_usdt",
     "max_live_notional_usdt",
 }
+
+
+def test_exact_key_cache_is_bounded() -> None:
+    cache: ExactKeyCache[str] = ExactKeyCache(max_entries=2)
+
+    cache.set(("first",), "one")
+    cache.set(("second",), "two")
+    cache.set(("third",), "three")
+
+    assert cache.size() == 2
+    assert cache.get(("first",)) is None
+    assert cache.get(("second",)) == "two"
+    assert cache.get(("third",)) == "three"
 
 
 def test_strategy_opportunity_advisory_endpoint_reads_gold(tmp_path, monkeypatch):

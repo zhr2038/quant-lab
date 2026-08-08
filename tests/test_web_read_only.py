@@ -3132,6 +3132,27 @@ def test_web_readers_cache_shared_lake_file_index(tmp_path, monkeypatch):
     assert len(index_reads) == 1
 
 
+def test_web_reader_cache_replaces_source_versions_and_enforces_bound(monkeypatch):
+    readers.clear_web_cache()
+    monkeypatch.setenv("QUANT_LAB_WEB_DATASET_CACHE_TTL_SECONDS", "300")
+    monkeypatch.setenv("QUANT_LAB_WEB_DATASET_CACHE_MAX_ENTRIES", "2")
+
+    readers._web_cache_set(("reader", "lake", "dataset-a", ("sha", "old")), "old")
+    readers._web_cache_set(("reader", "lake", "dataset-a", ("sha", "new")), "new")
+
+    assert len(readers._WEB_DATASET_CACHE) == 1
+    assert all(key[-1] != ("sha", "old") for key in readers._WEB_DATASET_CACHE)
+
+    readers._web_cache_set(("reader", "lake", "dataset-b", ("sha", "b")), "b")
+    readers._web_cache_set(("reader", "lake", "dataset-c", ("sha", "c")), "c")
+
+    assert len(readers._WEB_DATASET_CACHE) == 2
+    assert readers._web_cache_get(
+        ("reader", "lake", "dataset-c", ("sha", "c")),
+        event="test",
+    ) == "c"
+
+
 def test_web_file_index_stale_check_ignores_snapshot_meta_mtime(tmp_path, monkeypatch):
     readers.clear_web_cache()
     lake_root = tmp_path / "lake"

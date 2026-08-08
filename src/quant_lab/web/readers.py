@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import threading
 import time as time_module
 import zipfile
 from dataclasses import dataclass
@@ -249,6 +250,7 @@ DATASET_PATHS = {
 WEB_FILE_INDEX_FALLBACK_WARNING = "web_file_index_missing_refresh_required"
 WEB_SNAPSHOT_META_MISSING_WARNING = "web_snapshot_meta_missing"
 WEB_CACHE_DEFAULT_TTL_SECONDS = 30
+WEB_CACHE_DEFAULT_MAX_ENTRIES = 128
 V5_PAPER_TELEMETRY_DATASETS = {
     "v5_bnb_paper_strategy_daily",
     "v5_bnb_paper_strategy_daily_latest",
@@ -963,10 +965,12 @@ class DatasetSnapshot:
 
 
 _WEB_DATASET_CACHE: dict[tuple[Any, ...], tuple[float, Any]] = {}
+_WEB_DATASET_CACHE_LOCK = threading.RLock()
 
 
 def clear_web_cache() -> None:
-    _WEB_DATASET_CACHE.clear()
+    with _WEB_DATASET_CACHE_LOCK:
+        _WEB_DATASET_CACHE.clear()
 
 
 def _web_cache_ttl_seconds() -> int:
@@ -978,14 +982,42 @@ def _web_cache_ttl_seconds() -> int:
     return max(value, 0)
 
 
+def _web_cache_max_entries() -> int:
+    raw = os.environ.get("QUANT_LAB_WEB_DATASET_CACHE_MAX_ENTRIES", "")
+    try:
+        value = int(raw) if raw else WEB_CACHE_DEFAULT_MAX_ENTRIES
+    except ValueError:
+        return WEB_CACHE_DEFAULT_MAX_ENTRIES
+    return max(value, 1)
+
+
+def _web_cache_prune_locked(*, now: float, ttl: int) -> None:
+    expired = [
+        cache_key
+        for cache_key, (created_at, _value) in _WEB_DATASET_CACHE.items()
+        if now - created_at > ttl
+    ]
+    for cache_key in expired:
+        _WEB_DATASET_CACHE.pop(cache_key, None)
+
+
+def _web_cache_logical_key(key: tuple[Any, ...]) -> tuple[Any, ...]:
+    # Every Web reader key ends with an immutable source signature. Replacing
+    # the prior signature for the same logical query prevents each lake refresh
+    # from retaining another Polars DataFrame for the lifetime of the API.
+    return key[:-1]
+
+
 def _web_cache_get(key: tuple[Any, ...], *, event: str, dataset_name: str = "") -> Any | None:
     ttl = _web_cache_ttl_seconds()
     if ttl <= 0:
         perf.record_event(event, dataset_name=dataset_name, cache_miss=True)
         return None
-    cached = _WEB_DATASET_CACHE.get(key)
     now = time_module.monotonic()
-    if cached is None or now - cached[0] > ttl:
+    with _WEB_DATASET_CACHE_LOCK:
+        _web_cache_prune_locked(now=now, ttl=ttl)
+        cached = _WEB_DATASET_CACHE.get(key)
+    if cached is None:
         perf.record_event(event, dataset_name=dataset_name, cache_miss=True)
         return None
     perf.record_event(event, dataset_name=dataset_name, cache_hit=True)
@@ -993,8 +1025,27 @@ def _web_cache_get(key: tuple[Any, ...], *, event: str, dataset_name: str = "") 
 
 
 def _web_cache_set(key: tuple[Any, ...], value: Any) -> Any:
-    if _web_cache_ttl_seconds() > 0:
-        _WEB_DATASET_CACHE[key] = (time_module.monotonic(), value)
+    ttl = _web_cache_ttl_seconds()
+    if ttl > 0:
+        now = time_module.monotonic()
+        logical_key = _web_cache_logical_key(key)
+        with _WEB_DATASET_CACHE_LOCK:
+            _web_cache_prune_locked(now=now, ttl=ttl)
+            superseded = [
+                cache_key
+                for cache_key in _WEB_DATASET_CACHE
+                if cache_key != key and _web_cache_logical_key(cache_key) == logical_key
+            ]
+            for cache_key in superseded:
+                _WEB_DATASET_CACHE.pop(cache_key, None)
+            _WEB_DATASET_CACHE[key] = (now, value)
+            max_entries = _web_cache_max_entries()
+            while len(_WEB_DATASET_CACHE) > max_entries:
+                oldest_key = min(
+                    _WEB_DATASET_CACHE,
+                    key=lambda cache_key: _WEB_DATASET_CACHE[cache_key][0],
+                )
+                _WEB_DATASET_CACHE.pop(oldest_key, None)
     return value
 
 

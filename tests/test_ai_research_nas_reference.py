@@ -14,6 +14,24 @@ from quant_lab.ai_research.packet import (
     hydrate_nas_ai_research_task,
 )
 from quant_lab.export_plane.contracts import ExportPackIndexEntry
+from tools.quant_ai_queue import main as quant_ai_queue_main
+
+
+def test_ai_queue_reports_missing_accepted_source_pack(tmp_path, capsys) -> None:
+    exit_code = quant_ai_queue_main(
+        [
+            "build-task",
+            "--export-queue-root",
+            str(tmp_path / "export-queue"),
+            "--queue-root",
+            str(tmp_path / "ai-queue"),
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert exit_code == 0
+    assert payload["created"] is False
+    assert payload["no_task_reason"] == "NO_ACCEPTED_SOURCE_PACK"
 
 
 def test_nas_ai_task_sends_reference_then_hydrates_locally(tmp_path) -> None:

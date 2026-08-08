@@ -54,13 +54,15 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     if args.command == "build-task":
+        selected_pack = None
         if args.export_queue_root is not None:
             packs = load_cloud_index(args.export_queue_root)
             if not packs:
                 task, task_path = None, None
             else:
+                selected_pack = packs[0]
                 task, task_path = build_task_from_nas_pack_reference(
-                    packs[0],
+                    selected_pack,
                     queue_root=args.queue_root,
                     force=args.force,
                 )
@@ -75,8 +77,23 @@ def main(argv: list[str] | None = None) -> int:
                 max_csv_rows=max(1, args.max_csv_rows),
                 max_docs_per_section=max(1, args.max_docs_per_section),
             )
+        current_queue = queue_status(args.queue_root)
+        retry = current_queue.get("retry") if isinstance(current_queue.get("retry"), dict) else {}
+        no_task_reason = None
+        if task is None:
+            if args.export_queue_root is not None and selected_pack is None:
+                no_task_reason = "NO_ACCEPTED_SOURCE_PACK"
+            elif retry.get("retry_state") == "COOLDOWN":
+                no_task_reason = "SOURCE_PACK_RETRY_COOLDOWN"
+            elif retry.get("retry_state") == "EXHAUSTED":
+                no_task_reason = "SOURCE_PACK_RETRY_EXHAUSTED"
+            elif retry.get("retry_state") == "NON_RETRYABLE":
+                no_task_reason = "SOURCE_PACK_RETRY_REQUIRES_OPERATOR"
+            else:
+                no_task_reason = "SOURCE_PACK_ALREADY_PROCESSED"
         payload = {
             "created": task is not None,
+            "no_task_reason": no_task_reason,
             "task_id": task.task_id if task else None,
             "task_path": str(task_path) if task_path else None,
             "source_pack": task.source_pack_name if task else None,

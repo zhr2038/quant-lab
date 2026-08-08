@@ -41,7 +41,10 @@ export function AIResearchPanel({ research }: { research: Record<string, unknown
   const hasResult = Boolean(stringValue(latest.task_id, ""));
   const sourcePackFreshness = stringValue(research.source_pack_freshness_status, "NOT_OBSERVABLE");
   const sourcePackIsStale = sourcePackFreshness === "STALE_SOURCE_PACK";
+  const sourcePackIsOld = sourcePackFreshness === "SOURCE_PACK_TOO_OLD";
+  const sourcePackNeedsRefresh = sourcePackIsStale || sourcePackIsOld;
   const latestAvailablePackName = stringValue(research.latest_available_pack_name, "");
+  const latestAvailablePackAge = research.latest_available_pack_age_seconds;
   const retryState = stringValue(retry.retry_state, "NOT_FAILED");
   const retryFailure = stringValue(retry.failure_summary, "");
   const sourceAttempt = Number(lastTask.source_attempt ?? retry.attempt_count ?? 0);
@@ -64,15 +67,17 @@ export function AIResearchPanel({ research }: { research: Record<string, unknown
     usesExperimentProposalFallback ? experimentProposals.length : attributionExperiments.length
   );
   const statusLabel = running > 0 && hasResult
-    ? `RUNNING · ${sourcePackIsStale ? "OLD RESULT" : "LAST RESULT"}`
+    ? `RUNNING · ${sourcePackNeedsRefresh ? "OLD RESULT" : "LAST RESULT"}`
     : pending > 0 && hasResult
-      ? `PENDING · ${sourcePackIsStale ? "OLD RESULT" : "LAST RESULT"}`
+      ? `PENDING · ${sourcePackNeedsRefresh ? "OLD RESULT" : "LAST RESULT"}`
       : sourcePackIsStale
         ? retryState === "EXHAUSTED"
           ? "AUTO RETRY EXHAUSTED"
           : retryState === "RETRY_DUE" || retryState === "COOLDOWN"
             ? "AUTO RETRY SCHEDULED"
             : "STALE SOURCE PACK"
+      : sourcePackIsOld
+        ? "WAITING FOR FRESH SOURCE PACK"
       : status.replace(/_/g, " ");
   const staleSourceMessage = retryingLatestPack && (pending > 0 || running > 0)
     ? `最新权威包正在进行第 ${Math.max(sourceAttempt, 2)} 次自动尝试；旧结论仅作历史参考。`
@@ -83,6 +88,7 @@ export function AIResearchPanel({ research }: { research: Record<string, unknown
         : retryState === "EXHAUSTED"
           ? `最新权威包的自动重试次数已用尽，需要人工复核模型代理。${retryFailure ? ` ${retryFailure}` : ""}`
           : `最新权威包 ${latestAvailablePackName || "已生成"} 正在等待或进行 AI 消费；下方旧结论不代表当前状态。`;
+  const oldSourceMessage = `最新已验收专家包已是 ${delay(latestAvailablePackAge)} 前生成。AI 只能消费手工生成的新专家包；请先生成当前专家包，下方结论仅作历史参考。`;
 
   return (
     <section className="card pad ai-research">
@@ -91,14 +97,16 @@ export function AIResearchPanel({ research }: { research: Record<string, unknown
           <h2 className="section-title icon-title"><BrainCircuit size={24} />AI 研究工作台</h2>
           <p className="sub">确定性预检 → 诊断 → 研究假设 → 验证实验 → 人工复核</p>
         </div>
-        <span className={`ai-status ${sourcePackIsStale ? "warning" : statusClass(status)}`}><ShieldCheck size={15} />{statusLabel}</span>
+        <span className={`ai-status ${sourcePackNeedsRefresh ? "warning" : statusClass(status)}`}><ShieldCheck size={15} />{statusLabel}</span>
       </div>
 
-      <div className={`ai-safety-strip ${sourcePackIsStale ? "stale" : ""}`}>
+      <div className={`ai-safety-strip ${sourcePackNeedsRefresh ? "stale" : ""}`}>
         <ShieldCheck size={17} />
-        <b>{sourcePackIsStale ? "只读历史结果" : "只读研究"}</b>
+        <b>{sourcePackNeedsRefresh ? "只读历史结果" : "只读研究"}</b>
         <span>{sourcePackIsStale
           ? staleSourceMessage
+          : sourcePackIsOld
+            ? oldSourceMessage
           : `不生成交易信号 · 不修改 V5 · 不自动晋级 · live effect ${stringValue(research.live_order_effect, "none")}`}</span>
       </div>
 
@@ -113,7 +121,7 @@ export function AIResearchPanel({ research }: { research: Record<string, unknown
 
       <div className="ai-latest">
         <div>
-          <span>{sourcePackIsStale ? "上次研究主要矛盾" : "当前主要矛盾"}</span>
+          <span>{sourcePackNeedsRefresh ? "上次研究主要矛盾" : "当前主要矛盾"}</span>
           <b>{stringValue(primaryFinding?.summary, stringValue(latest.system_state, "等待首个结果"))}</b>
           <small>{stringValue(latest.executive_summary, stringValue(latest.task_id, "尚无导入结果"))}</small>
         </div>
@@ -122,7 +130,7 @@ export function AIResearchPanel({ research }: { research: Record<string, unknown
           <b>{preflightDisplay} · {stringValue(continuity.status, "FIRST RUN")}</b>
           <small title={stringValue(continuity.summary, "尚无上一轮研究上下文")}>
             {preflightStatus === "NOT_AVAILABLE" ? "旧结果未回传确定性预检 · " : ""}证据包 {stringValue(latest.source_pack_name, "尚无来源包")} · {delay(research.latest_run_age_seconds)}
-            {sourcePackIsStale && latestAvailablePackName ? ` · 最新 ${latestAvailablePackName}` : ""}
+            {sourcePackNeedsRefresh && latestAvailablePackName ? ` · 最新 ${latestAvailablePackName}` : ""}
           </small>
         </div>
         <div>

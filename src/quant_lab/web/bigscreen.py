@@ -41,6 +41,7 @@ MARKET_BAR_CRITICAL_DELAY_SECONDS = 3 * 60 * 60
 EXPERT_PACK_V5_LAG_WARNING_SECONDS = 60 * 60
 WEB_V2_SMOKE_STATUS_PATH = Path("/var/lib/quant-lab/ops/web_v2_smoke/latest.json")
 WEB_V2_SMOKE_MAX_AGE_SECONDS = 25 * 60
+AI_SOURCE_PACK_WARNING_AGE_SECONDS = 36 * 60 * 60
 WEB_V2_API_METRICS_WINDOW_MINUTES = 60
 V5_BUNDLE_NAME_RE = re.compile(r"v5_live_followup_bundle_(\d{8}T\d{6})Z\.tar\.gz")
 ACTIONABLE_DATA_MATRIX_COLUMNS = {"market_bar", "spread", "trade"}
@@ -637,6 +638,16 @@ def _safe_ai_research_summary(
     )
     result_pack_name = str(latest_run.get("source_pack_name") or "")
     result_pack_sha256 = str(latest_run.get("source_pack_sha256") or "")
+    latest_available_pack_age_seconds = _age_seconds(
+        generated_at,
+        latest_available_pack.get("modified_at")
+        or latest_available_pack.get("accepted_at")
+        or latest_available_pack.get("generated_at"),
+    )
+    latest_available_pack_is_old = (
+        latest_available_pack_age_seconds is not None
+        and latest_available_pack_age_seconds > _ai_source_pack_warning_age_seconds()
+    )
     source_pack_matches_latest: bool | None = None
     if latest_task_id and latest_available_pack_sha256 and result_pack_sha256:
         source_pack_matches_latest = latest_available_pack_sha256 == result_pack_sha256
@@ -645,6 +656,8 @@ def _safe_ai_research_summary(
 
     if not latest_task_id:
         source_pack_freshness_status = "NO_RESULT"
+    elif source_pack_matches_latest is True and latest_available_pack_is_old:
+        source_pack_freshness_status = "SOURCE_PACK_TOO_OLD"
     elif source_pack_matches_latest is True:
         source_pack_freshness_status = "CURRENT"
     elif source_pack_matches_latest is False:
@@ -669,6 +682,8 @@ def _safe_ai_research_summary(
         status = "PENDING"
     elif source_pack_matches_latest is False:
         status = "AI_RESULT_STALE"
+    elif latest_available_pack_is_old:
+        status = "WAITING_FOR_FRESH_SOURCE_PACK"
     elif run_rows:
         status = "AI_RESULT_AVAILABLE"
     elif int(queue_counts.get("failed") or 0) > 0:
@@ -711,6 +726,8 @@ def _safe_ai_research_summary(
     )
     if source_pack_matches_latest is False:
         warnings.append("ai_result_source_pack_stale")
+    if latest_available_pack_is_old:
+        warnings.append("ai_latest_source_pack_too_old")
 
     return {
         "status": status,
@@ -724,6 +741,8 @@ def _safe_ai_research_summary(
         "source_pack_matches_latest": source_pack_matches_latest,
         "latest_available_pack_name": latest_available_pack_name or None,
         "latest_available_pack_sha256": latest_available_pack_sha256 or None,
+        "latest_available_pack_age_seconds": latest_available_pack_age_seconds,
+        "latest_available_pack_is_old": latest_available_pack_is_old,
         "counts": counts,
         "queue": queue,
         "recent_runs": run_rows,
@@ -742,6 +761,13 @@ def _safe_ai_research_summary(
         "code_review_targets": current_code_targets,
         "warnings": warnings,
     }
+
+
+def _ai_source_pack_warning_age_seconds() -> int:
+    return _seconds_env(
+        "QUANT_LAB_AI_SOURCE_PACK_WARNING_AGE_SECONDS",
+        AI_SOURCE_PACK_WARNING_AGE_SECONDS,
+    )
 
 
 def _latest_authoritative_export_pack(exports: dict[str, Any]) -> dict[str, Any]:

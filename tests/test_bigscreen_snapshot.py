@@ -277,6 +277,47 @@ def test_bigscreen_ai_result_discloses_newer_authoritative_pack(monkeypatch, tmp
     assert current["source_pack_matches_latest"] is True
 
 
+def test_bigscreen_ai_matching_but_old_source_pack_waits_for_fresh_pack(
+    monkeypatch,
+    tmp_path,
+):
+    lake = tmp_path / "lake"
+    queue = tmp_path / "ai_queue"
+    queue.mkdir(parents=True)
+    monkeypatch.setenv("QUANT_LAB_AI_QUEUE_ROOT", str(queue))
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "task_id": "task-old-pack",
+                    "source_pack_name": "expert-old.zip",
+                    "source_pack_sha256": "a" * 64,
+                    "completed_at": datetime(2026, 7, 14, tzinfo=UTC),
+                    "system_state": "READY_FOR_PROPOSALS",
+                }
+            ]
+        ),
+        lake / "gold" / "ai_research_run",
+    )
+
+    summary = bigscreen_module._safe_ai_research_summary(
+        lake,
+        generated_at=datetime(2026, 7, 17, tzinfo=UTC),
+        latest_expert_pack={
+            "name": "expert-old.zip",
+            "pack_sha256": "a" * 64,
+            "modified_at": datetime(2026, 7, 14, tzinfo=UTC),
+        },
+    )
+
+    assert summary["status"] == "WAITING_FOR_FRESH_SOURCE_PACK"
+    assert summary["source_pack_freshness_status"] == "SOURCE_PACK_TOO_OLD"
+    assert summary["source_pack_matches_latest"] is True
+    assert summary["latest_available_pack_age_seconds"] == 3 * 24 * 60 * 60
+    assert summary["latest_available_pack_is_old"] is True
+    assert "ai_latest_source_pack_too_old" in summary["warnings"]
+
+
 def test_bigscreen_latest_authoritative_export_pack_accepts_nas_frame():
     row = bigscreen_module._latest_authoritative_export_pack(
         {

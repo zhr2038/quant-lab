@@ -228,8 +228,9 @@ class CostBucketCache:
 class ExactKeyCache(Generic[T]):
     """Small process-local cache invalidated by exact source signatures."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, max_entries: int = 128) -> None:
         self._lock = threading.Lock()
+        self._max_entries = max(1, int(max_entries))
         self._values: dict[tuple[Any, ...], CachedValue[T]] = {}
 
     def clear(self) -> None:
@@ -244,6 +245,16 @@ class ExactKeyCache(Generic[T]):
     def set(self, key: tuple[Any, ...], value: T) -> None:
         with self._lock:
             self._values[key] = CachedValue(key=key, value=value, created_at=datetime.now(UTC))
+            while len(self._values) > self._max_entries:
+                oldest_key = min(
+                    self._values,
+                    key=lambda item_key: self._values[item_key].created_at,
+                )
+                self._values.pop(oldest_key, None)
+
+    def size(self) -> int:
+        with self._lock:
+            return len(self._values)
 
 
 def _source_sha(signature: tuple[Any, ...]) -> str:

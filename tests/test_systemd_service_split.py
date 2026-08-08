@@ -153,6 +153,7 @@ def test_expanded_universe_backfill_stays_within_bigscreen_freshness_window():
     assert "OnUnitActiveSec=1h" in timer
     assert "OnUnitActiveSec=6h" not in timer
     assert "okx-backfill-expanded-universe" in service
+    assert "--max-symbols 60" in service
     assert "build-expanded-universe-shadow" in service
     assert "POLARS_MAX_THREADS=1" in service
     assert "MALLOC_ARENA_MAX=2" in service

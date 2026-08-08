@@ -1395,7 +1395,8 @@ def _sample_groups(
     if samples.is_empty():
         return groups
     for row in samples.to_dicts():
-        if str(row.get("as_of_date") or "")[:10] != as_of_date.isoformat():
+        sample_as_of = _parse_dt(row.get("as_of_date")) or _sample_timestamp(row)
+        if sample_as_of is not None and sample_as_of.date() > as_of_date:
             continue
         key = _sample_group_key(row)
         groups.setdefault(key, []).append(row)
@@ -1909,6 +1910,7 @@ def _alpha_factory_source_samples(root: Path, day: date) -> pl.DataFrame:
         root / SECOND_STAGE_SAMPLE_DATASET,
         day,
         candidates=tuple(sorted(SECOND_STAGE_CANDIDATES)),
+        include_history=True,
     )
     second_stage = _with_source_dataset(
         second_stage,
@@ -1936,6 +1938,7 @@ def _read_candidate_rows_for_day(
     *,
     candidates: tuple[str, ...],
     excluded_sources: tuple[str, ...] = (),
+    include_history: bool = False,
 ) -> pl.DataFrame:
     try:
         lazy = read_parquet_lazy(dataset)
@@ -1946,9 +1949,14 @@ def _read_candidate_rows_for_day(
         return pl.DataFrame()
     if excluded_sources and "source" not in columns:
         raise ValueError("alpha_factory_source_filter_column_missing")
-    predicate = (
-        (pl.col("as_of_date").cast(pl.Utf8).str.slice(0, 10) == day.isoformat())
-        & pl.col("strategy_candidate").cast(pl.Utf8).is_in(candidates)
+    sample_day = pl.col("as_of_date").cast(pl.Utf8).str.slice(0, 10)
+    date_predicate = (
+        sample_day <= day.isoformat()
+        if include_history
+        else sample_day == day.isoformat()
+    )
+    predicate = date_predicate & pl.col("strategy_candidate").cast(pl.Utf8).is_in(
+        candidates
     )
     if excluded_sources:
         predicate &= ~pl.col("source").cast(pl.Utf8, strict=False).is_in(

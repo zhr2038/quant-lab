@@ -101,6 +101,98 @@ def test_collect_recent_heavy_files_uses_timestamp_not_physical_tail(tmp_path):
     assert collected["ts"].min() >= base + timedelta(minutes=1)
 
 
+def test_factor_value_sampling_keeps_duplicate_formula_time_population_aligned(tmp_path):
+    data_path = tmp_path / "factor_value.parquet"
+    base = datetime(2026, 8, 1, tzinfo=UTC)
+    created_at = base + timedelta(days=7)
+    factor_ids = ("core.volume_zscore_24", "auto.single.volume_zscore_24")
+    rows = []
+    for factor_id in factor_ids:
+        for hour in range(40):
+            ts = base + timedelta(hours=hour)
+            rows.append(
+                {
+                    "factor_id": factor_id,
+                    "factor_family": "volume",
+                    "candidate_state": "KEEP_SHADOW",
+                    "canonical_factor_id": "factor:volume-zscore-24",
+                    "symbol": "BTC-USDT",
+                    "timeframe": "1H",
+                    "ts": ts,
+                    "available_time": ts + timedelta(hours=1),
+                    "value": float(hour),
+                    "is_valid": True,
+                    "created_at": created_at,
+                }
+            )
+    pl.DataFrame(rows).write_parquet(data_path)
+
+    collected = _collect_recent_heavy_files([data_path], "factor_value", limit=70)
+
+    counts = {
+        row["factor_id"]: row["rows"]
+        for row in collected.group_by("factor_id")
+        .agg(pl.len().alias("rows"))
+        .to_dicts()
+    }
+    assert collected.height == 70
+    assert counts == {factor_id: 35 for factor_id in factor_ids}
+    assert collected["available_time"].min() == base + timedelta(hours=6)
+
+    market_bars = pl.DataFrame(
+        [
+            {
+                "symbol": "BTC-USDT",
+                "timeframe": "1H",
+                "ts": base + timedelta(hours=hour),
+                "close": 100.0 + hour * hour,
+            }
+            for hour in range(50)
+        ]
+    )
+    candidates = pl.DataFrame(
+        [
+            {
+                "as_of_date": "2026-08-08",
+                "factor_id": factor_id,
+                "factor_family": "volume",
+                "candidate_state": "KEEP_SHADOW",
+                "canonical_factor_id": "factor:volume-zscore-24",
+            }
+            for factor_id in factor_ids
+        ]
+    )
+    forward = daily_export_module.build_factor_forward_validation(
+        factor_candidates=candidates,
+        factor_values=collected,
+        market_bars=market_bars,
+        market_regime=pl.DataFrame(
+            [{"as_of_ts": base, "current_regime": "TREND_UP"}]
+        ),
+    )
+    comparison_fields = [
+        "horizon_hours",
+        "sample_count",
+        "rank_ic",
+        "pearson_ic",
+        "long_short_bps",
+        "p25_net_bps",
+        "hit_rate",
+        "recent_7d_score",
+        "regime_stability",
+        "cost_adjusted_score",
+        "recommendation",
+    ]
+    by_factor = {
+        factor_id: forward.filter(pl.col("factor_id") == factor_id)
+        .select(comparison_fields)
+        .sort("horizon_hours")
+        .to_dicts()
+        for factor_id in factor_ids
+    }
+    assert by_factor[factor_ids[0]] == by_factor[factor_ids[1]]
+
+
 def test_export_v5_authoritative_scan_defaults_match_production_systemd(monkeypatch):
     monkeypatch.delenv("QUANT_LAB_EXPORT_V5_MAX_PENDING_BUNDLES", raising=False)
     monkeypatch.delenv("QUANT_LAB_EXPORT_V5_MAX_SCAN_BUNDLES", raising=False)

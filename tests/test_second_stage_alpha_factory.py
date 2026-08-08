@@ -999,7 +999,7 @@ def test_alpha_factory_result_blocks_paper_when_validation_is_negative():
     )
     samples = _alpha_factory_sample_frame(
         [100.0] * 21 + [-50.0] * 9,
-        start=datetime(2026, 5, 1, tzinfo=UTC),
+        start=datetime(2026, 4, 25, tzinfo=UTC),
     )
 
     results = build_alpha_factory_results(
@@ -1014,6 +1014,36 @@ def test_alpha_factory_result_blocks_paper_when_validation_is_negative():
     assert row["recommended_mode"] != "paper"
     assert "validation_avg_net_bps_non_positive" in row["decision_reasons"]
     assert "validation_metrics_json" in results.columns
+
+
+def test_alpha_factory_result_uses_history_but_excludes_future_event_samples():
+    summary = _alpha_factory_summary_frame(
+        avg_net_bps=343.0,
+        p25_net_bps=10.0,
+        win_rate=1.0,
+        sample_count=3,
+        complete_sample_count=3,
+    )
+    samples = _alpha_factory_sample_frame(
+        [10.0, 20.0, 999.0],
+        start=datetime(2026, 5, 23, tzinfo=UTC),
+    )
+
+    results = build_alpha_factory_results(
+        summary,
+        samples=samples,
+        as_of_date=datetime(2026, 5, 24, tzinfo=UTC).date(),
+        generated_at=datetime(2026, 5, 24, tzinfo=UTC),
+    )
+
+    row = results.to_dicts()[0]
+    train = json.loads(row["train_metrics_json"])
+    validation = json.loads(row["validation_metrics_json"])
+    recent = json.loads(row["recent_7d_metrics_json"])
+    assert train["sample_count"] + validation["sample_count"] == 2
+    assert validation["avg_net_bps"] == 20.0
+    assert recent["sample_count"] == 2
+    assert recent["avg_net_bps"] == 15.0
 
 
 def test_alpha_factory_result_downgrades_when_recent_7d_is_negative():
@@ -1247,7 +1277,7 @@ def _alpha_factory_sample_frame(
         ts = start + timedelta(days=index)
         rows.append(
             {
-                "as_of_date": "2026-05-24",
+                "as_of_date": ts.date().isoformat(),
                 "strategy_candidate": "v5.expanded_relative_strength_top1_shadow",
                 "symbol": "NEAR-USDT",
                 "regime_state": "TREND_UP",

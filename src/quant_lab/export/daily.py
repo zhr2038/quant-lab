@@ -536,6 +536,13 @@ HEAVY_EXPORT_RECENT_FILE_LIMITS = {
     "v5_paper_strategy_restart_recovery": 100,
     "paper_strategy_runs": 100,
 }
+
+# Factor values from one factory generation share the same ``created_at``.
+# Sampling that column can cut through a generation at an arbitrary factor ID,
+# so forward-validation peers no longer see the same decision-time population.
+COHERENT_EXPORT_SAMPLE_TIMESTAMP_COLUMNS = {
+    "factor_value": ("available_time", "ts", "created_at"),
+}
 DEFAULT_EXPORT_SAMPLED_ROW_LIMIT = 20_000
 DEFAULT_EXPORT_RECENT_FILE_LIMIT = 100
 DEFAULT_EXPORT_FULL_READ_MAX_FILES = 80
@@ -6723,7 +6730,10 @@ def _collect_recent_heavy_files(
     *,
     limit: int,
 ) -> pl.DataFrame:
-    timestamp_columns = readers.DATASET_TIMESTAMP_COLUMNS.get(dataset_name, ())
+    coherent_timestamp_columns = COHERENT_EXPORT_SAMPLE_TIMESTAMP_COLUMNS.get(dataset_name, ())
+    timestamp_columns = coherent_timestamp_columns or readers.DATASET_TIMESTAMP_COLUMNS.get(
+        dataset_name, ()
+    )
     if files and timestamp_columns:
         try:
             scan = _scan_parquet_paths(files)
@@ -6733,6 +6743,12 @@ def _collect_recent_heavy_files(
                 None,
             )
             if timestamp_column is not None:
+                if coherent_timestamp_columns:
+                    return _collect_complete_recent_time_groups(
+                        scan,
+                        timestamp_column,
+                        limit=limit,
+                    )
                 return scan.sort(timestamp_column).tail(limit).collect()
         except Exception:
             pass
@@ -6765,6 +6781,46 @@ def _collect_recent_heavy_files(
     if timestamp_column is None:
         return combined.tail(limit)
     return _tail_by_time(combined, timestamp_column, limit=limit)
+
+
+def _collect_complete_recent_time_groups(
+    scan: pl.LazyFrame,
+    timestamp_column: str,
+    *,
+    limit: int,
+) -> pl.DataFrame:
+    """Keep complete decision-time groups without exceeding the target row budget."""
+    counts = (
+        scan.select(timestamp_column)
+        .drop_nulls()
+        .group_by(timestamp_column)
+        .len()
+        .sort(timestamp_column, descending=True)
+        .collect()
+    )
+    if counts.is_empty():
+        return scan.sort(timestamp_column).tail(limit).collect()
+
+    selected_rows = 0
+    cutoff: Any | None = None
+    for row in counts.iter_rows(named=True):
+        group_rows = int(row.get("len") or 0)
+        if group_rows <= 0:
+            continue
+        if selected_rows and selected_rows + group_rows > limit:
+            break
+        if not selected_rows and group_rows > limit:
+            return scan.sort(timestamp_column).tail(limit).collect()
+        selected_rows += group_rows
+        cutoff = row.get(timestamp_column)
+
+    if cutoff is None:
+        return scan.sort(timestamp_column).tail(limit).collect()
+    return (
+        scan.filter(pl.col(timestamp_column) >= pl.lit(cutoff))
+        .sort(timestamp_column)
+        .collect()
+    )
 
 
 def _scan_parquet_paths(files: list[Path]) -> pl.LazyFrame:

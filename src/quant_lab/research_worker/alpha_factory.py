@@ -427,7 +427,8 @@ def _expected_metric_window_counts(
     if samples.is_empty():
         return {}
     for row in samples.to_dicts():
-        if str(row.get("as_of_date") or "")[:10] != as_of_date.isoformat():
+        sample_as_of = _metric_sample_as_of(row)
+        if sample_as_of is not None and sample_as_of > as_of_date:
             continue
         timestamp = _metric_sample_timestamp(row)
         if timestamp is None:
@@ -448,6 +449,21 @@ def _expected_metric_window_counts(
             sum(timestamp >= recent_start for timestamp in timestamps),
         )
     return windows
+
+
+def _metric_sample_as_of(row: dict[str, Any]) -> date | None:
+    value = row.get("as_of_date")
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    if value not in (None, ""):
+        try:
+            return date.fromisoformat(str(value)[:10])
+        except ValueError:
+            pass
+    timestamp = _metric_sample_timestamp(row)
+    return timestamp.date() if timestamp is not None else None
 
 
 def _metric_group_key(row: dict[str, Any]) -> tuple[str, str, str, int]:

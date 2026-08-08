@@ -20,6 +20,7 @@ from pydantic import ValidationError
 from quant_lab.export import daily as daily_export
 from quant_lab.export_materializer import writer as materializer_writer
 from quant_lab.export_materializer.validator import validate_export_pack_locally
+from quant_lab.export_plane import queue as queue_module
 from quant_lab.export_plane import snapshot as snapshot_module
 from quant_lab.export_plane.cloud_index import export_plane_status, write_cloud_index
 from quant_lab.export_plane.contracts import (
@@ -136,6 +137,75 @@ def _task() -> ExportTask:
 def test_contract_rejects_extra_fields() -> None:
     with pytest.raises(ValidationError):
         ExportTask.model_validate({**_task().model_dump(mode="json"), "secret": "no"})
+
+
+def test_explicit_request_requeues_export_worker_code_mismatch(
+    tmp_path: Path,
+) -> None:
+    queue = queue_module.ensure_queue_layout(tmp_path / "queue")
+    task = _task()
+    failed = queue / "failed" / task.task_id
+    failed.mkdir()
+    (failed / "task.json").write_text(task.model_dump_json(), encoding="utf-8")
+    status = ExportTaskStatus(
+        task_id=task.task_id,
+        snapshot_id=task.snapshot_id,
+        state=ExportTaskState.FAILED,
+        requested_at=task.requested_at,
+        updated_at=task.requested_at,
+        claimed_at=task.requested_at,
+        worker_id="old-worker",
+        attempt=1,
+        max_attempts=3,
+        current_stage="failed",
+        output_bytes=99,
+        last_error="ValueError: worker_code_mismatch",
+    )
+    queue_module.atomic_write_json(
+        queue / "status" / f"{task.task_id}.json",
+        status.model_dump(mode="json"),
+    )
+
+    task_directory, refreshed = queue_module._requeue_worker_code_mismatch_task(
+        queue,
+        failed,
+        status,
+    )
+
+    assert task_directory == queue / "pending" / task.task_id
+    assert task_directory.is_dir()
+    assert not failed.exists()
+    assert refreshed.state is ExportTaskState.PENDING
+    assert refreshed.attempt == 1
+    assert refreshed.worker_id is None
+    assert refreshed.current_stage == "pending_after_worker_update"
+    assert refreshed.last_error is None
+    assert refreshed.output_bytes == 0
+
+
+def test_export_worker_attempt_uses_previous_cloud_status(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    task = _task()
+    previous = ExportTaskStatus(
+        task_id=task.task_id,
+        snapshot_id=task.snapshot_id,
+        state=ExportTaskState.PENDING,
+        requested_at=task.requested_at,
+        updated_at=task.requested_at,
+        attempt=1,
+        max_attempts=3,
+        current_stage="pending_after_worker_update",
+    )
+
+    def fake_scp_from(_config, _remote, target):
+        target.write_text(previous.model_dump_json(), encoding="utf-8")
+
+    monkeypatch.setattr(export_runner, "_scp_from", fake_scp_from)
+    config = SimpleNamespace(remote_queue_root="/queue")
+
+    assert export_runner._next_attempt(config, task, tmp_path) == 2
 
 
 def test_ed25519_signature_detects_tampering(tmp_path: Path) -> None:

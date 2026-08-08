@@ -22,6 +22,49 @@ from quant_lab.export_plane.status import (
 )
 
 
+def _requeue_worker_code_mismatch_task(
+    queue: Path,
+    task_directory: Path,
+    status: ExportTaskStatus,
+) -> tuple[Path, ExportTaskStatus]:
+    """Retry an immutable export only after a new explicit request."""
+    if (
+        task_directory.parent.name != "failed"
+        or status.state is not ExportTaskState.FAILED
+        or "worker_code_mismatch" not in str(status.last_error or "")
+        or status.attempt >= status.max_attempts
+    ):
+        return task_directory, status
+
+    pending = queue / "pending" / status.task_id
+    if pending.exists():
+        raise RuntimeError("export_task_requeue_destination_exists")
+    os.replace(task_directory, pending)
+    refreshed = status.model_copy(
+        update={
+            "state": ExportTaskState.PENDING,
+            "updated_at": datetime.now(UTC),
+            "claimed_at": None,
+            "heartbeat_at": None,
+            "lease_expires_at": None,
+            "worker_id": None,
+            "current_stage": "pending_after_worker_update",
+            "completed_members": 0,
+            "total_members": 0,
+            "output_bytes": 0,
+            "last_error": None,
+            "nas_pack_id": None,
+            "nas_pack_sha256": None,
+            "nas_download_path": None,
+        }
+    )
+    atomic_write_json(
+        queue / "status" / f"{status.task_id}.json",
+        refreshed.model_dump(mode="json"),
+    )
+    return pending, refreshed
+
+
 def create_export_task(
     *,
     export_date: date,
@@ -59,6 +102,7 @@ def create_export_task(
         task = ExportTask.model_validate_json((existing_dir / "task.json").read_text())
         status_path = queue / "status" / f"{task_id}.json"
         status = ExportTaskStatus.model_validate_json(status_path.read_text())
+        _, status = _requeue_worker_code_mismatch_task(queue, existing_dir, status)
         return task, status, False
 
     if not (queue / "snapshots" / manifest.snapshot_id / "files").is_dir():

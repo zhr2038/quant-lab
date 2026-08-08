@@ -169,10 +169,12 @@ def process_claimed_task(config: Config, task_id: str) -> None:
     work = config.data_dir / "work" / task_id
     shutil.rmtree(work, ignore_errors=True)
     work.mkdir(parents=True, exist_ok=True)
+    attempt = 1
     try:
         task_path = work / "task.json"
         _scp_from(config, _remote_task_path(config, task_id), task_path)
         task = ExportTask.model_validate_json(task_path.read_text(encoding="utf-8"))
+        attempt = _next_attempt(config, task, work)
         _verify_task(config, task, task_id)
         snapshot_path = work / "snapshot_manifest.json"
         remote_snapshot = (
@@ -183,7 +185,13 @@ def process_claimed_task(config: Config, task_id: str) -> None:
             snapshot_path.read_text(encoding="utf-8")
         )
         _verify_snapshot(config, task, snapshot)
-        status = _status(task, ExportTaskState.SYNCING, config, "syncing")
+        status = _status(
+            task,
+            ExportTaskState.SYNCING,
+            config,
+            "syncing",
+            attempt=attempt,
+        )
         _upload_status(config, status, work)
 
         with _heartbeat(config, task, work), _heavy_job_lock(config.heavy_lock_path):
@@ -213,6 +221,7 @@ def process_claimed_task(config: Config, task_id: str) -> None:
                 ExportTaskState.MATERIALIZING,
                 config,
                 "materializing",
+                attempt=attempt,
                 input_bytes=snapshot.total_input_bytes,
             )
             _upload_status(config, status, work)
@@ -231,6 +240,7 @@ def process_claimed_task(config: Config, task_id: str) -> None:
                 ExportTaskState.VALIDATING_ON_NAS,
                 config,
                 "validating_on_nas",
+                attempt=attempt,
                 input_bytes=snapshot.total_input_bytes,
                 output_bytes=result.pack_path.stat().st_size,
             )
@@ -253,6 +263,7 @@ def process_claimed_task(config: Config, task_id: str) -> None:
             ExportTaskState.ACCEPTED_ON_NAS,
             config,
             "accepted_on_nas",
+            attempt=attempt,
             input_bytes=snapshot.total_input_bytes,
             output_bytes=receipt.pack_size_bytes,
             nas_pack_id=receipt.pack_id,
@@ -298,7 +309,7 @@ def process_claimed_task(config: Config, task_id: str) -> None:
             task_id=task_id,
             last_error=f"{type(exc).__name__}: {exc}"[:2000],
         )
-        _mark_failed(config, task_id, work, exc)
+        _mark_failed(config, task_id, work, exc, attempt=attempt)
         raise
 
 
@@ -402,6 +413,7 @@ def _status(
     state: ExportTaskState,
     config: Config,
     stage: str,
+    attempt: int = 1,
     **updates: Any,
 ) -> ExportTaskStatus:
     now = datetime.now(UTC)
@@ -415,7 +427,7 @@ def _status(
         heartbeat_at=now,
         lease_expires_at=now + timedelta(seconds=task.lease_seconds),
         worker_id=config.worker_id,
-        attempt=1,
+        attempt=attempt,
         max_attempts=task.max_attempts,
         current_stage=stage,
         **updates,
@@ -506,7 +518,14 @@ def _heavy_job_lock(path: Path):
             fcntl.flock(handle, fcntl.LOCK_UN)
 
 
-def _mark_failed(config: Config, task_id: str, work: Path, exc: Exception) -> None:
+def _mark_failed(
+    config: Config,
+    task_id: str,
+    work: Path,
+    exc: Exception,
+    *,
+    attempt: int = 1,
+) -> None:
     last_error = f"{type(exc).__name__}: {exc}"[:4000]
     error = {
         "task_id": task_id,
@@ -524,6 +543,7 @@ def _mark_failed(config: Config, task_id: str, work: Path, exc: Exception) -> No
             ExportTaskState.FAILED,
             config,
             "failed",
+            attempt=attempt,
             last_error=last_error,
         )
         _upload_status(config, failed_status, work)
@@ -552,6 +572,21 @@ def _mark_failed(config: Config, task_id: str, work: Path, exc: Exception) -> No
 
 def _remote_task_path(config: Config, task_id: str) -> str:
     return f"{config.remote_queue_root}/running/{task_id}/task.json"
+
+
+def _next_attempt(config: Config, task: ExportTask, work: Path) -> int:
+    previous_path = work / "previous_status.json"
+    remote = f"{config.remote_queue_root}/status/{task.task_id}.json"
+    _scp_from(config, remote, previous_path)
+    previous = ExportTaskStatus.model_validate_json(
+        previous_path.read_text(encoding="utf-8")
+    )
+    if previous.task_id != task.task_id or previous.snapshot_id != task.snapshot_id:
+        raise ValueError("task_status_binding_mismatch")
+    attempt = previous.attempt + 1
+    if attempt > task.max_attempts:
+        raise ValueError("task_attempt_limit_exceeded")
+    return attempt
 
 
 def _ssh(

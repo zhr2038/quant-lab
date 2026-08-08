@@ -2741,6 +2741,7 @@ def test_web_v2_uses_truthful_charts_and_readable_mid_width_layout():
         "grid-template-columns:minmax(0,1fr) minmax(210px,.5fr)"
         in styles
     )
+    assert styles.count(".page-strategy .strategy-research-grid{") >= 6
 
 
 def test_web_v2_legacy_redirects_to_streamlit_port(monkeypatch):

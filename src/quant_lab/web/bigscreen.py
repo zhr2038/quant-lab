@@ -2367,10 +2367,11 @@ def _factor_factory_payload(
             )
         ),
         "trial_budget_limit": MAX_RESEARCH_TRIALS,
-        "trial_budget_used": trials.height,
+        "trial_budget_used": len(current_trial_rows),
         "trial_budget_usage_pct": round(
-            min(100.0, trials.height * 100.0 / MAX_RESEARCH_TRIALS), 2
+            min(100.0, len(current_trial_rows) * 100.0 / MAX_RESEARCH_TRIALS), 2
         ),
+        "lifetime_trial_count": trials.height,
         "total_trial_count": trials.height,
         "confirmatory_trial_count": confirmatory_trial_count,
         "current_trial_count": len(current_trial_rows),
@@ -2858,6 +2859,12 @@ def _data_health_payload(
         "market_bar_freshness_status": _market_bar_status(data_health, datetime.now(UTC)),
         "stale_dataset_count": len(_frame_rows(data_health.get("stale_datasets"), limit=1000)),
         "stale_datasets": _frame_rows(data_health.get("stale_datasets"), limit=8),
+        "factor_research_refresh_state": data_health.get(
+            "factor_research_refresh_state", "not_observable"
+        ),
+        "factor_research_refresh_reason": data_health.get(
+            "factor_research_refresh_reason"
+        ),
         "latest_per_symbol": latest_per_symbol,
         "latest_per_symbol_scope": "current_matrix_symbols_first"
         if data_matrix is not None

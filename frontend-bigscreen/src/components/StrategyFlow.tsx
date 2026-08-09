@@ -21,9 +21,14 @@ export function StrategyFlow({ flow }: { flow: Record<string, unknown> }) {
   );
   const nasTask = (factorFactory.nas_task ?? {}) as Record<string, unknown>;
   const nasTaskDetail = (nasTask.task ?? {}) as Record<string, unknown>;
+  const nasRequest = (nasTask.request ?? {}) as Record<string, unknown>;
   const generation = (factorFactory.generation ?? {}) as Record<string, unknown>;
   const nasTaskId = stringValue(nasTaskDetail.task_id, "");
   const generationId = stringValue(generation.generation_id, "");
+  const nasState = stringValue(nasTask.state, "idle");
+  const noWorkReason = researchRequestReason(
+    stringValue(factorFactory.no_work_reason ?? nasTask.no_work_reason ?? nasRequest.reason, "")
+  );
   return (
     <section className="card pad strategy-card">
       <h2 className="section-title icon-title"><GitBranch size={23} />策略机会流</h2>
@@ -73,7 +78,7 @@ export function StrategyFlow({ flow }: { flow: Record<string, unknown> }) {
           <div className="factor-factory-stats">
             <span><b>{shortNumber(factorFactory.independent_hypothesis_count)}</b><em>独立假设</em></span>
             <span><b>{shortNumber(factorFactory.active_hypothesis_count)}</b><em>活跃假设</em></span>
-            <span><b>{shortNumber(factorFactory.trial_budget_usage_pct)}%</b><em>试验预算</em></span>
+            <span><b>{shortNumber(factorFactory.trial_budget_usage_pct)}%</b><em>本轮试验预算</em></span>
           </div>
           <div
             className="factor-generation-grid"
@@ -82,8 +87,8 @@ export function StrategyFlow({ flow }: { flow: Record<string, unknown> }) {
           >
             <div className="factor-generation-cell">
               <span>NAS 任务</span>
-              <b>{researchTaskState(stringValue(nasTask.state, "idle"))}</b>
-              <em>{shortId(nasTaskId || generationId)}</em>
+              <b>{researchTaskState(nasState)}</b>
+              <em>{nasState.toLowerCase() === "no_work" ? noWorkReason : shortId(nasTaskId || generationId)}</em>
             </div>
             <div className="factor-generation-cell verdict">
               <span>本轮结论</span>
@@ -95,6 +100,7 @@ export function StrategyFlow({ flow }: { flow: Record<string, unknown> }) {
               <b>{shortNumber(factorFactory.current_trial_count)} 个试验</b>
               <em>
                 质量拒绝 {shortNumber(factorFactory.current_data_quality_rejected_count)}
+                {" · 本轮/历史 "}{shortNumber(factorFactory.current_trial_count)}/{shortNumber(factorFactory.lifetime_trial_count ?? factorFactory.total_trial_count)}
                 {" · FDR 通过 "}{shortNumber(factorFactory.multiple_testing_pass_count)}
                 {" · PIT成本 "}{pct(factorFactory.minimum_point_in_time_cost_coverage, 1)}
                 {" · 可信 "}{pct(factorFactory.minimum_trusted_cost_coverage, 1)}
@@ -196,7 +202,13 @@ function researchTaskState(value: string): string {
   if (state === "running" || state === "computing") return "计算中";
   if (state === "pending" || state === "queued") return "等待计算";
   if (state === "failed") return "计算失败";
+  if (state === "no_work") return "暂无待运行假设";
   return state === "idle" ? "暂无任务" : value;
+}
+
+function researchRequestReason(value: string): string {
+  if (value === "no_approved_factor_research_hypotheses") return "没有已批准假设";
+  return value || "无待运行任务";
 }
 
 function researchVerdict(value: string): string {

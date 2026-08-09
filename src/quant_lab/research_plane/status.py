@@ -33,6 +33,13 @@ TASK_DIRECTORY_STATES = (
     "cancelled",
 )
 
+REQUEST_STATUS_FILES = {
+    "factor_research": "factor_research_request.json",
+    "factor_factory": "factor_factory_request.json",
+    "v5_candidate_evidence": "v5_candidate_evidence_request.json",
+    "trade_level_history": "trade_level_history_request.json",
+}
+
 
 def ensure_research_queue_layout(root: str | Path) -> Path:
     queue_root = Path(root)
@@ -81,6 +88,26 @@ def write_research_status(root: str | Path, status: ResearchTaskStatus) -> Path:
     return atomic_write_json(
         queue_root / "status" / f"{status.task_id}.json",
         status.model_dump(mode="json"),
+    )
+
+
+def write_factor_research_request_status(
+    root: str | Path,
+    payload: dict[str, Any],
+) -> Path:
+    queue_root = ensure_research_queue_layout(root)
+    observed_at = payload.get("observed_at") or datetime.now(UTC).isoformat()
+    normalized = {
+        **payload,
+        "schema_version": "quant_lab_factor_research_request_status.v1",
+        "task_type": "factor_research",
+        "observed_at": observed_at,
+        "research_only": True,
+        "live_order_effect": "none",
+    }
+    return atomic_write_json(
+        queue_root / "status" / REQUEST_STATUS_FILES["factor_research"],
+        normalized,
     )
 
 
@@ -214,11 +241,7 @@ def _research_plane_status_for_type(
         None,
     )
     selected = active or latest
-    request_status_name = {
-        "factor_factory": "factor_factory_request.json",
-        "v5_candidate_evidence": "v5_candidate_evidence_request.json",
-        "trade_level_history": "trade_level_history_request.json",
-    }.get(task_type)
+    request_status_name = REQUEST_STATUS_FILES.get(task_type)
     request_status = (
         read_json(queue_root / "status" / request_status_name)
         if request_status_name is not None
@@ -273,6 +296,12 @@ def _research_plane_status_for_type(
         and request_status.get("state") == "generation_integrity_failed"
     ):
         state = "generation_integrity_failed"
+    elif (
+        active is None
+        and request_status
+        and request_status.get("state") == "no_work"
+    ):
+        state = "no_work"
     payload = {
         "schema_version": schema_version,
         "task_type": task_type,
@@ -284,7 +313,17 @@ def _research_plane_status_for_type(
         "research_only": True,
         "live_order_effect": "none",
     }
-    if task_type == "factor_factory":
+    if task_type == "factor_research":
+        request = request_status or {}
+        payload.update(
+            {
+                "health_state": request.get("health_state") or state,
+                "request_outcome": request.get("request_outcome") or request.get("state"),
+                "no_work_reason": request.get("reason") if state == "no_work" else None,
+                "last_request_at": request.get("observed_at"),
+            }
+        )
+    elif task_type == "factor_factory":
         request = request_status or {}
         payload_state = request.get("snapshot_payload_state")
         if snapshot_rehydrating:

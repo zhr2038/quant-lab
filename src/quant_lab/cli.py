@@ -146,7 +146,10 @@ from quant_lab.research_plane.snapshot_gc import (
     DEFAULT_SNAPSHOT_RETENTION_DAYS,
     gc_research_snapshot_payloads,
 )
-from quant_lab.research_plane.status import research_plane_status
+from quant_lab.research_plane.status import (
+    research_plane_status,
+    write_factor_research_request_status,
+)
 from quant_lab.risk.publish import publish_risk_permission as publish_risk_permission_to_lake
 from quant_lab.strategy_telemetry.analyze import analyze_v5_telemetry
 from quant_lab.strategy_telemetry.bundle import safe_extract_v5_bundle, validate_v5_bundle
@@ -2027,17 +2030,24 @@ def request_factor_research_command(
     except RuntimeError as exc:
         if str(exc) != "no_approved_factor_research_hypotheses":
             raise
+        request_status = {
+            "as_of_date": day.isoformat(),
+            "health_state": "no_work",
+            "reason": "no_approved_factor_research_hypotheses",
+            "request_outcome": "no_work",
+            "state": "no_work",
+            "task_created": False,
+            "quant_lab_commit": quant_lab_commit,
+        }
+        write_factor_research_request_status(queue_root, request_status)
         typer.echo(
             json.dumps(
                 {
                     "task": None,
                     "status": {
-                        "as_of_date": day.isoformat(),
+                        **request_status,
                         "live_order_effect": "none",
-                        "reason": "no_approved_factor_research_hypotheses",
                         "research_only": True,
-                        "state": "no_work",
-                        "task_created": False,
                         "task_type": "factor_research",
                     },
                 },
@@ -2047,6 +2057,18 @@ def request_factor_research_command(
             )
         )
         return
+    request_status = {
+        "as_of_date": day.isoformat(),
+        "health_state": "task_created",
+        "reason": "factor_research_task_enqueued",
+        "request_outcome": "task_created",
+        "snapshot_id": task.snapshot_id,
+        "state": "task_created",
+        "task_created": True,
+        "task_id": task.task_id,
+        "quant_lab_commit": quant_lab_commit,
+    }
+    write_factor_research_request_status(queue_root, request_status)
     typer.echo(
         json.dumps(
             {

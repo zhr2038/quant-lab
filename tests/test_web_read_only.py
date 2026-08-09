@@ -989,6 +989,103 @@ def test_data_health_still_reports_dataset_beyond_registry_sla(tmp_path):
     assert "factor_attribution" in {row["dataset"] for row in stale_rows}
 
 
+def test_data_health_treats_terminal_factor_research_outputs_as_quiescent(tmp_path):
+    lake_root = tmp_path / "lake"
+    created_at = datetime.now(UTC) - timedelta(days=9)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "hypothesis_id": "hypothesis-terminal",
+                    "hypothesis_version": 1,
+                    "status": "REJECTED",
+                    "updated_at": created_at,
+                }
+            ]
+        ),
+        lake_root / "gold" / "research_hypothesis_registry",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "trial_id": "trial-terminal",
+                    "status": "COMPLETED",
+                    "submitted_at": created_at,
+                }
+            ]
+        ),
+        lake_root / "gold" / "research_trial_ledger",
+    )
+    for dataset_name in ("factor_attribution", "factor_portfolio_validation"):
+        write_parquet_dataset(
+            pl.DataFrame(
+                [
+                    {
+                        "as_of_date": created_at.date().isoformat(),
+                        "trial_id": "trial-terminal",
+                        "factor_id": "factor-terminal",
+                        "created_at": created_at,
+                    }
+                ]
+            ),
+            lake_root / "gold" / dataset_name,
+        )
+
+    summary = readers.data_health_summary(lake_root)
+    stale_names = {row["dataset"] for row in summary["stale_datasets"].to_dicts()}
+
+    assert summary["factor_research_refresh_state"] == "no_work"
+    assert summary["factor_research_refresh_reason"] == (
+        "no_approved_factor_research_hypotheses"
+    )
+    assert not stale_names.intersection(
+        {
+            "factor_attribution",
+            "factor_portfolio_validation",
+            "research_hypothesis_registry",
+            "research_trial_ledger",
+        }
+    )
+
+
+def test_data_health_keeps_factor_research_stale_when_hypothesis_is_executable(tmp_path):
+    lake_root = tmp_path / "lake"
+    created_at = datetime.now(UTC) - timedelta(days=9)
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "hypothesis_id": "hypothesis-active",
+                    "hypothesis_version": 1,
+                    "status": "APPROVED_FOR_RESEARCH",
+                    "updated_at": created_at,
+                }
+            ]
+        ),
+        lake_root / "gold" / "research_hypothesis_registry",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "as_of_date": created_at.date().isoformat(),
+                    "trial_id": "trial-active",
+                    "factor_id": "factor-active",
+                    "created_at": created_at,
+                }
+            ]
+        ),
+        lake_root / "gold" / "factor_attribution",
+    )
+
+    summary = readers.data_health_summary(lake_root)
+    stale_names = {row["dataset"] for row in summary["stale_datasets"].to_dicts()}
+
+    assert summary["factor_research_refresh_state"] == "active"
+    assert "factor_attribution" in stale_names
+
+
 def test_data_health_does_not_age_out_versioned_alpha_template_controls(tmp_path):
     lake_root = tmp_path / "lake"
     created_at = datetime.now(UTC) - timedelta(days=30)

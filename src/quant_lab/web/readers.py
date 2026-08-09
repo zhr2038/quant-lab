@@ -287,6 +287,7 @@ OPTIONAL_EMPTY_DATASET_STATUSES = {
     "registry_optional_empty",
     "registry_freshness_not_required",
     "registry_freshness_within_sla",
+    "factor_research_idle_no_executable_hypotheses",
     DERIVED_LATEST_SOURCE_CURRENT_STATUS,
     "event_driven_no_recent_cost_probe_p3_preflight",
     "event_driven_no_recent_cost_probe_order_event",
@@ -327,6 +328,19 @@ HISTORICAL_RESEARCH_DATASETS = {
     "v5_entry_quality_history_pullback_by_horizon",
     "v5_entry_quality_history_anti_leakage_check",
     "v5_entry_quality_history_metrics",
+}
+FACTOR_RESEARCH_QUIESCENT_DATASETS = {
+    "factor_attribution",
+    "factor_portfolio_validation",
+    "research_hypothesis_registry",
+    "research_trial_ledger",
+}
+FACTOR_RESEARCH_EXECUTABLE_HYPOTHESIS_STATUSES = {
+    "APPROVED_FOR_RESEARCH",
+    "RUNNING",
+    "SIGNAL_VALID",
+    "PORTFOLIO_FAIL",
+    "PAPER_CANDIDATE",
 }
 RESEARCH_DIAGNOSTIC_DATASET_KEYS: dict[str, tuple[str, ...]] = {
     "sol_protect_paper_loss_attribution": (
@@ -2773,6 +2787,14 @@ def lake_diagnostics(lake_root: str | Path) -> dict[str, Any]:
 
 def data_health_summary(lake_root: str | Path) -> dict[str, Any]:
     warnings: list[str] = []
+    factor_research_has_work = _factor_research_has_executable_work(lake_root)
+    factor_research_refresh_state = (
+        "active"
+        if factor_research_has_work is True
+        else "no_work"
+        if factor_research_has_work is False
+        else "not_observable"
+    )
     market_health = _market_bar_lazy_health(lake_root)
     if market_health["warning"]:
         warnings.append(market_health["warning"])
@@ -2789,6 +2811,12 @@ def data_health_summary(lake_root: str | Path) -> dict[str, Any]:
             "latest_market_bar_close_ts": None,
             "market_bar_timeframe": DEFAULT_MARKET_BAR_TIMEFRAME,
             "missing_bar_ratio": 0.0,
+            "factor_research_refresh_state": factor_research_refresh_state,
+            "factor_research_refresh_reason": (
+                "no_approved_factor_research_hypotheses"
+                if factor_research_has_work is False
+                else None
+            ),
             "warnings": [*warnings, "market_bar 数据集缺失或为空"],
         }
 
@@ -2820,6 +2848,12 @@ def data_health_summary(lake_root: str | Path) -> dict[str, Any]:
         "latest_market_bar_close_ts": latest_close_ts,
         "market_bar_timeframe": timeframe,
         "missing_bar_ratio": missing_ratio,
+        "factor_research_refresh_state": factor_research_refresh_state,
+        "factor_research_refresh_reason": (
+            "no_approved_factor_research_hypotheses"
+            if factor_research_has_work is False
+            else None
+        ),
         "warnings": warnings,
     }
 
@@ -6456,6 +6490,7 @@ def _stale_dataset_rows(lake_root: str | Path) -> pl.DataFrame:
     okx_readonly_private_is_current = _okx_readonly_private_is_current(lake_root)
     expanded_universe_automation_is_active = _expanded_universe_automation_is_active(lake_root)
     closed_research_keys = _closed_research_keys(lake_root)
+    factor_research_has_work = _factor_research_has_executable_work(lake_root)
     for name in sorted(DATASET_PATHS):
         path = dataset_path_for(lake_root, name)
         snapshot = _dataset_snapshot(lake_root, name)
@@ -6487,6 +6522,12 @@ def _stale_dataset_rows(lake_root: str | Path) -> pl.DataFrame:
             status = EVENT_DRIVEN_OKX_READONLY_DATASET_STATUSES[name]
         if name in HISTORICAL_RESEARCH_DATASETS and status == "stale":
             status = "historical_research_snapshot"
+        if (
+            name in FACTOR_RESEARCH_QUIESCENT_DATASETS
+            and status == "stale"
+            and factor_research_has_work is False
+        ):
+            status = "factor_research_idle_no_executable_hypotheses"
         status = _optional_stale_status_from_registry(
             name,
             status,
@@ -6525,6 +6566,30 @@ def _closed_research_keys(lake_root: str | Path) -> set[str]:
     except Exception:
         return set()
     return research_portfolio_closed_keys(frame)
+
+
+def _factor_research_has_executable_work(lake_root: str | Path) -> bool | None:
+    try:
+        frame = read_parquet_dataset(
+            dataset_path_for(lake_root, "research_hypothesis_registry")
+        )
+    except Exception:
+        return None
+    if frame.is_empty() or "status" not in frame.columns:
+        return None
+    if {"hypothesis_id", "hypothesis_version"}.issubset(frame.columns):
+        frame = frame.sort("hypothesis_version").unique(
+            subset=["hypothesis_id"],
+            keep="last",
+        )
+    statuses = {
+        str(value).strip().upper()
+        for value in frame.get_column("status").drop_nulls().to_list()
+        if str(value).strip()
+    }
+    if not statuses:
+        return None
+    return bool(statuses.intersection(FACTOR_RESEARCH_EXECUTABLE_HYPOTHESIS_STATUSES))
 
 
 def _dataset_belongs_to_closed_research(dataset_name: str, closed_keys: set[str]) -> bool:

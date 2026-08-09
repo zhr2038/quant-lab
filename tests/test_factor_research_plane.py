@@ -91,13 +91,32 @@ def test_factor_research_request_treats_no_approved_hypotheses_as_no_work(
     assert payload["task"] is None
     assert payload["status"] == {
         "as_of_date": "2026-08-07",
+        "health_state": "no_work",
         "live_order_effect": "none",
+        "quant_lab_commit": COMMIT,
         "reason": "no_approved_factor_research_hypotheses",
+        "request_outcome": "no_work",
         "research_only": True,
         "state": "no_work",
         "task_created": False,
         "task_type": "factor_research",
     }
+    request_status = json.loads(
+        (tmp_path / "queue" / "status" / "factor_research_request.json").read_text(
+            "utf-8"
+        )
+    )
+    assert request_status["schema_version"] == (
+        "quant_lab_factor_research_request_status.v1"
+    )
+    assert request_status["observed_at"]
+    assert request_status["quant_lab_commit"] == COMMIT
+    plane_status = research_plane_status(tmp_path / "queue")["tasks"]["factor_research"]
+    assert plane_status["state"] == "no_work"
+    assert plane_status["request_outcome"] == "no_work"
+    assert plane_status["no_work_reason"] == (
+        "no_approved_factor_research_hypotheses"
+    )
 
 
 def test_factor_research_correlation_replaces_same_day_research_rows() -> None:

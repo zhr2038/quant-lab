@@ -2197,6 +2197,9 @@ def test_bigscreen_factor_research_scopes_current_generation_and_hides_null_plac
 
     assert factor_research["total_trial_count"] == 2
     assert factor_research["current_trial_count"] == 1
+    assert factor_research["lifetime_trial_count"] == 2
+    assert factor_research["trial_budget_used"] == 1
+    assert factor_research["trial_budget_usage_pct"] == pytest.approx(1.85)
     assert factor_research["current_completed_trial_count"] == 1
     assert factor_research["current_data_quality_rejected_count"] == 1
     assert factor_research["current_trial_decision_counts"] == {

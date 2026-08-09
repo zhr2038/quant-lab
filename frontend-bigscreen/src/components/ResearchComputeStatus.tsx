@@ -40,7 +40,7 @@ function stateTone(state: string): string {
   const normalized = state.toLowerCase();
   if (["completed", "up_to_date", "already_current", "already_current_no_update"].includes(normalized)) return "ok";
   if (["rejected", "failed", "expired"].includes(normalized)) return "critical";
-  if (["idle", "not_observable"].includes(normalized)) return "info";
+  if (["idle", "no_work", "not_observable"].includes(normalized)) return "info";
   return "warning";
 }
 
@@ -51,10 +51,15 @@ function TaskStatus({ label, status }: { label: string; status: Record<string, u
   const downloadedBytes = Number(task.downloaded_bytes ?? 0);
   const cacheHitBytes = Number(task.cache_hit_bytes ?? 0);
   const cacheRate = inputBytes > 0 ? `${((cacheHitBytes / inputBytes) * 100).toFixed(1)}%` : "—";
-  const error = stringValue(task.last_error ?? status.last_error, "");
-  const isFactorFactory = stringValue(task.task_type) === "factor_factory"
-    || status.request_outcome !== undefined;
+  const isNoWork = state.toLowerCase() === "no_work";
+  const error = isNoWork ? "" : stringValue(task.last_error ?? status.last_error, "");
+  const taskType = stringValue(task.task_type ?? status.task_type, "");
+  const isFactorFactory = taskType === "factor_factory";
   const request = objectValue(status.request);
+  const requestReason = stringValue(status.no_work_reason ?? request.reason, "");
+  const requestReasonLabel = requestReason === "no_approved_factor_research_hypotheses"
+    ? "没有已批准且可执行的研究假设"
+    : requestReason;
   const inputFingerprint = objectValue(status.input_fingerprint ?? request.input_fingerprint);
   const requestOutcome = stringValue(status.request_outcome ?? request.request_outcome, "—");
   const fingerprintDigest = stringValue(inputFingerprint.combined_input_digest, "");
@@ -70,8 +75,13 @@ function TaskStatus({ label, status }: { label: string; status: Record<string, u
         <b>{label}</b>
         <span className={`research-state ${stateTone(state)}`}><Activity size={13} />{state}</span>
       </div>
+      {isNoWork ? (
+        <div className="research-compute-note">
+          本次调度正常完成：{requestReasonLabel || "没有待运行任务"} · {timeValue(status.last_request_at ?? request.observed_at)}
+        </div>
+      ) : null}
       <div className="research-compute-grid">
-        <div><span>任务</span><b title={stringValue(task.task_id)}>{stringValue(task.task_id, "—")}</b></div>
+        <div><span>{isNoWork ? "最近任务" : "任务"}</span><b title={stringValue(task.task_id)}>{stringValue(task.task_id, "—")}</b></div>
         <div><span>Snapshot</span><b title={stringValue(task.snapshot_id)}>{stringValue(task.snapshot_id, "—")}</b></div>
         <div><span>窗口</span><b>{stringValue(task.start_date, "—")} → {stringValue(task.end_date, "—")}</b></div>
         <div><span>Worker / 心跳</span><b><Clock3 size={12} />{stringValue(task.worker_id, "—")} · {timeValue(task.worker_heartbeat_at ?? task.heartbeat_at)}</b></div>

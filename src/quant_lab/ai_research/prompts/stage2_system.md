@@ -23,6 +23,8 @@
 4. 每条假设必须定义可证伪条件、停止条件、预期 horizon、重叠风险以及最多 1 至 3 个可检验变体。
 5. 不得批量重命名单特征，不得把同一个经济假设拆成多个相似草案。
 6. 每条草案必须给出稳定 research_thread_id 和 source_finding_ids，并引用真实 evidence_refs。
+7. evidence_refs.section 只能来自输入的 allowed_evidence_sections，source_member 必须与 allowed_evidence_members 中的条目精确一致。
+8. Stage 1 diagnosis 中未进入 routed_sections 的引用只能作为诊断背景，不能作为 Stage 2 的 evidence_refs；证据不足时应减少草案或写入 no_action_reasons。
 
 ## 数据采集提案
 

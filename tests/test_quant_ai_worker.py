@@ -10,8 +10,11 @@ from pydantic import BaseModel
 from deploy.nas_ai_worker import worker
 from quant_lab.ai_research.contracts import (
     AIResearchTask,
+    DataCollectionProposal,
     EvidenceDocument,
+    EvidenceReference,
     Stage1Diagnosis,
+    Stage2ProposalSet,
     TaskPreflight,
     compute_task_packet_sha256,
 )
@@ -79,6 +82,116 @@ def test_schema_retry_includes_structured_feedback(monkeypatch) -> None:
     assert result["validation_events"][0]["event"] == "SCHEMA_VALIDATION_FAILED"
     assert len(requests[1]["input"]) == 3  # type: ignore[arg-type]
     assert "secret-never-logged" not in str(requests)
+
+
+def test_semantic_retry_includes_bounded_feedback(monkeypatch) -> None:
+    requests: list[dict[str, object]] = []
+    responses = iter([_Response('{"value":1}'), _Response('{"value":2}')])
+
+    class _Client:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def __enter__(self) -> _Client:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def post(self, _url: str, **kwargs: object) -> _Response:
+            requests.append(kwargs["json"])  # type: ignore[arg-type]
+            return next(responses)
+
+    def _validate(output: BaseModel) -> None:
+        if output.value != 2:  # type: ignore[attr-defined]
+            raise worker._StructuredOutputSemanticError(
+                [
+                    {
+                        "path": "value",
+                        "type": "test_semantic_error",
+                        "message": "value must equal 2",
+                    }
+                ]
+            )
+
+    monkeypatch.setattr(worker.httpx, "Client", _Client)
+    monkeypatch.setattr(worker, "_sleep", lambda _seconds: None)
+    config = SimpleNamespace(
+        model="gpt-test",
+        reasoning_effort="xhigh",
+        api_key="secret-never-logged",
+        api_base_url="http://local/v1",
+        api_timeout_seconds=60,
+        api_retries=1,
+    )
+
+    result = worker._responses_call(
+        config,
+        system_prompt="system",
+        user_payload={"task_id": "task-1"},
+        output_model=_Output,
+        schema_name="test_output",
+        max_output_tokens=4000,
+        stage="stage2",
+        semantic_validator=_validate,
+    )
+
+    assert result["attempts"] == 2
+    assert result["validation_events"][0]["event"] == "SEMANTIC_VALIDATION_FAILED"
+    retry_input = requests[1]["input"]  # type: ignore[index]
+    assert "allowed_evidence_members" in str(retry_input)
+    assert "secret-never-logged" not in str(requests)
+
+
+def test_stage2_semantic_validation_rejects_unrouted_evidence() -> None:
+    proposal = DataCollectionProposal(
+        proposal_id="proposal-1",
+        title="Collect execution evidence",
+        observed_data_gap="Cost evidence is incomplete.",
+        required_dataset="cost_evidence",
+        required_fields=["fee_bps"],
+        collection_scope="Read-only evidence collection.",
+        collection_method="Read the existing audited dataset.",
+        availability_lag_requirement="One day or less.",
+        freshness_requirement="As of the current pack.",
+        quality_checks=["Verify provenance."],
+        acceptance_criteria=["The field is non-null."],
+        stopping_conditions=["Stop if provenance is missing."],
+        evidence_refs=[
+            EvidenceReference(
+                section="cost_and_execution",
+                source_member="derived/cost_evidence_timeline_audit.json",
+                claim="Cost evidence is incomplete.",
+            )
+        ],
+        research_thread_id="thread-1",
+        source_finding_ids=["finding-1"],
+    )
+    output = Stage2ProposalSet(
+        task_id="task-1",
+        executive_summary="One bounded proposal.",
+        data_collection_proposals=[proposal],
+    )
+    task = SimpleNamespace(
+        task_id="task-1",
+        allowed_hypothesis_families=["data_quality"],
+    )
+    diagnosis = SimpleNamespace(
+        primary_bottlenecks=[SimpleNamespace(finding_id="finding-1")],
+        contradictions=[],
+        missing_evidence=[],
+    )
+
+    with pytest.raises(worker._StructuredOutputSemanticError) as exc_info:
+        worker._validate_stage2_output(
+            output,
+            task=task,
+            diagnosis=diagnosis,
+            allowed_sections={"factor_research"},
+            evidence_members={"factor_research": {"reports/factor.csv"}},
+        )
+
+    assert exc_info.value.errors[0]["type"] == "evidence_section_not_routed"
 
 
 def test_stage1_prompt_distinguishes_publication_lag_from_content_mismatch() -> None:

@@ -354,20 +354,21 @@ def run_research(config: Config, task: AIResearchTask) -> AIResearchResult:
     stage2_response_id: str | None = None
     stage2_attempts = 0
     if diagnosis.stage2_allowed:
-        routed_sections = {
-            name: [document.model_dump(mode="json") for document in task.sections[name]]
+        routed_documents = {
+            name: task.sections[name]
             for name in diagnosis.route_sections
         }
         # Core state remains available when present so Stage 2 cannot ignore the
         # freshness/provenance gate selected during Stage 1.
         if "core_state" in task.sections:
-            routed_sections.setdefault(
-                "core_state",
-                [document.model_dump(mode="json") for document in task.sections["core_state"]],
-            )
+            routed_documents.setdefault("core_state", task.sections["core_state"])
         allowed_evidence_members = {
             section: sorted(document.source_member for document in documents)
-            for section, documents in routed_sections.items()
+            for section, documents in routed_documents.items()
+        }
+        routed_sections = {
+            section: [document.model_dump(mode="json") for document in documents]
+            for section, documents in routed_documents.items()
         }
         stage2_payload = {
             "task_id": task.task_id,

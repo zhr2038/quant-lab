@@ -194,6 +194,74 @@ def test_stage2_semantic_validation_rejects_unrouted_evidence() -> None:
     assert exc_info.value.errors[0]["type"] == "evidence_section_not_routed"
 
 
+def test_run_research_materializes_stage2_evidence_member_contract(monkeypatch) -> None:
+    provisional = AIResearchTask(
+        task_id="task-stage2-routing",
+        created_at=datetime(2026, 8, 9, tzinfo=UTC),
+        source_pack_name="expert.zip",
+        source_pack_sha256="a" * 64,
+        packet_sha256="0" * 64,
+        sections={
+            "factor_research": [
+                EvidenceDocument(
+                    source_member="reports/factor.csv",
+                    source_format="csv",
+                    content_sha256="b" * 64,
+                    source_size_bytes=10,
+                    content={"rows": []},
+                )
+            ]
+        },
+        allowed_hypothesis_families=["data_quality"],
+    )
+    task = provisional.model_copy(
+        update={"packet_sha256": compute_task_packet_sha256(provisional)}
+    )
+    diagnosis = Stage1Diagnosis(
+        task_id=task.task_id,
+        system_state="READY_FOR_PROPOSALS",
+        executive_summary="Route the bounded factor evidence.",
+        stage2_allowed=True,
+        route_sections=["factor_research"],
+    )
+    proposals = Stage2ProposalSet(
+        task_id=task.task_id,
+        executive_summary="No proposal is needed for this fixture.",
+        no_action_reasons=["The fixture only validates evidence routing."],
+    )
+    calls: list[dict[str, object]] = []
+
+    def _fake_responses_call(*_args: object, **kwargs: object) -> dict[str, object]:
+        calls.append(kwargs)
+        output = diagnosis if len(calls) == 1 else proposals
+        return {
+            "output_text": output.model_dump_json(),
+            "usage": {},
+            "attempts": 1,
+            "response_id": f"response-{len(calls)}",
+            "validation_events": [],
+        }
+
+    monkeypatch.setattr(worker, "_responses_call", _fake_responses_call)
+    config = SimpleNamespace(
+        model="gpt-5.6-sol",
+        reasoning_effort="xhigh",
+        worker_id="nas-test",
+        max_output_tokens_stage1=1000,
+        max_output_tokens_stage2=1000,
+    )
+
+    result = worker.run_research(config, task)
+
+    assert result.proposals == proposals
+    stage2_payload = calls[1]["user_payload"]
+    assert isinstance(stage2_payload, dict)
+    assert stage2_payload["allowed_evidence_sections"] == ["factor_research"]
+    assert stage2_payload["allowed_evidence_members"] == {
+        "factor_research": ["reports/factor.csv"]
+    }
+
+
 def test_stage1_prompt_distinguishes_publication_lag_from_content_mismatch() -> None:
     prompt = worker.stage1_system_prompt()
 

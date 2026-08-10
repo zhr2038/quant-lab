@@ -45,6 +45,20 @@ def test_nas_export_worker_runtime_commit_matches_the_built_image() -> None:
     assert "os.environ['BUILD_GIT_COMMIT'] == image" in compose
 
 
+def test_nas_export_worker_deploys_and_verifies_current_head() -> None:
+    script = (
+        ROOT / "deploy" / "nas_export_worker" / "deploy_current_head.sh"
+    ).read_text(encoding="utf-8")
+
+    assert "git -C \"${REPOSITORY_ROOT}\" rev-parse --verify HEAD" in script
+    assert '/^BUILD_GIT_COMMIT=/' in script
+    assert "docker compose build --pull quant-export-worker" in script
+    assert "docker compose up -d --force-recreate quant-export-worker" in script
+    assert "IMAGE_COMMIT" in script
+    assert "RUNTIME_COMMIT" in script
+    assert "export worker provenance verification failed" in script
+
+
 SCRIPTS = ROOT / "deploy" / "scripts"
 
 

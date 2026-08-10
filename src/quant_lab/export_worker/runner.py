@@ -41,6 +41,10 @@ _STOP = False
 _STATUS_UPLOAD_LOCK = threading.RLock()
 
 
+class _TransientSnapshotTransferError(RuntimeError):
+    """A batch transfer may be retried without weakening content validation."""
+
+
 class Config:
     def __init__(self) -> None:
         self.ssh_host = _required("QLAB_SSH_HOST")
@@ -83,6 +87,14 @@ class Config:
         self.snapshot_fetch_workers = min(
             8,
             max(1, int(os.getenv("SNAPSHOT_FETCH_WORKERS", "4"))),
+        )
+        self.snapshot_transfer_retries = min(
+            5,
+            max(1, int(os.getenv("SNAPSHOT_TRANSFER_RETRIES", "3"))),
+        )
+        self.snapshot_transfer_idle_seconds = max(
+            60,
+            int(os.getenv("SNAPSHOT_TRANSFER_IDLE_SECONDS", "300")),
         )
         self.heavy_lock_path = Path(
             os.getenv("NAS_HEAVY_JOB_LOCK_PATH", "/runtime/heavy-job.lock")
@@ -654,6 +666,40 @@ def _tar_snapshot_files_from(
     expected = set(relative_paths)
     if len(expected) != len(relative_paths):
         raise RuntimeError("duplicate_snapshot_batch_path")
+    retries = max(1, int(getattr(config, "snapshot_transfer_retries", 3)))
+    for attempt in range(1, retries + 1):
+        if attempt > 1:
+            shutil.rmtree(target_root, ignore_errors=True)
+        try:
+            _tar_snapshot_files_from_once(
+                config,
+                snapshot_id=snapshot_id,
+                relative_paths=relative_paths,
+                target_root=target_root,
+                expected=expected,
+            )
+            return
+        except _TransientSnapshotTransferError:
+            if attempt >= retries:
+                raise
+            LOG.warning(
+                "snapshot_batch_transfer_retry snapshot_id=%s attempt=%s/%s",
+                snapshot_id,
+                attempt,
+                retries,
+                exc_info=True,
+            )
+            _sleep(attempt)
+
+
+def _tar_snapshot_files_from_once(
+    config: Config,
+    *,
+    snapshot_id: str,
+    relative_paths: list[str],
+    target_root: Path,
+    expected: set[str],
+) -> None:
     remote_root = f"{config.remote_queue_root}/snapshots/{snapshot_id}/files"
     remote_command = [
         "tar",
@@ -682,6 +728,21 @@ def _tar_snapshot_files_from(
         )
         assert process.stdin is not None
         assert process.stdout is not None
+        watchdog_stop = threading.Event()
+        watchdog_expired = threading.Event()
+        watchdog = threading.Thread(
+            target=_watch_snapshot_transfer_progress,
+            args=(
+                process,
+                target_root,
+                watchdog_stop,
+                watchdog_expired,
+                float(getattr(config, "snapshot_transfer_idle_seconds", 300)),
+            ),
+            name=f"snapshot-transfer-{snapshot_id}",
+            daemon=True,
+        )
+        watchdog.start()
         try:
             process.stdin.write(
                 b"\0".join(path.encode("utf-8") for path in relative_paths) + b"\0"
@@ -706,14 +767,84 @@ def _tar_snapshot_files_from(
             if return_code != 0:
                 stderr.seek(0)
                 detail = stderr.read().decode("utf-8", errors="replace")
-                raise RuntimeError(f"snapshot_batch_fetch_failed:{_tail(detail)}")
+                raise _TransientSnapshotTransferError(
+                    f"snapshot_batch_fetch_failed:{_tail(detail)}"
+                )
             missing = expected - seen
             if missing:
-                raise RuntimeError(f"snapshot_batch_members_missing:{len(missing)}")
-        except Exception:
-            process.kill()
-            process.wait(timeout=10)
+                raise _TransientSnapshotTransferError(
+                    f"snapshot_batch_members_missing:{len(missing)}"
+                )
+        except (BrokenPipeError, EOFError, tarfile.ReadError) as exc:
+            _stop_snapshot_transfer_process(process)
+            reason = (
+                "snapshot_batch_transfer_idle_timeout"
+                if watchdog_expired.is_set()
+                else "snapshot_batch_stream_interrupted"
+            )
+            raise _TransientSnapshotTransferError(reason) from exc
+        except subprocess.TimeoutExpired as exc:
+            _stop_snapshot_transfer_process(process)
+            raise _TransientSnapshotTransferError(
+                "snapshot_batch_process_timeout"
+            ) from exc
+        except _TransientSnapshotTransferError:
+            _stop_snapshot_transfer_process(process)
             raise
+        except Exception:
+            _stop_snapshot_transfer_process(process)
+            raise
+        finally:
+            watchdog_stop.set()
+            watchdog.join(timeout=5)
+
+
+def _stop_snapshot_transfer_process(process: subprocess.Popen[bytes]) -> None:
+    try:
+        process.kill()
+    except OSError:
+        pass
+    try:
+        process.wait(timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+
+def _watch_snapshot_transfer_progress(
+    process: subprocess.Popen[bytes],
+    target_root: Path,
+    stop: threading.Event,
+    expired: threading.Event,
+    idle_seconds: float,
+) -> None:
+    interval = min(10.0, max(0.05, idle_seconds / 4))
+    last_size = _snapshot_transfer_size(target_root)
+    last_progress = time.monotonic()
+    while not stop.wait(interval):
+        current_size = _snapshot_transfer_size(target_root)
+        if current_size != last_size:
+            last_size = current_size
+            last_progress = time.monotonic()
+            continue
+        if time.monotonic() - last_progress < idle_seconds:
+            continue
+        expired.set()
+        try:
+            process.kill()
+        except OSError:
+            pass
+        return
+
+
+def _snapshot_transfer_size(root: Path) -> int:
+    total = 0
+    try:
+        for path in root.rglob("*"):
+            if path.is_file() and not path.is_symlink():
+                total += path.stat().st_size
+    except OSError:
+        return total
+    return total
 
 
 def _ssh_options(config: Config) -> list[str]:

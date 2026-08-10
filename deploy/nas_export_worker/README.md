@@ -35,3 +35,5 @@ Always use `deploy_current_head.sh` after updating the NAS repository; manually 
 `worker_code_mismatch` when a newer cloud task arrives.
 `SNAPSHOT_FETCH_WORKERS` controls independent, resumable snapshot streams. Use `4` by
 default and raise it only after checking qyun2 SSH load and NAS network stability.
+Each stream retries interrupted transfers. `SNAPSHOT_TRANSFER_IDLE_SECONDS` closes a
+connection that remains alive without writing data; verified blob-cache batches are reused.

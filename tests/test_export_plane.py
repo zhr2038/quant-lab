@@ -1191,7 +1191,10 @@ def test_snapshot_batch_fetch_uses_independent_connection_options(
     )
     config = SimpleNamespace(
         ssh_host="cloud.example",
+        ssh_port=22,
         ssh_user="quant-export",
+        ssh_key_path=tmp_path / "id_ed25519",
+        known_hosts_path=tmp_path / "known_hosts",
         remote_queue_root="/queue",
     )
 
@@ -1203,6 +1206,135 @@ def test_snapshot_batch_fetch_uses_independent_connection_options(
     )
 
     assert "independent-transfer-option" in captured["command"]
+    assert (tmp_path / "target" / "lake" / "data.bin").read_bytes() == payload
+
+
+def test_snapshot_batch_fetch_retries_interrupted_stream(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    payload = b"snapshot-payload"
+    archive_bytes = io.BytesIO()
+    with tarfile.open(fileobj=archive_bytes, mode="w") as archive:
+        info = tarfile.TarInfo("lake/data.bin")
+        info.size = len(payload)
+        archive.addfile(info, io.BytesIO(payload))
+    complete = archive_bytes.getvalue()
+    streams = [complete[:520], complete]
+    sleeps: list[int] = []
+
+    class FakeProcess:
+        def __init__(self, stream: bytes) -> None:
+            self.stdin = io.BytesIO()
+            self.stdout = io.BytesIO(stream)
+            self.killed = False
+
+        def wait(self, timeout: int) -> int:
+            assert timeout in {10, 3600}
+            return 0
+
+        def kill(self) -> None:
+            self.killed = True
+
+    processes: list[FakeProcess] = []
+
+    def fake_popen(*_args, **_kwargs):
+        process = FakeProcess(streams[len(processes)])
+        processes.append(process)
+        return process
+
+    monkeypatch.setattr(export_runner.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(export_runner, "_sleep", sleeps.append)
+    config = SimpleNamespace(
+        ssh_host="cloud.example",
+        ssh_port=22,
+        ssh_user="quant-export",
+        ssh_key_path=tmp_path / "id_ed25519",
+        known_hosts_path=tmp_path / "known_hosts",
+        remote_queue_root="/queue",
+        snapshot_transfer_retries=2,
+        snapshot_transfer_idle_seconds=300,
+    )
+
+    export_runner._tar_snapshot_files_from(  # noqa: SLF001
+        config,
+        snapshot_id="snapshot-1",
+        relative_paths=["lake/data.bin"],
+        target_root=tmp_path / "target",
+    )
+
+    assert len(processes) == 2
+    assert sleeps == [1]
+    assert (tmp_path / "target" / "lake" / "data.bin").read_bytes() == payload
+
+
+def test_snapshot_batch_fetch_retries_idle_connection(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    payload = b"snapshot"
+    archive_bytes = io.BytesIO()
+    with tarfile.open(fileobj=archive_bytes, mode="w") as archive:
+        info = tarfile.TarInfo("lake/data.bin")
+        info.size = len(payload)
+        archive.addfile(info, io.BytesIO(payload))
+
+    class BlockingStream:
+        def __init__(self, released: threading.Event) -> None:
+            self.released = released
+
+        def read(self, _size: int = -1) -> bytes:
+            self.released.wait(timeout=2)
+            return b""
+
+    class FakeProcess:
+        def __init__(self, *, blocked: bool) -> None:
+            self.stdin = io.BytesIO()
+            self.released = threading.Event()
+            self.stdout = (
+                BlockingStream(self.released)
+                if blocked
+                else io.BytesIO(archive_bytes.getvalue())
+            )
+            self.killed = False
+
+        def wait(self, timeout: int) -> int:
+            assert timeout in {10, 3600}
+            return 0
+
+        def kill(self) -> None:
+            self.killed = True
+            self.released.set()
+
+    processes: list[FakeProcess] = []
+
+    def fake_popen(*_args, **_kwargs):
+        process = FakeProcess(blocked=not processes)
+        processes.append(process)
+        return process
+
+    monkeypatch.setattr(export_runner.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(export_runner, "_sleep", lambda _seconds: None)
+    config = SimpleNamespace(
+        ssh_host="cloud.example",
+        ssh_port=22,
+        ssh_user="quant-export",
+        ssh_key_path=tmp_path / "id_ed25519",
+        known_hosts_path=tmp_path / "known_hosts",
+        remote_queue_root="/queue",
+        snapshot_transfer_retries=2,
+        snapshot_transfer_idle_seconds=0.05,
+    )
+
+    export_runner._tar_snapshot_files_from(  # noqa: SLF001
+        config,
+        snapshot_id="snapshot-1",
+        relative_paths=["lake/data.bin"],
+        target_root=tmp_path / "target",
+    )
+
+    assert len(processes) == 2
+    assert processes[0].killed is True
     assert (tmp_path / "target" / "lake" / "data.bin").read_bytes() == payload
 
 

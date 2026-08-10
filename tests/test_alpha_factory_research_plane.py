@@ -13,6 +13,7 @@ from pydantic import ValidationError
 
 import quant_lab.research_plane.atomic_publish as atomic_publish_module
 import quant_lab.research_plane.importer as importer_module
+import quant_lab.research_plane.snapshot as snapshot_module
 from quant_lab.data.lake import read_parquet_dataset, write_parquet_dataset
 from quant_lab.research.alpha_factory.factory import (
     ALPHA_FACTORY_COMPUTE_OUTPUT_SPECS,
@@ -239,6 +240,48 @@ def test_alpha_factory_snapshot_is_content_addressed_and_reused(tmp_path: Path) 
         first,
         final_root=queue / "snapshots" / first.snapshot_id,
     )
+
+
+def test_alpha_factory_snapshot_retries_source_write_race(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    lake = tmp_path / "lake"
+    queue = tmp_path / "queue"
+    lake.mkdir()
+    registry = build_default_template_registry(datetime(2026, 7, 18, tzinfo=UTC))
+    write_parquet_dataset(registry, lake / ALPHA_FACTORY_TEMPLATE_REGISTRY_DATASET)
+    original = snapshot_module._materialize_alpha_factory_snapshot_files
+    attempts = 0
+
+    def race_once(*args, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("snapshot_source_changed_while_sealing")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(
+        snapshot_module,
+        "_materialize_alpha_factory_snapshot_files",
+        race_once,
+    )
+
+    manifest = seal_alpha_factory_snapshot(
+        lake,
+        queue,
+        as_of_date=date(2026, 7, 18),
+        lookback_days=30,
+        max_candidates=200,
+        selected_v5_bundle_id=BUNDLE_ID,
+        effective_registry=registry,
+        signing_key=Ed25519PrivateKey.generate(),
+        signature_key_id=TASK_KEY_ID,
+        quant_lab_commit=COMMIT,
+    )
+
+    assert attempts == 2
+    assert (queue / "snapshots" / manifest.snapshot_id / "SEALED").is_file()
 
 
 def test_alpha_factory_snapshot_seals_only_latest_expanded_quality_day(

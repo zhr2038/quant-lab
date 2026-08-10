@@ -43,7 +43,9 @@ from quant_lab.research_plane.contracts import (
     ResearchWorkerReceipt,
 )
 from quant_lab.research_plane.importer import (
+    ResearchImportResult,
     import_entry_quality_history_result,
+    import_pending_entry_quality_history_results,
     validate_entry_quality_history_result_for_import,
 )
 from quant_lab.research_plane.result import (
@@ -1395,6 +1397,51 @@ def test_importer_rejects_superseded_task_before_publish(tmp_path: Path, monkeyp
         )
     assert (queue / "results/rejected" / context.task.task_id).is_dir()
     assert not (lake / "gold/entry_quality_history_generation.json").exists()
+
+
+def test_batch_import_continues_after_superseded_result(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    queue = ensure_research_queue_layout(tmp_path / "queue")
+    for task_id in ("a-superseded", "b-current"):
+        (queue / "results" / "inbox" / task_id).mkdir(parents=True)
+    imported: list[str] = []
+
+    def fake_import(_lake_root, _queue_root, task_id, **_kwargs):
+        imported.append(task_id)
+        if task_id == "a-superseded":
+            raise ValueError("research_result_superseded_by_newer_snapshot")
+        return ResearchImportResult(
+            task_id=task_id,
+            state="completed",
+            generation_id="generation-current",
+            published_rows={"current": 1},
+            idempotent=False,
+        )
+
+    monkeypatch.setattr(
+        importer_module,
+        "import_entry_quality_history_result",
+        fake_import,
+    )
+    key = Ed25519PrivateKey.generate().public_key()
+
+    results = import_pending_entry_quality_history_results(
+        tmp_path / "lake",
+        queue,
+        task_public_key=key,
+        worker_public_key=key,
+        expected_task_key_id=TASK_KEY_ID,
+        expected_worker_key_id=WORKER_KEY_ID,
+        expected_quant_lab_commit=COMMIT,
+    )
+
+    assert imported == ["a-superseded", "b-current"]
+    assert [(result.task_id, result.state) for result in results] == [
+        ("a-superseded", "superseded"),
+        ("b-current", "completed"),
+    ]
 
 
 @pytest.mark.parametrize(

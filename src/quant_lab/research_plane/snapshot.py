@@ -6,6 +6,7 @@ import subprocess
 import uuid
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
+from time import sleep
 
 import polars as pl
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -553,6 +554,47 @@ def seal_entry_quality_history_snapshot(
 
 
 def seal_alpha_factory_snapshot(
+    lake_root: str | Path,
+    queue_root: str | Path,
+    *,
+    as_of_date: date,
+    lookback_days: int,
+    max_candidates: int,
+    selected_v5_bundle_id: str,
+    effective_registry: pl.DataFrame,
+    signing_key: Ed25519PrivateKey,
+    signature_key_id: str,
+    quant_lab_commit: str | None = None,
+    factor_generation_binding: dict[str, object] | None = None,
+    max_input_bytes: int = 25 * 1024**3,
+    max_input_rows: int = 50_000_000,
+) -> AlphaFactorySnapshotManifest:
+    """Seal a stable Alpha Factory snapshot, retrying bounded source-write races."""
+    for attempt in range(3):
+        try:
+            return _seal_alpha_factory_snapshot_once(
+                lake_root,
+                queue_root,
+                as_of_date=as_of_date,
+                lookback_days=lookback_days,
+                max_candidates=max_candidates,
+                selected_v5_bundle_id=selected_v5_bundle_id,
+                effective_registry=effective_registry,
+                signing_key=signing_key,
+                signature_key_id=signature_key_id,
+                quant_lab_commit=quant_lab_commit,
+                factor_generation_binding=factor_generation_binding,
+                max_input_bytes=max_input_bytes,
+                max_input_rows=max_input_rows,
+            )
+        except RuntimeError as exc:
+            if str(exc) != "snapshot_source_changed_while_sealing" or attempt == 2:
+                raise
+            sleep(0.25 * (attempt + 1))
+    raise RuntimeError("alpha_factory_snapshot_retry_exhausted")
+
+
+def _seal_alpha_factory_snapshot_once(
     lake_root: str | Path,
     queue_root: str | Path,
     *,

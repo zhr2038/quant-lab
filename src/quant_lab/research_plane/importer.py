@@ -1788,8 +1788,8 @@ def import_pending_entry_quality_history_results(
     for candidate in sorted((queue / "results" / "inbox").iterdir()):
         if not candidate.is_dir() or candidate.name.startswith("."):
             continue
-        results.append(
-            import_entry_quality_history_result(
+        try:
+            result = import_entry_quality_history_result(
                 lake_root,
                 queue,
                 candidate.name,
@@ -1835,7 +1835,20 @@ def import_pending_entry_quality_history_results(
                     trade_level_history_max_file_count
                 ),
             )
-        )
+        except ValueError as exc:
+            if str(exc) != "research_result_superseded_by_newer_snapshot":
+                raise
+            results.append(
+                ResearchImportResult(
+                    task_id=candidate.name,
+                    state="superseded",
+                    generation_id="",
+                    published_rows={},
+                    idempotent=False,
+                )
+            )
+            continue
+        results.append(result)
     return results
 
 

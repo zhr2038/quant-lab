@@ -22,7 +22,7 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 
 ARCHIVE_ROOT = Path("/var/lib/quant-lab/lake/archive/high_frequency")
-AUDIT_PATH = Path("/var/lib/quant-lab/ops/nas_high_frequency_prune.jsonl")
+AUDIT_PATH = ARCHIVE_ROOT / ".nas_high_frequency_prune.jsonl"
 HEAVY_LOCK_PATH = Path("/var/lock/quant-lab-heavy.lock")
 ALLOWED_DATASETS = {
     "bronze/okx_public_ws",
@@ -169,22 +169,42 @@ def prune_verified_archive_day(
         )
         if tombstone.exists():
             raise ArchivePruneError(f"tombstone_exists:{tombstone}")
-        target.rename(tombstone)
+        audit_handle = None
         try:
-            shutil.rmtree(tombstone)
-        except Exception:
-            if tombstone.exists() and not target.exists():
-                tombstone.rename(target)
-            raise
+            if audit_path is not None:
+                audit_path.parent.mkdir(parents=True, exist_ok=True)
+                audit_handle = audit_path.open("a", encoding="utf-8")
+                prepared = {
+                    **result,
+                    "event": "verified_prune_prepared",
+                    "prepared_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+                }
+                audit_handle.write(
+                    json.dumps(prepared, sort_keys=True, separators=(",", ":")) + "\n"
+                )
+                audit_handle.flush()
+                os.fsync(audit_handle.fileno())
 
-        result["removed"] = True
-        result["removed_at"] = datetime.now(UTC).isoformat().replace("+00:00", "Z")
-        if audit_path is not None:
-            audit_path.parent.mkdir(parents=True, exist_ok=True)
-            with audit_path.open("a", encoding="utf-8") as handle:
-                handle.write(json.dumps(result, sort_keys=True, separators=(",", ":")) + "\n")
-                handle.flush()
-                os.fsync(handle.fileno())
+            target.rename(tombstone)
+            try:
+                shutil.rmtree(tombstone)
+            except Exception:
+                if tombstone.exists() and not target.exists():
+                    tombstone.rename(target)
+                raise
+
+            result["event"] = "source_pruned_after_verified_archive"
+            result["removed"] = True
+            result["removed_at"] = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+            if audit_handle is not None:
+                audit_handle.write(
+                    json.dumps(result, sort_keys=True, separators=(",", ":")) + "\n"
+                )
+                audit_handle.flush()
+                os.fsync(audit_handle.fileno())
+        finally:
+            if audit_handle is not None:
+                audit_handle.close()
         return result
 
 

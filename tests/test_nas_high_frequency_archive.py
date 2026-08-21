@@ -75,6 +75,30 @@ def test_verified_high_frequency_prune_apply_requires_exact_manifest(tmp_path: P
     assert target.exists()
 
 
+def test_verified_high_frequency_prune_requires_writable_audit_before_remove(
+    tmp_path: Path,
+) -> None:
+    dataset = "silver/trade_print"
+    day = "2026-08-19"
+    target = _archive_day(tmp_path, dataset, day)
+    blocker = tmp_path / "not-a-directory"
+    blocker.write_text("block audit parent", encoding="utf-8")
+
+    with pytest.raises(FileExistsError):
+        MODULE.prune_verified_archive_day(
+            dataset=dataset,
+            day=day,
+            expected_manifest_sha256=_manifest_sha(target),
+            apply=True,
+            archive_root=tmp_path,
+            audit_path=blocker / "audit.jsonl",
+            lock_path=None,
+            now=datetime(2026, 8, 21, tzinfo=UTC),
+        )
+
+    assert target.exists()
+
+
 def test_verified_high_frequency_prune_apply_removes_only_verified_day(tmp_path: Path) -> None:
     dataset = "bronze/okx_public_ws"
     day = "2026-08-19"
@@ -95,6 +119,12 @@ def test_verified_high_frequency_prune_apply_removes_only_verified_day(tmp_path:
     assert result["removed"] is True
     assert not target.exists()
     assert keep.exists()
+    assert '"event":"verified_prune_prepared"' in (
+        tmp_path / "audit.jsonl"
+    ).read_text(encoding="utf-8")
+    assert '"event":"source_pruned_after_verified_archive"' in (
+        tmp_path / "audit.jsonl"
+    ).read_text(encoding="utf-8")
     assert '"removed":true' in (tmp_path / "audit.jsonl").read_text(encoding="utf-8")
 
 

@@ -175,7 +175,11 @@ for dataset in "${DATASETS[@]}"; do
       }
 
       file_count="$(wc -l <"$local_manifest" | tr -d ' ')"
-      byte_count="$(du -sb "$stage" | awk '{print $1}')"
+      byte_count="$(
+        find "$stage" -type f ! -name '.archive_manifest.sha256' \
+          ! -name '.archive_receipt.json' -exec stat -c '%s' {} + \
+          | awk '{total += $1} END {print total + 0}'
+      )"
       archived_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
       cp "$local_manifest" "$stage/.archive_manifest.sha256"
       printf '{"schema_version":"quant_lab_nas_high_frequency_archive_receipt.v1","dataset":"%s","day":"%s","source":"%s:%s","file_count":%s,"byte_count":%s,"manifest_sha256":"%s","archived_at":"%s"}\n' \

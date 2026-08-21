@@ -322,6 +322,8 @@ def test_nas_high_frequency_archive_requires_verified_copy_before_source_prune()
     assert 'wait "$transfer_pid"' in pull_script
     assert "retry high-frequency archive transfer" in pull_script
     assert "high-frequency archive transfer attempts exhausted" in pull_script
+    assert "-exec stat -c '%s' {} +" in pull_script
+    assert 'du -sb "$stage"' not in pull_script
     assert "prune_verified_high_frequency_archive.py" in pull_script
     assert "--apply" in pull_script
     assert "rm -rf -- \"$source\"" not in pull_script

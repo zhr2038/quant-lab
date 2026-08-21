@@ -31,10 +31,11 @@ flock -n 9 || exit 0
 
 SSH=(
   ssh -i "$SSH_KEY" -p "$CLOUD_PORT" -o BatchMode=yes
+  -o IPQoS=none
   -o ConnectTimeout=20 -o ServerAliveInterval=30 -o ServerAliveCountMax=3
   -o "UserKnownHostsFile=$KNOWN_HOSTS"
 )
-RSYNC_SSH="ssh -i $SSH_KEY -p $CLOUD_PORT -o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o UserKnownHostsFile=$KNOWN_HOSTS"
+RSYNC_SSH="ssh -i $SSH_KEY -p $CLOUD_PORT -o BatchMode=yes -o IPQoS=none -o ConnectTimeout=20 -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o UserKnownHostsFile=$KNOWN_HOSTS"
 REMOTE="$CLOUD_USER@$CLOUD_HOST"
 AUDIT_LOG="$AUDIT_ROOT/high-frequency.jsonl"
 today_utc="$("${SSH[@]}" "$REMOTE" date -u +%F)"

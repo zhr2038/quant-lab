@@ -215,7 +215,7 @@ def test_paper_proposal_export_reuses_published_identity_when_board_is_sparse(tm
         exit_rule={"operator": "max_holding_bars", "value": 8},
         max_holding_bars=8,
         created_at=datetime(2026, 7, 11, tzinfo=UTC),
-        expires_at=datetime(2026, 8, 11, tzinfo=UTC),
+        expires_at=datetime(2099, 8, 11, tzinfo=UTC),
         source_dataset_versions={"alpha_discovery_board": "published-v1"},
         required_market_fields=["bid", "ask", "mid", "momentum_8"],
         required_cost_trust_level="PAPER_ONLY",

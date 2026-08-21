@@ -1,0 +1,1 @@
+quant-research ALL=(quantlab) NOPASSWD: /usr/bin/python3 /opt/quant-lab/deploy/nas_archive/prune_verified_high_frequency_archive.py *

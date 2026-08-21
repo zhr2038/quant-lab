@@ -94,10 +94,10 @@ def test_v5_health_analysis_stays_lightweight():
     assert "--skip-analysis-after-sync" in sync_unit
     assert "--run-analysis-after-sync" not in sync_unit
     assert "--compact-output" in sync_unit
-    assert "/var/lock/quant-lab-heavy.lock" not in sync_unit
+    assert "flock -E 75 -w 3000 /var/lock/quant-lab-heavy.lock" in sync_unit
     assert "flock -E 75 -w 60 /var/lock/quant-lab-v5-telemetry-sync.lock" in sync_unit
     assert "/usr/bin/timeout 15m" in sync_unit
-    assert "TimeoutStartSec=18min" in sync_unit
+    assert "TimeoutStartSec=70min" in sync_unit
     assert "MemoryHigh=2G" in sync_unit
     assert "MemoryMax=3G" in sync_unit
     assert "QUANT_LAB_V5_SYNC_REMOTE_MAX_FILES=1" in sync_unit
@@ -289,6 +289,37 @@ def test_nas_redacted_archive_is_pull_only_and_checksum_verified():
     assert "cmp --silent" in script
     assert ".archive_manifest.sha256" in script
     assert "QUANT_ARCHIVE_RETENTION_DAYS:-45" in script
+
+
+def test_nas_high_frequency_archive_requires_verified_copy_before_source_prune():
+    pull_script = (
+        ROOT / "deploy" / "nas_archive" / "pull_qyun2_high_frequency.sh"
+    ).read_text(encoding="utf-8")
+    prune_script = (
+        ROOT
+        / "deploy"
+        / "nas_archive"
+        / "prune_verified_high_frequency_archive.py"
+    ).read_text(encoding="utf-8")
+    sudoers = (
+        ROOT
+        / "deploy"
+        / "nas_archive"
+        / "quant-research-high-frequency-prune.sudoers"
+    ).read_text(encoding="utf-8")
+
+    assert "lake/archive/high_frequency" in pull_script
+    assert "cmp --silent" in pull_script
+    assert ".archive_manifest.sha256" in pull_script
+    assert "prune_verified_high_frequency_archive.py" in pull_script
+    assert "--apply" in pull_script
+    assert "rm -rf -- \"$source\"" not in pull_script
+    assert "ALLOWED_DATASETS" in prune_script
+    assert "manifest_sha256_mismatch" in prune_script
+    assert "date_not_before_today" in prune_script
+    assert "shutil.rmtree" in prune_script
+    assert "(quantlab) NOPASSWD" in sudoers
+    assert "prune_verified_high_frequency_archive.py" in sudoers
 
 
 def test_lake_permission_repair_script_targets_service_user():
@@ -675,7 +706,7 @@ def test_scheduled_compaction_covers_hot_ws_datasets():
     assert "MARKET_ROLLUP_LOOKBACK_HOURS=24" in unit
     assert "MARKET_ROLLUP_TIMEOUT_SECONDS=600" in unit
     assert "MARKET_ROLLUP_POLARS_MAX_THREADS=2" in unit
-    assert "MARKET_ROLLUP_ARCHIVE_OLD_OKX_WS=0" in unit
+    assert "MARKET_ROLLUP_ARCHIVE_OLD_OKX_WS=1" in unit
     assert "MARKET_ROLLUP_ARCHIVE_HOT_HOURS=24" in unit
     assert "COMPACT_SMALL_FILE_MAINTENANCE=1" in unit
     assert "COMPACT_SMALL_FILE_MAINTENANCE_TIMEOUT_SECONDS=300" in unit

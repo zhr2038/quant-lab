@@ -11,7 +11,7 @@ DEST_ROOT="${QUANT_ARCHIVE_DEST_ROOT:-/volume1/docker/quant-archive/qyun2/high-f
 AUDIT_ROOT="${QUANT_ARCHIVE_AUDIT_ROOT:-/volume1/docker/quant-archive/qyun2/audit}"
 REMOTE_PRUNE_SCRIPT="${QUANT_ARCHIVE_REMOTE_PRUNE_SCRIPT:-/opt/quant-lab/deploy/nas_archive/prune_verified_high_frequency_archive.py}"
 TRANSFER_TIMEOUT_SECONDS="${QUANT_ARCHIVE_TRANSFER_TIMEOUT_SECONDS:-10800}"
-TRANSFER_STREAMS="${QUANT_ARCHIVE_TRANSFER_STREAMS:-8}"
+TRANSFER_STREAMS="${QUANT_ARCHIVE_TRANSFER_STREAMS:-12}"
 DATASETS=(
   "bronze/okx_public_ws"
   "silver/orderbook_snapshot"
@@ -105,7 +105,10 @@ for dataset in "${DATASETS[@]}"; do
         "$DEST_ROOT"/*/.batch=*.partial) ;;
         *) echo "unsafe stage path: $stage" >&2; exit 2 ;;
       esac
-      rm -rf -- "$stage"
+      if [[ -L "$stage" || ( -e "$stage" && ! -d "$stage" ) ]]; then
+        echo "unsafe archive stage: $stage" >&2
+        exit 1
+      fi
       mkdir -p "$stage"
       file_list_root="$(mktemp -d "$AUDIT_ROOT/.hf-file-lists.XXXXXX")"
       stream_index=0
@@ -123,9 +126,11 @@ for dataset in "${DATASETS[@]}"; do
       for file_list in "$file_list_root"/stream-*.files; do
         [[ -s "$file_list" ]] || continue
         timeout "$TRANSFER_TIMEOUT_SECONDS" rsync \
-          --archive --partial --safe-links --relative --files-from="$file_list" \
+          --archive --partial --partial-dir=.rsync-partial --safe-links \
+          --relative --files-from="$file_list" \
           -e "$RSYNC_SSH" "$REMOTE:$source/" "$stage/" &
         transfer_pids+=("$!")
+        sleep 0.1
       done
       transfer_failed=0
       for transfer_pid in "${transfer_pids[@]}"; do
@@ -137,9 +142,12 @@ for dataset in "${DATASETS[@]}"; do
         echo "one or more high-frequency archive transfer streams failed: $dataset $day" >&2
         exit 1
       fi
+      rm -rf -- "$stage/.rsync-partial"
       (
         cd "$stage"
-        find . -type f -print0 | LC_ALL=C sort -z | xargs -0 -r sha256sum
+        find . -type f ! -name '.archive_manifest.sha256' \
+          ! -name '.archive_receipt.json' -print0 \
+          | LC_ALL=C sort -z | xargs -0 -r sha256sum
       ) >"$local_manifest"
       cmp --silent "$remote_manifest" "$local_manifest" || {
         echo "high-frequency archive checksum mismatch: $dataset $day" >&2

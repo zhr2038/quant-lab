@@ -10,7 +10,8 @@ SOURCE_ROOT="${QUANT_ARCHIVE_SOURCE_ROOT:-/var/lib/quant-lab/lake/archive/high_f
 DEST_ROOT="${QUANT_ARCHIVE_DEST_ROOT:-/volume1/docker/quant-archive/qyun2/high-frequency}"
 AUDIT_ROOT="${QUANT_ARCHIVE_AUDIT_ROOT:-/volume1/docker/quant-archive/qyun2/audit}"
 REMOTE_PRUNE_SCRIPT="${QUANT_ARCHIVE_REMOTE_PRUNE_SCRIPT:-/opt/quant-lab/deploy/nas_archive/prune_verified_high_frequency_archive.py}"
-TRANSFER_TIMEOUT_SECONDS="${QUANT_ARCHIVE_TRANSFER_TIMEOUT_SECONDS:-10800}"
+TRANSFER_ATTEMPT_TIMEOUT_SECONDS="${QUANT_ARCHIVE_TRANSFER_ATTEMPT_TIMEOUT_SECONDS:-180}"
+TRANSFER_MAX_ATTEMPTS="${QUANT_ARCHIVE_TRANSFER_MAX_ATTEMPTS:-20}"
 TRANSFER_STREAMS="${QUANT_ARCHIVE_TRANSFER_STREAMS:-12}"
 DATASETS=(
   "bronze/okx_public_ws"
@@ -22,15 +23,23 @@ case "$DEST_ROOT" in
   /volume1/docker/quant-archive/qyun2/*) ;;
   *) echo "unsafe destination root: $DEST_ROOT" >&2; exit 2 ;;
 esac
-case "$TRANSFER_TIMEOUT_SECONDS" in
-  ''|*[!0-9]*) echo "invalid transfer timeout" >&2; exit 2 ;;
+case "$TRANSFER_ATTEMPT_TIMEOUT_SECONDS" in
+  ''|*[!0-9]*) echo "invalid transfer attempt timeout" >&2; exit 2 ;;
+esac
+case "$TRANSFER_MAX_ATTEMPTS" in
+  ''|*[!0-9]*) echo "invalid transfer attempt count" >&2; exit 2 ;;
 esac
 case "$TRANSFER_STREAMS" in
   ''|*[!0-9]*) echo "invalid transfer stream count" >&2; exit 2 ;;
 esac
 TRANSFER_STREAMS_NUM=$((10#$TRANSFER_STREAMS))
+TRANSFER_MAX_ATTEMPTS_NUM=$((10#$TRANSFER_MAX_ATTEMPTS))
 if (( TRANSFER_STREAMS_NUM < 1 || TRANSFER_STREAMS_NUM > 16 )); then
   echo "transfer stream count must be between 1 and 16" >&2
+  exit 2
+fi
+if (( TRANSFER_MAX_ATTEMPTS_NUM < 1 || TRANSFER_MAX_ATTEMPTS_NUM > 100 )); then
+  echo "transfer attempt count must be between 1 and 100" >&2
   exit 2
 fi
 
@@ -122,24 +131,35 @@ for dataset in "${DATASETS[@]}"; do
         stream_index=$(((stream_index + 1) % TRANSFER_STREAMS_NUM))
       done < <(cut -c 67- "$remote_manifest")
 
-      transfer_pids=()
-      for file_list in "$file_list_root"/stream-*.files; do
-        [[ -s "$file_list" ]] || continue
-        timeout "$TRANSFER_TIMEOUT_SECONDS" rsync \
-          --archive --partial --partial-dir=.rsync-partial --safe-links \
-          --relative --files-from="$file_list" \
-          -e "$RSYNC_SSH" "$REMOTE:$source/" "$stage/" &
-        transfer_pids+=("$!")
-        sleep 0.1
-      done
-      transfer_failed=0
-      for transfer_pid in "${transfer_pids[@]}"; do
-        if ! wait "$transfer_pid"; then
-          transfer_failed=1
+      transfer_succeeded=0
+      for ((transfer_attempt = 1; \
+            transfer_attempt <= TRANSFER_MAX_ATTEMPTS_NUM; \
+            transfer_attempt++)); do
+        transfer_pids=()
+        for file_list in "$file_list_root"/stream-*.files; do
+          [[ -s "$file_list" ]] || continue
+          timeout "$TRANSFER_ATTEMPT_TIMEOUT_SECONDS" rsync \
+            --archive --partial --partial-dir=.rsync-partial --safe-links \
+            --relative --files-from="$file_list" \
+            -e "$RSYNC_SSH" "$REMOTE:$source/" "$stage/" &
+          transfer_pids+=("$!")
+          sleep 0.1
+        done
+        transfer_failed=0
+        for transfer_pid in "${transfer_pids[@]}"; do
+          if ! wait "$transfer_pid"; then
+            transfer_failed=1
+          fi
+        done
+        if (( transfer_failed == 0 )); then
+          transfer_succeeded=1
+          break
         fi
+        echo "retry high-frequency archive transfer: $dataset $day attempt=$transfer_attempt" >&2
+        sleep 1
       done
-      if (( transfer_failed != 0 )); then
-        echo "one or more high-frequency archive transfer streams failed: $dataset $day" >&2
+      if (( transfer_succeeded == 0 )); then
+        echo "high-frequency archive transfer attempts exhausted: $dataset $day" >&2
         exit 1
       fi
       rm -rf -- "$stage/.rsync-partial"

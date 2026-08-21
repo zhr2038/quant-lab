@@ -11,6 +11,7 @@ DEST_ROOT="${QUANT_ARCHIVE_DEST_ROOT:-/volume1/docker/quant-archive/qyun2/high-f
 AUDIT_ROOT="${QUANT_ARCHIVE_AUDIT_ROOT:-/volume1/docker/quant-archive/qyun2/audit}"
 REMOTE_PRUNE_SCRIPT="${QUANT_ARCHIVE_REMOTE_PRUNE_SCRIPT:-/opt/quant-lab/deploy/nas_archive/prune_verified_high_frequency_archive.py}"
 TRANSFER_TIMEOUT_SECONDS="${QUANT_ARCHIVE_TRANSFER_TIMEOUT_SECONDS:-10800}"
+TRANSFER_STREAMS="${QUANT_ARCHIVE_TRANSFER_STREAMS:-8}"
 DATASETS=(
   "bronze/okx_public_ws"
   "silver/orderbook_snapshot"
@@ -24,6 +25,14 @@ esac
 case "$TRANSFER_TIMEOUT_SECONDS" in
   ''|*[!0-9]*) echo "invalid transfer timeout" >&2; exit 2 ;;
 esac
+case "$TRANSFER_STREAMS" in
+  ''|*[!0-9]*) echo "invalid transfer stream count" >&2; exit 2 ;;
+esac
+TRANSFER_STREAMS_NUM=$((10#$TRANSFER_STREAMS))
+if (( TRANSFER_STREAMS_NUM < 1 || TRANSFER_STREAMS_NUM > 16 )); then
+  echo "transfer stream count must be between 1 and 16" >&2
+  exit 2
+fi
 
 mkdir -p "$DEST_ROOT" "$AUDIT_ROOT"
 exec 9>"$AUDIT_ROOT/high-frequency.lock"
@@ -39,6 +48,12 @@ RSYNC_SSH="ssh -i $SSH_KEY -p $CLOUD_PORT -o BatchMode=yes -o IPQoS=none -o Conn
 REMOTE="$CLOUD_USER@$CLOUD_HOST"
 AUDIT_LOG="$AUDIT_ROOT/high-frequency.jsonl"
 today_utc="$("${SSH[@]}" "$REMOTE" date -u +%F)"
+
+cleanup_batch_temp() {
+  [[ -z "${remote_manifest:-}" ]] || rm -f -- "$remote_manifest"
+  [[ -z "${local_manifest:-}" ]] || rm -f -- "$local_manifest"
+  [[ -z "${file_list_root:-}" ]] || rm -rf -- "$file_list_root"
+}
 
 for dataset in "${DATASETS[@]}"; do
   source_dataset="$SOURCE_ROOT/$dataset"
@@ -56,13 +71,14 @@ for dataset in "${DATASETS[@]}"; do
     source="$source_dataset/$date_dir"
     remote_manifest="$(mktemp "$AUDIT_ROOT/.hf-remote-manifest.XXXXXX")"
     local_manifest="$(mktemp "$AUDIT_ROOT/.hf-local-manifest.XXXXXX")"
-    trap 'rm -f "$remote_manifest" "$local_manifest"' EXIT
+    file_list_root=""
+    trap cleanup_batch_temp EXIT
 
     "${SSH[@]}" "$REMOTE" \
       "cd '$source' && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 -r sha256sum" \
       >"$remote_manifest"
     [[ -s "$remote_manifest" ]] || {
-      rm -f "$remote_manifest" "$local_manifest"
+      cleanup_batch_temp
       trap - EXIT
       continue
     }
@@ -91,9 +107,36 @@ for dataset in "${DATASETS[@]}"; do
       esac
       rm -rf -- "$stage"
       mkdir -p "$stage"
-      timeout "$TRANSFER_TIMEOUT_SECONDS" rsync \
-        --archive --partial --delay-updates --safe-links \
-        -e "$RSYNC_SSH" "$REMOTE:$source/" "$stage/"
+      file_list_root="$(mktemp -d "$AUDIT_ROOT/.hf-file-lists.XXXXXX")"
+      stream_index=0
+      while IFS= read -r relative_path; do
+        if [[ "$relative_path" != ./* || "$relative_path" == *"/../"* ]]; then
+          echo "unsafe manifest path: $relative_path" >&2
+          exit 2
+        fi
+        printf '%s\n' "$relative_path" \
+          >>"$file_list_root/stream-$stream_index.files"
+        stream_index=$(((stream_index + 1) % TRANSFER_STREAMS_NUM))
+      done < <(cut -c 67- "$remote_manifest")
+
+      transfer_pids=()
+      for file_list in "$file_list_root"/stream-*.files; do
+        [[ -s "$file_list" ]] || continue
+        timeout "$TRANSFER_TIMEOUT_SECONDS" rsync \
+          --archive --partial --safe-links --relative --files-from="$file_list" \
+          -e "$RSYNC_SSH" "$REMOTE:$source/" "$stage/" &
+        transfer_pids+=("$!")
+      done
+      transfer_failed=0
+      for transfer_pid in "${transfer_pids[@]}"; do
+        if ! wait "$transfer_pid"; then
+          transfer_failed=1
+        fi
+      done
+      if (( transfer_failed != 0 )); then
+        echo "one or more high-frequency archive transfer streams failed: $dataset $day" >&2
+        exit 1
+      fi
       (
         cd "$stage"
         find . -type f -print0 | LC_ALL=C sort -z | xargs -0 -r sha256sum
@@ -132,7 +175,7 @@ for dataset in "${DATASETS[@]}"; do
     printf '{"event":"source_pruned_after_verified_archive","dataset":"%s","day":"%s","manifest_sha256":"%s","pruned_at":"%s"}\n' \
       "$dataset" "$day" "$manifest_sha256" "$pruned_at" >>"$AUDIT_LOG"
 
-    rm -f "$remote_manifest" "$local_manifest"
+    cleanup_batch_temp
     trap - EXIT
   done
 done

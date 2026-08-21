@@ -312,6 +312,9 @@ def test_nas_high_frequency_archive_requires_verified_copy_before_source_prune()
     assert "cmp --silent" in pull_script
     assert ".archive_manifest.sha256" in pull_script
     assert pull_script.count("IPQoS=none") == 2
+    assert "QUANT_ARCHIVE_TRANSFER_STREAMS:-8" in pull_script
+    assert '--files-from="$file_list"' in pull_script
+    assert 'wait "$transfer_pid"' in pull_script
     assert "prune_verified_high_frequency_archive.py" in pull_script
     assert "--apply" in pull_script
     assert "rm -rf -- \"$source\"" not in pull_script

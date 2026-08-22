@@ -86,7 +86,9 @@ def export_plane_status(
         requested = [item for item in packs if item.export_date == export_date]
     else:
         requested = packs
-    latest = requested[0] if requested else (packs[0] if packs else None)
+    requested_pack = requested[0] if requested else None
+    available_pack = packs[0] if packs else None
+    latest = requested_pack or available_pack
     pack_rows = [
         _pack_status_row(
             item,
@@ -106,6 +108,28 @@ def export_plane_status(
             download_ttl_seconds=download_ttl_seconds,
         )
         if latest is not None
+        else None
+    )
+    requested_row = (
+        _pack_status_row(
+            requested_pack,
+            nas_base_url=nas_base_url,
+            download_secret=download_secret,
+            download_key_id=download_key_id,
+            download_ttl_seconds=download_ttl_seconds,
+        )
+        if requested_pack is not None
+        else None
+    )
+    available_row = (
+        _pack_status_row(
+            available_pack,
+            nas_base_url=nas_base_url,
+            download_secret=download_secret,
+            download_key_id=download_key_id,
+            download_ttl_seconds=download_ttl_seconds,
+        )
+        if available_pack is not None
         else None
     )
     active = next(
@@ -159,23 +183,44 @@ def export_plane_status(
         else:
             current_request = terminal_event[3]
     elif latest is not None:
-        effective_state = "download_ready"
+        effective_state = (
+            "missing_requested_date"
+            if export_date is not None and requested_pack is None
+            else "download_ready"
+        )
     else:
         effective_state = "idle"
+    download_ready_pack = requested_pack if export_date is not None else latest
     return {
         "export_plane": "nas_local",
         "state": effective_state,
         "task": current_task.model_dump(mode="json") if current_task is not None else None,
         "request": current_request,
         "latest_pack": latest_row,
+        "requested_date_pack": requested_row,
+        "available_pack": available_row,
         "packs": pack_rows,
         "pack_count": len(packs),
-        "authoritative_input_snapshot": bool(latest and latest.authoritative_input_snapshot),
-        "nas_artifact_validated": bool(latest and latest.nas_artifact_validated),
-        "control_plane_receipt_verified": bool(
-            latest and latest.control_plane_receipt_verified
+        "authoritative_input_snapshot": bool(
+            download_ready_pack and download_ready_pack.authoritative_input_snapshot
         ),
-        "download_ready": bool(latest and latest.download_ready),
+        "nas_artifact_validated": bool(
+            download_ready_pack and download_ready_pack.nas_artifact_validated
+        ),
+        "control_plane_receipt_verified": bool(
+            download_ready_pack and download_ready_pack.control_plane_receipt_verified
+        ),
+        "download_ready": bool(download_ready_pack and download_ready_pack.download_ready),
+        "available_authoritative_input_snapshot": bool(
+            available_pack and available_pack.authoritative_input_snapshot
+        ),
+        "available_nas_artifact_validated": bool(
+            available_pack and available_pack.nas_artifact_validated
+        ),
+        "available_control_plane_receipt_verified": bool(
+            available_pack and available_pack.control_plane_receipt_verified
+        ),
+        "available_download_ready": bool(available_pack and available_pack.download_ready),
         "nas_online": None,
         "nas_online_reason": "cloud_control_plane_does_not_probe_private_nas",
         "storage_location": "nas_only",

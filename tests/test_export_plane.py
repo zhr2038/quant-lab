@@ -823,6 +823,45 @@ def test_export_plane_status_keeps_genuinely_running_task_visible(tmp_path: Path
     assert result["task"]["task_id"] == active.task_id
 
 
+def test_export_plane_status_does_not_mark_previous_pack_ready_for_requested_date(
+    tmp_path: Path,
+) -> None:
+    now = datetime(2026, 7, 16, 14, 46, tzinfo=UTC)
+    previous = ExportPackIndexEntry(
+        pack_id="expert-pack-previous",
+        task_id="export-previous",
+        pack_name="previous.zip",
+        export_date=date(2026, 7, 15),
+        generated_at=now,
+        accepted_at=now,
+        pack_sha256="1" * 64,
+        pack_size_bytes=10,
+        snapshot_id="export-snapshot-previous",
+        authoritative_input_snapshot=True,
+        nas_artifact_validated=True,
+        control_plane_receipt_verified=True,
+        download_ready=True,
+        download_relative_path="2026/07/15/expert-pack-previous/previous.zip",
+        selected_v5_bundle_sha256=V5_SHA,
+        acceptance_set_id="acceptance-previous",
+        worker_id="worker",
+        worker_commit=COMMIT,
+    )
+    write_cloud_index(tmp_path, [previous])
+
+    result = export_plane_status(tmp_path, export_date=date(2026, 7, 16))
+
+    assert result["state"] == "missing_requested_date"
+    assert result["download_ready"] is False
+    assert result["authoritative_input_snapshot"] is False
+    assert result["nas_artifact_validated"] is False
+    assert result["control_plane_receipt_verified"] is False
+    assert result["requested_date_pack"] is None
+    assert result["available_pack"]["pack_name"] == "previous.zip"
+    assert result["available_authoritative_input_snapshot"] is True
+    assert result["available_download_ready"] is True
+
+
 def _valid_pack(
     path: Path,
     *,

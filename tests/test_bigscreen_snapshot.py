@@ -56,6 +56,78 @@ def test_bigscreen_snapshot_includes_read_only_server_resources(tmp_path):
     assert resources["disk_total_bytes"] >= resources["disk_free_bytes"]
 
 
+def test_bigscreen_surfaces_stale_v5_and_resource_pressure_as_system_issues():
+    now = datetime(2026, 8, 22, 6, tzinfo=UTC)
+    v5 = {"latest": {"latest_bundle_ts": "2026-08-21T17:12:59Z"}}
+    resources = {
+        "status": "CRITICAL",
+        "memory_used_percent": 82.0,
+        "swap_used_percent": 100.0,
+        "disk_used_percent": 61.0,
+        "cpu_display_percent": 17.0,
+    }
+
+    issue = bigscreen_module._v5_bundle_freshness_issue(v5, now)
+    warnings = bigscreen_module._system_warnings(
+        bigscreen_module._server_resource_warnings(resources),
+        {},
+        {},
+        now,
+        v5=v5,
+    )
+    status = bigscreen_module._status_from_inputs(
+        overview={},
+        data_health={},
+        cost={"hard_fallback_ratio": 0.0},
+        v5=v5,
+        warnings=warnings,
+        exports={},
+        generated_at=now,
+    )
+
+    assert issue is not None
+    assert issue["severity"] == "CRITICAL"
+    assert any(value.startswith("v5_bundle_freshness_critical:") for value in warnings)
+    assert any(value.startswith("server_resources_critical:") for value in warnings)
+    assert status == "CRITICAL"
+
+
+def test_bigscreen_research_portfolio_keeps_latest_row_per_research_id(tmp_path):
+    lake = tmp_path / "lake"
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "research_id": "research-1",
+                    "strategy_candidate": "candidate-1",
+                    "status": "RESEARCH",
+                    "action": "KEEP_RESEARCH",
+                    "reason": "older",
+                    "as_of_date": date(2026, 8, 20),
+                    "created_at": "2026-08-20T00:00:00Z",
+                },
+                {
+                    "research_id": "research-1",
+                    "strategy_candidate": "candidate-1",
+                    "status": "RESEARCH",
+                    "action": "KEEP_RESEARCH",
+                    "reason": "latest",
+                    "as_of_date": date(2026, 8, 21),
+                    "created_at": "2026-08-20T00:00:00Z",
+                },
+            ]
+        ),
+        lake / "gold" / "research_portfolio_status",
+    )
+
+    strategy = bigscreen_module._safe_strategy_summary(lake)
+    rows = bigscreen_module._frame_rows(strategy["research_portfolio_status"], limit=8)
+
+    assert len(rows) == 1
+    assert rows[0]["research_id"] == "research-1"
+    assert rows[0]["reason"] == "latest"
+
+
 def test_bigscreen_snapshot_exposes_ai_research_without_live_effect(monkeypatch, tmp_path):
     lake = tmp_path / "lake"
     queue = tmp_path / "ai_queue"

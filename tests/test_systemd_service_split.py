@@ -73,6 +73,7 @@ def _script(name: str) -> str:
 def test_v5_health_analysis_stays_lightweight():
     unit = _unit("quant-lab-v5-daily-analysis.service")
     sync_unit = _unit("quant-lab-v5-telemetry-sync.service")
+    sync_timer = _unit("quant-lab-v5-telemetry-sync.timer")
 
     assert "analyze-v5-telemetry" in unit
     assert "--skip-candidate-gold" in unit
@@ -102,6 +103,8 @@ def test_v5_health_analysis_stays_lightweight():
     assert "MemoryMax=3G" in sync_unit
     assert "QUANT_LAB_V5_SYNC_REMOTE_MAX_FILES=1" in sync_unit
     assert "QUANT_LAB_V5_SYNC_MAX_SCAN_BUNDLES=1" in sync_unit
+    assert "OnUnitInactiveSec=10min" in sync_timer
+    assert "OnUnitActiveSec=10min" not in sync_timer
 
 
 def test_api_service_uses_async_metrics_flush():
@@ -164,7 +167,8 @@ def test_expanded_universe_backfill_stays_within_bigscreen_freshness_window():
     service = _unit("quant-lab-okx-expanded-universe-backfill.service")
 
     assert "every hour" in timer
-    assert "OnUnitActiveSec=1h" in timer
+    assert "OnUnitInactiveSec=1h" in timer
+    assert "OnUnitActiveSec=1h" not in timer
     assert "OnUnitActiveSec=6h" not in timer
     assert "okx-backfill-expanded-universe" in service
     assert "--max-symbols 60" in service
@@ -175,6 +179,22 @@ def test_expanded_universe_backfill_stays_within_bigscreen_freshness_window():
     assert "MemoryMax=2G" in service
     assert "flock -E 75 -w 30 /var/lock/quant-lab-heavy.lock" in service
     assert "SKIP_EXPANDED_UNIVERSE_BACKFILL_LOCK_BUSY" in service
+    assert 'echo "SKIP_EXPANDED_UNIVERSE_BACKFILL_LOCK_BUSY" >&2; exit 75' in service
+
+
+def test_nas_expert_export_has_a_guarded_daily_request_timer() -> None:
+    service = _unit("quant-lab-export-daily-request.service")
+    timer = _unit("quant-lab-export-daily-request.timer")
+
+    assert "User=quantlab" in service
+    assert "Group=quantlab" in service
+    assert "SupplementaryGroups=quant-export" in service
+    assert "QUANT_LAB_NAS_EXPORT_ENABLED" in service
+    assert "quant_export_queue.py request" in service
+    assert "--date today --mode authoritative" in service
+    assert "MemoryMax=256M" in service
+    assert "OnCalendar=*-*-* 00:30:00 UTC" in timer
+    assert "Persistent=true" in timer
 
 
 def test_factor_research_request_backfills_locked_history_before_sealing_snapshot():

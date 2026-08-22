@@ -780,6 +780,7 @@ def upsert_parquet_dataset(
     max_rows_sort_by: Sequence[str] | None = None,
     max_rows_descending: bool = True,
     streaming_upsert: bool = False,
+    streaming_fallback: bool = True,
     preserve_files: Sequence[str] = (),
 ) -> int:
     path = Path(dataset_path)
@@ -793,6 +794,8 @@ def upsert_parquet_dataset(
                     preserve_files=preserve_files,
                 )
             except Exception:
+                if not streaming_fallback:
+                    raise
                 logger.warning(
                     "streaming upsert failed for %s; using in-memory fallback",
                     path,

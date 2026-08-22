@@ -39,6 +39,8 @@ SNAPSHOT_CACHE_STALE_GRACE_SECONDS = 0.0
 MARKET_BAR_WARNING_DELAY_SECONDS = 2 * 60 * 60
 MARKET_BAR_CRITICAL_DELAY_SECONDS = 3 * 60 * 60
 EXPERT_PACK_V5_LAG_WARNING_SECONDS = 60 * 60
+V5_BUNDLE_WARNING_DELAY_SECONDS = 90 * 60
+V5_BUNDLE_CRITICAL_DELAY_SECONDS = 3 * 60 * 60
 WEB_V2_SMOKE_STATUS_PATH = Path("/var/lib/quant-lab/ops/web_v2_smoke/latest.json")
 WEB_V2_SMOKE_MAX_AGE_SECONDS = 25 * 60
 AI_SOURCE_PACK_WARNING_AGE_SECONDS = 36 * 60 * 60
@@ -153,6 +155,7 @@ def _build_bigscreen_snapshot_payload(root: Path) -> dict[str, Any]:
     web_smoke = _web_v2_smoke_status(generated_at)
     overview = _overview_from_summaries(data_health, v5, consumers)
     data_matrix = _data_matrix(market, collectors, cost, strategy, data_health, overview)
+    server_resources = _server_resources(root)
 
     raw_warnings = _dedupe(
         [
@@ -166,9 +169,10 @@ def _build_bigscreen_snapshot_payload(root: Path) -> dict[str, Any]:
             *_warnings(exports),
             *_export_quality_warnings(exports),
             *_data_matrix_warnings(data_matrix),
+            *_server_resource_warnings(server_resources),
         ]
     )
-    warnings = _system_warnings(raw_warnings, exports, data_health, generated_at)
+    warnings = _system_warnings(raw_warnings, exports, data_health, generated_at, v5=v5)
     advisories = [warning for warning in raw_warnings if warning not in warnings]
     status = _status_from_inputs(
         overview,
@@ -180,9 +184,16 @@ def _build_bigscreen_snapshot_payload(root: Path) -> dict[str, Any]:
         generated_at=generated_at,
     )
     overview["status"] = status
-    health_score = _health_score(status, data_health, cost, v5, web_events, exports)
+    health_score = _health_score(
+        status,
+        data_health,
+        cost,
+        v5,
+        web_events,
+        exports,
+        server_resources=server_resources,
+    )
     legacy_anomalies = _legacy_web_anomalies(data_health)
-    server_resources = _server_resources(root)
     v5_payload = _v5_payload(v5, current_readiness)
     exports_payload = _exports_payload(exports)
     exports_payload.update(_expert_pack_v5_lag_status_payload(exports, v5))
@@ -204,6 +215,7 @@ def _build_bigscreen_snapshot_payload(root: Path) -> dict[str, Any]:
             legacy_anomalies,
             data_matrix,
             web_smoke,
+            server_resources,
         )[:8],
         "data_matrix": data_matrix,
         "strategy_flow": _strategy_flow(strategy, research_compute=research_compute),
@@ -553,6 +565,8 @@ def _safe_strategy_summary(root: Path) -> dict[str, Any]:
         frame, warning = _read_display_frame(root, dataset_name)
         if frame.is_empty() and dataset_name == "risk_on_multi_buy_shadow":
             frame, warning = _read_display_frame(root, "v5_risk_on_multi_buy_shadow")
+        if dataset_name == "research_portfolio_status":
+            frame = readers._research_portfolio_table(frame)
         frames[output_key] = frame
         if warning:
             warnings.append(warning)
@@ -1194,6 +1208,8 @@ def _system_warnings(
     exports: dict[str, Any],
     data_health: dict[str, Any] | None = None,
     generated_at: datetime | None = None,
+    *,
+    v5: dict[str, Any] | None = None,
 ) -> list[str]:
     out = list(warnings)
     if data_health is not None:
@@ -1203,6 +1219,15 @@ def _system_warnings(
             out.append(
                 f"market_bar_freshness_{label}: latest={issue['latest_ts']}; "
                 f"latest_close={issue.get('latest_close_ts')}; "
+                f"delay_seconds={issue['age_seconds']}; "
+                f"threshold_seconds={issue['threshold_seconds']}"
+            )
+    if v5 is not None:
+        issue = _v5_bundle_freshness_issue(v5, generated_at or datetime.now(UTC))
+        if issue is not None:
+            label = "critical" if issue["severity"] == "CRITICAL" else "warning"
+            out.append(
+                f"v5_bundle_freshness_{label}: latest={issue['latest_ts']}; "
                 f"delay_seconds={issue['age_seconds']}; "
                 f"threshold_seconds={issue['threshold_seconds']}"
             )
@@ -1434,6 +1459,12 @@ def _status_from_inputs(
         return "CRITICAL"
     if latest.get("reconcile_ok") is False or latest.get("ledger_ok") is False:
         return "CRITICAL"
+    v5_freshness_issue = _v5_bundle_freshness_issue(
+        v5,
+        generated_at or datetime.now(UTC),
+    )
+    if v5_freshness_issue is not None and v5_freshness_issue["severity"] == "CRITICAL":
+        return "CRITICAL"
     export_quality_level = _export_quality_level(exports)
     if export_quality_level == "CRITICAL":
         return "CRITICAL"
@@ -1455,6 +1486,8 @@ def _health_score(
     v5: dict[str, Any],
     web_events: list[dict[str, Any]],
     exports: dict[str, Any],
+    *,
+    server_resources: dict[str, Any] | None = None,
 ) -> int:
     score = 100
     if status == "CRITICAL":
@@ -1473,6 +1506,9 @@ def _health_score(
         score -= 15
     if latest.get("reconcile_ok") is False or latest.get("ledger_ok") is False:
         score -= 15
+    v5_freshness_issue = _v5_bundle_freshness_issue(v5, datetime.now(UTC))
+    if v5_freshness_issue is not None:
+        score -= 15 if v5_freshness_issue["severity"] == "CRITICAL" else 5
     if sum(1 for row in web_events if row.get("rglob_fallback")):
         score -= 5
     if str(exports.get("manual_state") or "").lower() == "failed":
@@ -1484,6 +1520,11 @@ def _health_score(
     if export_quality_level == "CRITICAL":
         score -= 15
     elif export_quality_level == "WARNING":
+        score -= 5
+    resource_status = str((server_resources or {}).get("status") or "").upper()
+    if resource_status == "CRITICAL":
+        score -= 10
+    elif resource_status == "WARNING":
         score -= 5
     return max(0, min(100, score))
 
@@ -1526,6 +1567,33 @@ def _latest_v5_bundle_ts(overview: dict[str, Any], v5: dict[str, Any]) -> Any:
         or overview.get("diagnostics", {}).get("latest_v5_bundle_ts")
         or overview.get("latest_v5_bundle_ts")
     )
+
+
+def _v5_bundle_freshness_issue(
+    v5: dict[str, Any],
+    generated_at: datetime,
+) -> dict[str, Any] | None:
+    latest_ts = _parse_dt(_latest_v5_bundle_ts({}, v5))
+    if latest_ts is None:
+        return None
+    age_seconds = max(0, int((generated_at - latest_ts).total_seconds()))
+    warning_seconds = _seconds_env(
+        "QUANT_LAB_V5_BUNDLE_WARNING_DELAY_SECONDS",
+        V5_BUNDLE_WARNING_DELAY_SECONDS,
+    )
+    critical_seconds = _seconds_env(
+        "QUANT_LAB_V5_BUNDLE_CRITICAL_DELAY_SECONDS",
+        V5_BUNDLE_CRITICAL_DELAY_SECONDS,
+    )
+    if age_seconds <= warning_seconds:
+        return None
+    severity = "CRITICAL" if age_seconds > critical_seconds else "WARNING"
+    return {
+        "severity": severity,
+        "latest_ts": _json_value(latest_ts),
+        "age_seconds": age_seconds,
+        "threshold_seconds": critical_seconds if severity == "CRITICAL" else warning_seconds,
+    }
 
 
 def _age_seconds(now: datetime, value: Any) -> int | None:
@@ -3089,6 +3157,21 @@ def _server_resources(root: Path) -> dict[str, Any]:
     }
 
 
+def _server_resource_warnings(resources: dict[str, Any]) -> list[str]:
+    status = str(resources.get("status") or "").upper()
+    if status not in {"WARNING", "CRITICAL"}:
+        return []
+    return [
+        (
+            f"server_resources_{status.lower()}: "
+            f"memory_used_percent={resources.get('memory_used_percent')}; "
+            f"swap_used_percent={resources.get('swap_used_percent')}; "
+            f"disk_used_percent={resources.get('disk_used_percent')}; "
+            f"cpu_display_percent={resources.get('cpu_display_percent')}"
+        )
+    ]
+
+
 def _hostname() -> str:
     try:
         uname = os.uname()
@@ -3604,6 +3687,7 @@ def _build_actions(
     legacy_anomalies: dict[str, Any] | None = None,
     data_matrix: dict[str, Any] | None = None,
     web_smoke: dict[str, Any] | None = None,
+    server_resources: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     actions: list[dict[str, Any]] = []
     web_smoke_issue = _web_v2_smoke_action_issue(web_smoke)
@@ -3722,6 +3806,21 @@ def _build_actions(
             )
         )
     latest = v5.get("latest") if isinstance(v5.get("latest"), dict) else {}
+    v5_freshness_issue = _v5_bundle_freshness_issue(v5, datetime.now(UTC))
+    if v5_freshness_issue is not None:
+        actions.append(
+            _action(
+                str(v5_freshness_issue["severity"]),
+                "V5 遥测过期",
+                (
+                    f"最新 bundle {v5_freshness_issue['latest_ts']}，"
+                    f"已延迟 {v5_freshness_issue['age_seconds']} 秒"
+                ),
+                "v5_telemetry_summary",
+                "检查 telemetry sync 超时、重试冷却与最新 bundle 入湖状态",
+                "/v5-consumers",
+            )
+        )
     if latest.get("kill_switch_enabled") is True or latest.get("reconcile_ok") is False:
         actions.append(
             _action(
@@ -3731,6 +3830,22 @@ def _build_actions(
                 "v5_telemetry_summary",
                 "进入 V5 遥测页查看 bundle/reconcile/ledger",
                 "/v5-consumers",
+            )
+        )
+    resource_status = str((server_resources or {}).get("status") or "").upper()
+    if resource_status in {"WARNING", "CRITICAL"}:
+        actions.append(
+            _action(
+                resource_status,
+                "服务器资源压力",
+                (
+                    f"内存 {server_resources.get('memory_used_percent')}%，"
+                    f"swap {server_resources.get('swap_used_percent')}%，"
+                    f"磁盘 {server_resources.get('disk_used_percent')}%"
+                ),
+                "server_resources",
+                "检查重任务内存峰值、swap 与 heavy.lock 竞争，不要把资源告警当作健康",
+                "/ops",
             )
         )
     if sum(1 for row in web_events if row.get("rglob_fallback")):

@@ -1489,6 +1489,14 @@ def _web_v2_nas_expert_pack_status(*, export_date: date) -> dict[str, Any]:
         download_ttl_seconds=config["ttl"],
     )
     latest = raw.get("latest_pack") if isinstance(raw.get("latest_pack"), dict) else {}
+    requested = (
+        raw.get("requested_date_pack")
+        if isinstance(raw.get("requested_date_pack"), dict)
+        else {}
+    )
+    available = (
+        raw.get("available_pack") if isinstance(raw.get("available_pack"), dict) else latest
+    )
     packs = [
         {
             **row,
@@ -1507,14 +1515,16 @@ def _web_v2_nas_expert_pack_status(*, export_date: date) -> dict[str, Any]:
         "live_order_effect": "none",
         "export_date": export_date.isoformat(),
         "status": active_status,
+        "requested_date_pack": requested.get("pack_name"),
+        "requested_date_pack_name": requested.get("pack_name"),
         "latest_pack": latest.get("pack_name"),
         "latest_pack_name": latest.get("pack_name"),
         "latest_download_url": latest.get("download_url"),
         "latest_size_bytes": latest.get("pack_size_bytes"),
         "latest_modified_at": latest.get("accepted_at"),
-        "available_pack": latest.get("pack_name"),
-        "available_pack_name": latest.get("pack_name"),
-        "available_download_url": latest.get("download_url"),
+        "available_pack": available.get("pack_name"),
+        "available_pack_name": available.get("pack_name"),
+        "available_download_url": available.get("download_url"),
         "packs": packs,
         "pack_count": len(packs),
         "nas_center_url": config["base_url"],
@@ -1528,6 +1538,7 @@ def _web_v2_nas_expert_pack_status(*, export_date: date) -> dict[str, Any]:
             False,
         ),
         "download_ready": raw.get("download_ready", False),
+        "available_download_ready": raw.get("available_download_ready", False),
     }
 
 

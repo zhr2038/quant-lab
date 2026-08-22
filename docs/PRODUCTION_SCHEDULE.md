@@ -145,11 +145,11 @@ The repository includes these timer templates:
 - `deploy/systemd/quant-lab-alpha-evidence.timer`
 - `deploy/systemd/quant-lab-risk-permission.timer`
 - `deploy/systemd/quant-lab-web-v2-smoke.timer`
-- `deploy/systemd/quant-lab-daily-export.timer`
+- `deploy/systemd/quant-lab-export-daily-request.timer`
 
 Suggested production order:
 
-- V5 telemetry sync: every 10 minutes, one newest bundle per run.
+- V5 telemetry sync: one newest bundle per run, followed by a 10-minute cooldown.
 - V5 telemetry analysis: every 30 minutes, using `--skip-candidate-gold`.
 - Candidate Evidence NAS request: every hour at minute 20 UTC with up to two
   minutes of randomized delay. After cutover it owns Candidate Labels and
@@ -166,10 +166,10 @@ Suggested production order:
   `/etc/quant-lab/quant_lab_api.env`. It checks `/web-v2`, no-store snapshot
   headers, protected API contracts, cost-estimate trust flags, and risk
   permission remains non-live.
-- Daily expert export: after telemetry and risk permission have had time to run;
-  the export should still run `--pre-export-v5-refresh --allow-stale-v5` so the
-  latest pack records current V5 snapshot provenance instead of a non-authoritative
-  packaging-only snapshot.
+- Daily expert export: at 00:30 UTC the cloud submits a lightweight authoritative
+  NAS request. The signed Snapshot, NAS validation, and verified receipt remain
+  required before the requested date becomes `download_ready`. The legacy
+  `quant-lab-daily-export.timer` stays disabled outside an explicit rollback.
 
 `qlab build-strategy-evidence` remains available for offline legacy telemetry
 research, but production readiness and daily exports should use

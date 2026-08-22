@@ -370,6 +370,29 @@ def test_streaming_upsert_applies_changed_payload_without_full_read(
     ]
 
 
+def test_streaming_upsert_can_fail_closed_without_eager_fallback(tmp_path, monkeypatch):
+    dataset = tmp_path / "lake" / "gold" / "immutable_samples"
+    write_parquet_dataset(pl.DataFrame([{"id": 1, "value": "old"}]), dataset)
+
+    def fail_streaming(*_args, **_kwargs):
+        raise RuntimeError("bounded streaming failed")
+
+    def fail_full_read(*_args, **_kwargs):
+        raise AssertionError("fail-closed streaming must not materialize full history")
+
+    monkeypatch.setattr(lake_module, "_streaming_upsert_parquet_dataset_unlocked", fail_streaming)
+    monkeypatch.setattr(lake_module, "read_parquet_dataset", fail_full_read)
+
+    with pytest.raises(RuntimeError, match="bounded streaming failed"):
+        upsert_parquet_dataset(
+            pl.DataFrame([{"id": 2, "value": "new"}]),
+            dataset,
+            key_columns=["id"],
+            streaming_upsert=True,
+            streaming_fallback=False,
+        )
+
+
 @pytest.mark.parametrize("streaming_upsert", [False, True])
 def test_upsert_preserves_selected_dataset_sidecar(
     tmp_path,

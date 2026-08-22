@@ -18,6 +18,7 @@ from quant_lab.contracts.v5_quant_lab import (
 )
 from quant_lab.data.lake import (
     append_parquet_dataset,
+    count_parquet_rows,
     read_parquet_dataset,
     read_parquet_lazy,
     upsert_parquet_dataset,
@@ -2777,30 +2778,61 @@ def _append_rows(dataset_path: Path, rows: list[dict[str, Any]]) -> int:
 
 def _upsert_stable_rows(dataset_path: Path, rows: list[dict[str, Any]]) -> int:
     if not rows:
-        return read_parquet_dataset(dataset_path).height
+        return count_parquet_rows(dataset_path)
 
     keyed_new_rows = [_with_stable_row_key(row) for row in rows]
-    existing = read_parquet_dataset(dataset_path)
     new_df = _dataframe_from_rows(keyed_new_rows)
-    frames = [frame for frame in (existing, new_df) if not frame.is_empty()]
-    df = pl.concat(frames, how="diagonal_relaxed") if frames else new_df
+    candidate_keys = (
+        ["strategy", "stable_row_key"]
+        if dataset_path.name in SOURCE_AGNOSTIC_STABLE_ROW_KEY_DATASETS
+        else ["strategy", "source_path_inside_bundle", "stable_row_key"]
+    )
+    key_columns = [column for column in candidate_keys if column in new_df.columns]
+    if key_columns:
+        new_df = new_df.unique(subset=key_columns, keep="last", maintain_order=True)
+    existing_rows = count_parquet_rows(dataset_path)
+    if existing_rows == 0:
+        write_parquet_dataset(new_df, dataset_path)
+        return new_df.height
+
+    # The normal production path scans only the persisted key column and lets
+    # DuckDB anti-join the small incoming batch against the large Parquet history.
+    # Never fall back to an eager full-history materialization after a streaming
+    # failure: that fallback caused swap thrash and repeated systemd timeouts.
+    if _stable_row_key_dataset_complete(dataset_path):
+        return upsert_parquet_dataset(
+            new_df,
+            dataset_path,
+            key_columns=key_columns,
+            streaming_upsert=True,
+            streaming_fallback=False,
+        )
 
     # Current datasets already persist stable_row_key. Re-hashing every historical
     # row for each overlapping follow-up bundle made ingest time grow with the
     # entire lake. Keep a migration fallback only for legacy or damaged datasets.
+    existing = read_parquet_dataset(dataset_path)
+    frames = [frame for frame in (existing, new_df) if not frame.is_empty()]
+    df = pl.concat(frames, how="diagonal_relaxed") if frames else new_df
     if not _stable_row_key_column_complete(existing):
         df = _dataframe_from_rows([_with_stable_row_key(row) for row in df.to_dicts()])
     if not df.is_empty():
-        candidate_keys = (
-            ["strategy", "stable_row_key"]
-            if dataset_path.name in SOURCE_AGNOSTIC_STABLE_ROW_KEY_DATASETS
-            else ["strategy", "source_path_inside_bundle", "stable_row_key"]
-        )
         key_columns = [column for column in candidate_keys if column in df.columns]
         if key_columns:
             df = df.unique(subset=key_columns, keep="last", maintain_order=True)
     write_parquet_dataset(df, dataset_path)
     return df.height
+
+
+def _stable_row_key_dataset_complete(dataset_path: Path) -> bool:
+    existing = read_parquet_lazy(dataset_path)
+    if "stable_row_key" not in existing.collect_schema().names():
+        return False
+    keys = pl.col("stable_row_key").cast(pl.Utf8, strict=False)
+    invalid = existing.select(
+        (keys.is_null() | keys.str.strip_chars().eq("")).any().alias("invalid")
+    ).collect(engine="streaming")
+    return not bool(invalid.item())
 
 
 def _stable_row_key_column_complete(df: pl.DataFrame) -> bool:

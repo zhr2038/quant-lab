@@ -1,9 +1,9 @@
 [Unit]
-Description=Run quant-lab V5 telemetry sync every 10 minutes
+Description=Run quant-lab V5 telemetry sync after a 10 minute cooldown
 
 [Timer]
 OnActiveSec=2min
-OnUnitActiveSec=10min
+OnUnitInactiveSec=10min
 RandomizedDelaySec=60s
 Persistent=false
 

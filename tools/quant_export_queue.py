@@ -5,7 +5,7 @@ import argparse
 import json
 import os
 import sys
-from datetime import date
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 from quant_lab.export_plane.cloud_index import export_plane_status
@@ -13,12 +13,18 @@ from quant_lab.export_plane.receipt import import_export_receipts
 from quant_lab.export_plane.request import process_export_requests, submit_export_request
 
 
+def _export_date(value: str) -> date:
+    if value.strip().lower() == "today":
+        return datetime.now(UTC).date()
+    return date.fromisoformat(value)
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Manage the NAS-local Expert Export queue.")
     commands = parser.add_subparsers(dest="command", required=True)
     request = commands.add_parser("request")
     request.add_argument("--queue-root", required=True, type=Path)
-    request.add_argument("--date", required=True, type=date.fromisoformat)
+    request.add_argument("--date", required=True, type=_export_date)
     request.add_argument("--mode", choices=("cached", "authoritative"), default="authoritative")
 
     process = commands.add_parser("process-requests")

@@ -1,0 +1,11 @@
+[Unit]
+Description=Submit the daily NAS Expert Export request
+
+[Timer]
+OnCalendar=*-*-* 00:30:00 UTC
+RandomizedDelaySec=5min
+Persistent=true
+Unit=quant-lab-export-daily-request.service
+
+[Install]
+WantedBy=timers.target

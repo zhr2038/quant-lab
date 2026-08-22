@@ -7,6 +7,7 @@ from io import StringIO
 
 import polars as pl
 
+import quant_lab.strategy_telemetry.ingest as ingest_module
 from quant_lab.data.lake import read_parquet_dataset, write_parquet_dataset
 from quant_lab.export.daily import export_daily_pack
 from quant_lab.research.paper_promotion import build_and_publish_paper_strategy_pipeline
@@ -247,6 +248,32 @@ def test_ingest_v5_trade_events_dedupes_overlapping_bundles(tmp_path):
     assert row["trade_id"] == "bnb-trade-1"
     assert row["bundle_name"] == second.name
     assert row["stable_row_key"]
+
+
+def test_stable_row_upsert_uses_bounded_streaming_for_existing_history(
+    tmp_path,
+    monkeypatch,
+):
+    dataset = tmp_path / "lake" / "silver" / "v5_trade_event"
+    base = {
+        "strategy": "v5",
+        "source_path_inside_bundle": "raw/recent_runs/run_1/trades.csv",
+        "raw_payload_json": '{"trade_id":"trade-1"}',
+        "bundle_name": "first.tar.gz",
+    }
+    assert ingest_module._upsert_stable_rows(dataset, [base]) == 1
+
+    def fail_full_read(*_args, **_kwargs):
+        raise AssertionError("stable-row production path must not materialize full history")
+
+    monkeypatch.setattr(ingest_module, "read_parquet_dataset", fail_full_read)
+    assert ingest_module._upsert_stable_rows(
+        dataset,
+        [{**base, "bundle_name": "second.tar.gz"}],
+    ) == 1
+
+    monkeypatch.undo()
+    assert read_parquet_dataset(dataset)["bundle_name"].to_list() == ["second.tar.gz"]
 
 
 def test_ingest_exports_v5_pullback_reversal_artifacts(tmp_path):

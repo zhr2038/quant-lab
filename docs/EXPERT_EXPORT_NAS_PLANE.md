@@ -199,6 +199,11 @@ The old daily and Web export services remain for explicit emergency rollback onl
 `ExecCondition` refuses to run unless the corresponding local-export switch is set to 1.
 The old timer/path units must remain disabled in normal production.
 
+`quant-lab-export-daily-request.timer` submits one lightweight authoritative request at
+00:30 UTC. It does not materialize a Pack on qyun2. Status keeps the latest accepted Pack
+available for download, but reports `missing_requested_date` and `download_ready=false`
+until the requested date has its own verified accepted receipt.
+
 ## Deployment order
 
 1. Deploy the same clean quant-lab commit to qyun2 and the NAS Worker image.
@@ -207,7 +212,8 @@ The old timer/path units must remain disabled in normal production.
 4. Install only the NAS private key on NAS and only its public key on qyun2/AI Worker.
 5. Generate one 48-byte download secret and mount it read-only on qyun2 and NAS Download.
 6. Create a low-privilege `quant-export` SSH account with queue-only filesystem access.
-7. Install `export-plane.env`, the request path unit, and receipt-import timer on qyun2.
+7. Install `export-plane.env`, the request path unit, daily request timer, and
+   receipt-import timer on qyun2.
 8. Build and start `quant-export-worker` on NAS.
 9. Build and start `quant-export-download` on a LAN/VPN bind address only.
 10. Rebuild `quant-ai-worker` with the read-only accepted Pack mount.

@@ -32,11 +32,11 @@ export function StrategyFlow({ flow }: { flow: Record<string, unknown> }) {
   return (
     <section className="card pad strategy-card">
       <h2 className="section-title icon-title"><GitBranch size={23} />策略机会流</h2>
-      <p className="sub">研究组合裁剪 → shadow → paper → advisory；主屏优先展示最接近 paper/live-review 的候选。</p>
+      <p className="sub">Research / Shadow / Paper建议 / Kill 是 advisory 分组；正式 Paper 进度只看下方生命周期。</p>
       <div className="flow-metrics">
         <Metric label="Research" value={counts.research ?? 0} tone="blue" />
         <Metric label="Shadow" value={counts.shadow ?? 0} tone="purple" />
-        <Metric label="Paper" value={counts.paper ?? 0} tone="green" />
+        <Metric label="Paper建议" value={counts.paper ?? 0} tone="green" />
         <Metric label="Kill" value={counts.kill ?? 0} tone="red" />
       </div>
       <div className="paper-lifecycle" aria-label="Paper 策略生命周期">
@@ -272,7 +272,7 @@ function candidateDetail(candidate: Record<string, unknown>): string {
 function modeLabel(candidate: Record<string, unknown>): string {
   const mode = stringValue(candidate.recommended_mode, "").toLowerCase();
   const decision = stringValue(candidate.decision, "").toUpperCase();
-  if (mode === "paper" || decision === "PAPER_READY") return "PAPER";
+  if (mode === "paper" || decision === "PAPER_READY") return "PAPER建议";
   if (mode === "shadow" || decision.includes("SHADOW")) return "SHADOW";
   if (mode === "research" || decision === "RESEARCH_ONLY") return "RESEARCH";
   if (mode === "none" || decision === "KILL") return "RESEARCH-ONLY";

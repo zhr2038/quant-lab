@@ -5056,7 +5056,9 @@ def _research_portfolio_table(frame: pl.DataFrame) -> pl.DataFrame:
         "next_review_date",
         "module",
         "research_id",
+        "as_of_date",
         "created_at",
+        "last_review_date",
     ]
     table = _select_existing_columns(frame, columns)
     table = _dedupe_latest_web_rows(

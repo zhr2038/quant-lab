@@ -3,7 +3,7 @@ Description=Run quant-lab OKX expanded USDT spot universe backfill every hour
 
 [Timer]
 OnBootSec=20min
-OnUnitActiveSec=1h
+OnUnitInactiveSec=1h
 RandomizedDelaySec=10min
 Persistent=false
 

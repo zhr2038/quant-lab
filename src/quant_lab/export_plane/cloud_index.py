@@ -150,10 +150,14 @@ def export_plane_status(
         ),
         None,
     )
+    accepted_task_ids = {item.task_id for item in packs}
     terminal_events: list[tuple[datetime, str, str, Any]] = [
         (item.updated_at, item.state.value, "task", item)
         for item in statuses
         if item.state.value in _TERMINAL_TASK_STATES
+        and not (
+            item.state.value == "download_ready" and item.task_id in accepted_task_ids
+        )
     ]
     terminal_events.extend(
         (

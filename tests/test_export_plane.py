@@ -7,7 +7,7 @@ import tarfile
 import threading
 import time
 import zipfile
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -848,6 +848,23 @@ def test_export_plane_status_does_not_mark_previous_pack_ready_for_requested_dat
         worker_commit=COMMIT,
     )
     write_cloud_index(tmp_path, [previous])
+    status = ExportTaskStatus(
+        task_id=previous.task_id,
+        snapshot_id=previous.snapshot_id,
+        state=ExportTaskState.DOWNLOAD_READY,
+        requested_at=now,
+        updated_at=now + timedelta(seconds=30),
+        current_stage="download_ready",
+        nas_pack_id=previous.pack_id,
+        nas_pack_sha256=previous.pack_sha256,
+        nas_download_path=previous.download_relative_path,
+    )
+    status_root = tmp_path / "status"
+    status_root.mkdir(exist_ok=True)
+    (status_root / f"{status.task_id}.json").write_text(
+        status.model_dump_json(),
+        encoding="utf-8",
+    )
 
     result = export_plane_status(tmp_path, export_date=date(2026, 7, 16))
 

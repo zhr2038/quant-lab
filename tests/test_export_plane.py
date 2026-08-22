@@ -1417,6 +1417,82 @@ def test_snapshot_batch_fetch_retries_interrupted_stream(
     assert (tmp_path / "target" / "lake" / "data.bin").read_bytes() == payload
 
 
+def test_snapshot_batch_retry_preserves_completed_members(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    first_payload = b"first-complete-payload"
+    second_payload = b"second-payload"
+
+    interrupted_archive = io.BytesIO()
+    with tarfile.open(fileobj=interrupted_archive, mode="w") as archive:
+        for name, payload in (
+            ("lake/first.bin", first_payload),
+            ("lake/second.bin", second_payload),
+        ):
+            info = tarfile.TarInfo(name)
+            info.size = len(payload)
+            archive.addfile(info, io.BytesIO(payload))
+    interrupted_stream = interrupted_archive.getvalue()[: 1024 + 512 + 4]
+
+    retry_archive = io.BytesIO()
+    with tarfile.open(fileobj=retry_archive, mode="w") as archive:
+        info = tarfile.TarInfo("lake/second.bin")
+        info.size = len(second_payload)
+        archive.addfile(info, io.BytesIO(second_payload))
+
+    class CapturingStdin(io.BytesIO):
+        def close(self) -> None:
+            return
+
+    class FakeProcess:
+        def __init__(self, stream: bytes) -> None:
+            self.stdin = CapturingStdin()
+            self.stdout = io.BytesIO(stream)
+            self.killed = False
+
+        def wait(self, timeout: int) -> int:
+            assert timeout in {10, 3600}
+            return 0
+
+        def kill(self) -> None:
+            self.killed = True
+
+    streams = [interrupted_stream, retry_archive.getvalue()]
+    processes: list[FakeProcess] = []
+
+    def fake_popen(*_args, **_kwargs):
+        process = FakeProcess(streams[len(processes)])
+        processes.append(process)
+        return process
+
+    monkeypatch.setattr(export_runner.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(export_runner, "_sleep", lambda _seconds: None)
+    config = SimpleNamespace(
+        ssh_host="cloud.example",
+        ssh_port=22,
+        ssh_user="quant-export",
+        ssh_key_path=tmp_path / "id_ed25519",
+        known_hosts_path=tmp_path / "known_hosts",
+        remote_queue_root="/queue",
+        snapshot_transfer_retries=2,
+        snapshot_transfer_idle_seconds=300,
+    )
+
+    target = tmp_path / "target"
+    export_runner._tar_snapshot_files_from(  # noqa: SLF001
+        config,
+        snapshot_id="snapshot-1",
+        relative_paths=["lake/first.bin", "lake/second.bin"],
+        target_root=target,
+    )
+
+    assert len(processes) == 2
+    assert processes[1].stdin.getvalue() == b"lake/second.bin\0"
+    assert (target / "lake" / "first.bin").read_bytes() == first_payload
+    assert (target / "lake" / "second.bin").read_bytes() == second_payload
+
+
 def test_snapshot_batch_fetch_retries_idle_connection(
     tmp_path: Path,
     monkeypatch,

@@ -44,6 +44,15 @@ _STATUS_UPLOAD_LOCK = threading.RLock()
 class _TransientSnapshotTransferError(RuntimeError):
     """A batch transfer may be retried without weakening content validation."""
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        completed_members: set[str] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.completed_members = frozenset(completed_members or ())
+
 
 class Config:
     def __init__(self) -> None:
@@ -668,29 +677,50 @@ def _tar_snapshot_files_from(
     if len(expected) != len(relative_paths):
         raise RuntimeError("duplicate_snapshot_batch_path")
     retries = max(1, int(getattr(config, "snapshot_transfer_retries", 3)))
+    pending = list(relative_paths)
     for attempt in range(1, retries + 1):
-        if attempt > 1:
-            shutil.rmtree(target_root, ignore_errors=True)
         try:
             _tar_snapshot_files_from_once(
                 config,
                 snapshot_id=snapshot_id,
-                relative_paths=relative_paths,
+                relative_paths=pending,
                 target_root=target_root,
-                expected=expected,
+                expected=set(pending),
             )
             return
-        except _TransientSnapshotTransferError:
+        except _TransientSnapshotTransferError as exc:
+            completed = set(exc.completed_members)
+            if completed - set(pending):
+                raise RuntimeError("unexpected_completed_snapshot_batch_member") from exc
+            pending = [path for path in pending if path not in completed]
+            _remove_incomplete_snapshot_batch_files(target_root, pending)
+            if not pending:
+                return
             if attempt >= retries:
                 raise
             LOG.warning(
-                "snapshot_batch_transfer_retry snapshot_id=%s attempt=%s/%s",
+                "snapshot_batch_transfer_retry snapshot_id=%s attempt=%s/%s "
+                "preserved_files=%s remaining_files=%s",
                 snapshot_id,
                 attempt,
                 retries,
+                len(completed),
+                len(pending),
                 exc_info=True,
             )
             _sleep(attempt)
+
+
+def _remove_incomplete_snapshot_batch_files(
+    target_root: Path,
+    relative_paths: list[str],
+) -> None:
+    for relative_path in relative_paths:
+        candidate = target_root / relative_path
+        if candidate.is_dir() and not candidate.is_symlink():
+            shutil.rmtree(candidate)
+        else:
+            candidate.unlink(missing_ok=True)
 
 
 def _tar_snapshot_files_from_once(
@@ -720,6 +750,7 @@ def _tar_snapshot_files_from_once(
         serialized,
     ]
     target_root.mkdir(parents=True, exist_ok=True)
+    seen: set[str] = set()
     with tempfile.TemporaryFile(mode="w+b") as stderr:
         process = subprocess.Popen(  # noqa: S603
             command,
@@ -749,7 +780,6 @@ def _tar_snapshot_files_from_once(
                 b"\0".join(path.encode("utf-8") for path in relative_paths) + b"\0"
             )
             process.stdin.close()
-            seen: set[str] = set()
             with tarfile.open(fileobj=process.stdout, mode="r|*") as archive:
                 for member in archive:
                     if member.name not in expected or member.name in seen:
@@ -769,12 +799,14 @@ def _tar_snapshot_files_from_once(
                 stderr.seek(0)
                 detail = stderr.read().decode("utf-8", errors="replace")
                 raise _TransientSnapshotTransferError(
-                    f"snapshot_batch_fetch_failed:{_tail(detail)}"
+                    f"snapshot_batch_fetch_failed:{_tail(detail)}",
+                    completed_members=seen,
                 )
             missing = expected - seen
             if missing:
                 raise _TransientSnapshotTransferError(
-                    f"snapshot_batch_members_missing:{len(missing)}"
+                    f"snapshot_batch_members_missing:{len(missing)}",
+                    completed_members=seen,
                 )
         except (BrokenPipeError, EOFError, tarfile.ReadError) as exc:
             _stop_snapshot_transfer_process(process)
@@ -783,11 +815,15 @@ def _tar_snapshot_files_from_once(
                 if watchdog_expired.is_set()
                 else "snapshot_batch_stream_interrupted"
             )
-            raise _TransientSnapshotTransferError(reason) from exc
+            raise _TransientSnapshotTransferError(
+                reason,
+                completed_members=seen,
+            ) from exc
         except subprocess.TimeoutExpired as exc:
             _stop_snapshot_transfer_process(process)
             raise _TransientSnapshotTransferError(
-                "snapshot_batch_process_timeout"
+                "snapshot_batch_process_timeout",
+                completed_members=seen,
             ) from exc
         except _TransientSnapshotTransferError:
             _stop_snapshot_transfer_process(process)

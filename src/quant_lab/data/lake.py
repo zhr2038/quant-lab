@@ -31,6 +31,10 @@ MARKET_BAR_HEALTH_DATASET = Path("silver") / "market_bar_health"
 MARKET_BAR_PRIMARY_KEY = ["venue", "symbol", "timeframe", "ts"]
 PARQUET_MAGIC = b"PAR1"
 MIN_PARQUET_SIZE_BYTES = 12
+# V5 history tables can exceed 180 columns. Small row groups keep COPY buffers
+# bounded; 768 MB still fits the telemetry service's 3 GB hard cgroup limit.
+STREAMING_UPSERT_DUCKDB_MEMORY_LIMIT = "768MB"
+STREAMING_UPSERT_ROW_GROUP_SIZE = 16_384
 logger = logging.getLogger(__name__)
 _PROCESS_LOCKS_GUARD = threading.Lock()
 _PROCESS_LOCKS: dict[str, threading.Lock] = {}
@@ -865,7 +869,9 @@ def _streaming_upsert_parquet_dataset_unlocked(
         connection = duckdb.connect(database=":memory:", read_only=False)
         connection.execute("SET threads = 1")
         connection.execute("SET preserve_insertion_order = false")
-        connection.execute("SET memory_limit = '512MB'")
+        connection.execute(
+            f"SET memory_limit = '{STREAMING_UPSERT_DUCKDB_MEMORY_LIMIT}'"
+        )
         connection.execute(
             f"SET temp_directory = {_duckdb_sql_literal(temp_directory)}"
         )
@@ -887,7 +893,8 @@ def _streaming_upsert_parquet_dataset_unlocked(
         """
         connection.execute(
             f"COPY ({query}) TO {output_sql} "
-            "(FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE 100000)"
+            "(FORMAT PARQUET, COMPRESSION ZSTD, "
+            f"ROW_GROUP_SIZE {STREAMING_UPSERT_ROW_GROUP_SIZE})"
         )
         connection.close()
         connection = None

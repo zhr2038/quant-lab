@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import polars as pl
+import pyarrow.parquet as pq
 import pytest
 
 import quant_lab.data.lake as lake_module
@@ -368,6 +369,33 @@ def test_streaming_upsert_applies_changed_payload_without_full_read(
     assert read_parquet_dataset(dataset).to_dicts() == [
         {"id": 1, "value": "updated", "created_at": "second"}
     ]
+
+
+def test_streaming_upsert_bounds_wide_parquet_row_groups(tmp_path):
+    dataset = tmp_path / "lake" / "silver" / "wide_history"
+    rows = 40_000
+    wide_columns = {
+        f"metric_{index}": [f"value-{index}"] * rows for index in range(32)
+    }
+    write_parquet_dataset(
+        pl.DataFrame({"id": range(rows), **wide_columns}),
+        dataset,
+    )
+
+    result_rows = upsert_parquet_dataset(
+        pl.DataFrame({"id": [rows], **{key: [value[0]] for key, value in wide_columns.items()}}),
+        dataset,
+        key_columns=["id"],
+        streaming_upsert=True,
+        streaming_fallback=False,
+    )
+
+    metadata = pq.ParquetFile(dataset / "data.parquet").metadata
+    assert result_rows == rows + 1
+    assert metadata.num_row_groups >= 3
+    assert max(
+        metadata.row_group(index).num_rows for index in range(metadata.num_row_groups)
+    ) <= lake_module.STREAMING_UPSERT_ROW_GROUP_SIZE
 
 
 def test_streaming_upsert_can_fail_closed_without_eager_fallback(tmp_path, monkeypatch):

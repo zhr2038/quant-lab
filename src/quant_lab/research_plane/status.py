@@ -798,8 +798,18 @@ def _trade_level_history_status_details(
     return details
 
 
-def _status_sort_key(status: ResearchTaskStatus) -> datetime:
-    return status.completed_at or status.heartbeat_at or status.claimed_at or status.requested_at
+def _status_sort_key(status: ResearchTaskStatus) -> tuple[datetime, datetime, str]:
+    activity_at = (
+        status.completed_at
+        or status.heartbeat_at
+        or status.claimed_at
+        or status.requested_at
+    )
+    # "Latest task" is defined by when the task was requested.  An older
+    # result can be rejected a few seconds after a newer snapshot publishes;
+    # sorting only by terminal activity would then make Web V2 report the
+    # superseded rejection instead of the newer successful generation.
+    return status.requested_at, activity_at, status.task_id
 
 
 def _require_identifier(value: str) -> None:

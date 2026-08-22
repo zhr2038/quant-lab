@@ -70,6 +70,7 @@ from quant_lab.research_plane.snapshot_gc import (
 from quant_lab.research_plane.status import (
     ensure_research_queue_layout,
     entry_quality_history_plane_status,
+    research_plane_status,
     write_research_status,
 )
 from quant_lab.research_worker.entry_quality_history import (
@@ -86,6 +87,70 @@ WORKER_KEY_ID = "nas-research-v1"
 BUNDLE_ID = "v5-bundle-sha256:" + "b" * 64
 GENERATED_AT = datetime(2026, 7, 18, 1, 2, 3, tzinfo=UTC)
 DATASETS = [str(path).replace("\\", "/") for path in ENTRY_QUALITY_INPUT_DATASETS]
+
+
+def test_research_plane_summary_prefers_current_work_over_historical_rejection(
+    tmp_path: Path,
+) -> None:
+    queue = ensure_research_queue_layout(tmp_path / "queue")
+    common = {
+        "snapshot_id": "research-snapshot-test",
+        "start_date": date(2026, 7, 18),
+        "end_date": date(2026, 7, 18),
+        "mode": "research_only",
+        "cost_mode": "conservative",
+        "requested_at": GENERATED_AT,
+    }
+    write_research_status(
+        queue,
+        ResearchTaskStatus(
+            **common,
+            task_id="alpha-factory-historical-rejection",
+            task_type="alpha_factory",
+            state=ResearchTaskState.REJECTED,
+            completed_at=GENERATED_AT,
+            last_error="ValueError:worker_code_mismatch",
+        ),
+    )
+    write_research_status(
+        queue,
+        ResearchTaskStatus(
+            **common,
+            task_id="factor-factory-current-compute",
+            task_type="factor_factory",
+            state=ResearchTaskState.COMPUTING,
+        ),
+    )
+
+    status = research_plane_status(queue)
+
+    assert status["state"] == "computing"
+    assert status["tasks"]["alpha_factory"]["state"] == "rejected"
+    assert status["tasks"]["factor_factory"]["state"] == "computing"
+
+
+def test_research_plane_summary_reports_rejection_when_no_work_is_active(
+    tmp_path: Path,
+) -> None:
+    queue = ensure_research_queue_layout(tmp_path / "queue")
+    write_research_status(
+        queue,
+        ResearchTaskStatus(
+            task_id="alpha-factory-current-rejection",
+            snapshot_id="research-snapshot-test",
+            task_type="alpha_factory",
+            start_date=date(2026, 7, 18),
+            end_date=date(2026, 7, 18),
+            mode="research_only",
+            cost_mode="conservative",
+            state=ResearchTaskState.REJECTED,
+            requested_at=GENERATED_AT,
+            completed_at=GENERATED_AT,
+            last_error="ValueError:worker_code_mismatch",
+        ),
+    )
+
+    assert research_plane_status(queue)["state"] == "rejected"
 
 
 def _signed_snapshot(

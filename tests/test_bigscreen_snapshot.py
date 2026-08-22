@@ -1815,6 +1815,43 @@ def test_bigscreen_snapshot_uses_latest_v5_bundle_with_same_day_rows(tmp_path):
     assert readiness["scale_status"] == "SCALE_BLOCKED"
 
 
+def test_bigscreen_snapshot_uses_newer_authoritative_v5_bundle_manifest(tmp_path):
+    clear_bigscreen_cache()
+    lake = tmp_path / "lake"
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "date": "2026-06-25",
+                    "status": "OK",
+                    "latest_bundle_ts": "2026-06-25T03:27:25Z",
+                    "latest_bundle_sha256": "health-old-sha",
+                }
+            ]
+        ),
+        lake / "gold" / "strategy_health_daily",
+    )
+    write_parquet_dataset(
+        pl.DataFrame(
+            [
+                {
+                    "bundle_ts": "2026-06-25T03:56:10Z",
+                    "ingest_ts": "2026-06-25T03:58:00Z",
+                    "bundle_name": "v5_live_followup_bundle_20260625T035610Z.tar.gz",
+                    "bundle_sha256": "manifest-new-sha",
+                }
+            ]
+        ),
+        lake / "bronze" / "strategy_telemetry" / "v5" / "bundle_manifest",
+    )
+
+    payload = bigscreen_snapshot(lake)
+
+    assert payload["kpis"]["latest_v5_bundle_ts"] == "2026-06-25T03:56:10Z"
+    assert payload["v5"]["latest_bundle_sha256"] == "manifest-new-sha"
+    assert payload["v5"]["latest_bundle_name"].endswith("20260625T035610Z.tar.gz")
+
+
 def test_bigscreen_snapshot_exposes_factor_factory_results(tmp_path):
     clear_bigscreen_cache()
     lake = tmp_path / "lake"

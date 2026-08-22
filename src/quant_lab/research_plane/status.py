@@ -416,9 +416,10 @@ def _research_plane_status_for_type(
 
 def _aggregate_state(statuses: list[dict[str, Any]]) -> str:
     states = [str(status.get("state") or "idle") for status in statuses]
-    for state in ("failed", "rejected", "expired"):
-        if state in states:
-            return state
+    # An older terminal failure must not hide current work from the Web V2
+    # summary.  Each task card still exposes its own rejected/failed state, so
+    # prefer an active state here and fall back to terminal health only when
+    # no research task is running or queued.
     for state in (
         "publishing",
         "validating_on_cloud",
@@ -435,6 +436,9 @@ def _aggregate_state(statuses: list[dict[str, Any]]) -> str:
         "claimed",
         "pending",
     ):
+        if state in states:
+            return state
+    for state in ("failed", "rejected", "expired"):
         if state in states:
             return state
     return "completed" if "completed" in states else "idle"

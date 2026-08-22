@@ -301,7 +301,7 @@ def _snapshot_source_signature(root: Path) -> tuple[Any, ...]:
         _path_signature(exports_root / "export_index.json"),
         _expert_pack_collection_signature(exports_root),
         _path_signature(root / "reports" / "v5_enforce_readiness.json"),
-        _directory_signature(root / "bronze" / "v5_bundle_manifest"),
+        _lake_dataset_signature(readers.dataset_path_for(root, "v5_bundle_manifest")),
         _directory_signature(root / "gold" / "strategy_health_daily"),
         _directory_signature(root / "gold" / "quant_lab_opportunity_cost_event"),
         _directory_signature(root / "gold" / "quant_lab_opportunity_cost_daily"),

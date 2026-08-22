@@ -5455,6 +5455,10 @@ def strategy_consumer_summary(lake_root: str | Path) -> dict[str, Any]:
 
 def v5_telemetry_summary(lake_root: str | Path) -> dict[str, Any]:
     health, health_warning = read_dataset_with_warning(lake_root, "strategy_health_daily")
+    bundle_manifest, bundle_manifest_warning = read_dataset_with_warning(
+        lake_root,
+        "v5_bundle_manifest",
+    )
     gate, gate_warning = read_dataset_with_warning(lake_root, "v5_gate_compliance_daily")
     mode, mode_warning = read_dataset_with_warning(lake_root, "v5_quant_lab_mode_daily")
     enforcement, enforcement_warning = read_dataset_with_warning(
@@ -5485,6 +5489,7 @@ def v5_telemetry_summary(lake_root: str | Path) -> dict[str, Any]:
         warning
         for warning in [
             health_warning,
+            bundle_manifest_warning,
             gate_warning,
             mode_warning,
             enforcement_warning,
@@ -5501,8 +5506,9 @@ def v5_telemetry_summary(lake_root: str | Path) -> dict[str, Any]:
     )
     latest_order_event = _latest_v5_event_frame(probe_order_events)
     latest_roundtrip_event = _latest_v5_event_frame(probe_roundtrip_events)
+    latest_bundle_identity = _latest_v5_bundle_identity(bundle_manifest)
     if health.is_empty():
-        latest = {}
+        latest = dict(latest_bundle_identity)
         if p3_latest:
             latest["cost_probe_p3_preflight"] = p3_latest
         if latest_live_execution_status:
@@ -5525,6 +5531,7 @@ def v5_telemetry_summary(lake_root: str | Path) -> dict[str, Any]:
         }
     health = _sort_v5_freshness_frame(health)
     latest = health.tail(1).to_dicts()[0]
+    latest = _with_authoritative_v5_bundle_identity(latest, latest_bundle_identity)
     if p3_latest:
         latest = dict(latest)
         latest["cost_probe_p3_preflight"] = p3_latest
@@ -5549,6 +5556,34 @@ def v5_telemetry_summary(lake_root: str | Path) -> dict[str, Any]:
         "cost_probe_roundtrip_event_rows": probe_roundtrip_events.head(DISPLAY_LIMIT),
         "warnings": warnings,
     }
+
+
+def _latest_v5_bundle_identity(frame: pl.DataFrame) -> dict[str, Any]:
+    if frame.is_empty() or "bundle_ts" not in frame.columns:
+        return {}
+    sort_columns = [
+        column for column in ("bundle_ts", "ingest_ts") if column in frame.columns
+    ]
+    row = frame.sort(sort_columns).tail(1).to_dicts()[0]
+    return {
+        "latest_bundle_ts": row.get("bundle_ts"),
+        "latest_bundle_sha256": row.get("bundle_sha256"),
+        "latest_bundle_name": row.get("bundle_name"),
+        "latest_bundle_ingest_ts": row.get("ingest_ts"),
+    }
+
+
+def _with_authoritative_v5_bundle_identity(
+    latest: dict[str, Any],
+    bundle_identity: dict[str, Any],
+) -> dict[str, Any]:
+    if not bundle_identity:
+        return latest
+    health_ts = _coerce_timestamp(latest.get("latest_bundle_ts"))
+    manifest_ts = _coerce_timestamp(bundle_identity.get("latest_bundle_ts"))
+    if health_ts is not None and (manifest_ts is None or manifest_ts < health_ts):
+        return latest
+    return {**latest, **bundle_identity}
 
 
 def _latest_v5_cost_probe_p3_preflight(frame: pl.DataFrame) -> dict[str, Any] | None:

@@ -1836,7 +1836,11 @@ def import_pending_entry_quality_history_results(
                 ),
             )
         except ValueError as exc:
-            if str(exc) != "research_result_superseded_by_newer_snapshot":
+            if str(exc) not in {
+                "research_result_superseded_by_newer_snapshot",
+                "trade_level_history_result_superseded_by_generation",
+                "trade_level_history_result_superseded_by_candidate_generation",
+            }:
                 raise
             results.append(
                 ResearchImportResult(

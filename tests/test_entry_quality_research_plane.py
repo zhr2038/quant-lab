@@ -1508,9 +1508,18 @@ def test_importer_rejects_superseded_task_before_publish(tmp_path: Path, monkeyp
     assert not (lake / "gold/entry_quality_history_generation.json").exists()
 
 
+@pytest.mark.parametrize(
+    "superseded_error",
+    [
+        "research_result_superseded_by_newer_snapshot",
+        "trade_level_history_result_superseded_by_generation",
+        "trade_level_history_result_superseded_by_candidate_generation",
+    ],
+)
 def test_batch_import_continues_after_superseded_result(
     tmp_path: Path,
     monkeypatch,
+    superseded_error: str,
 ) -> None:
     queue = ensure_research_queue_layout(tmp_path / "queue")
     for task_id in ("a-superseded", "b-current"):
@@ -1520,7 +1529,7 @@ def test_batch_import_continues_after_superseded_result(
     def fake_import(_lake_root, _queue_root, task_id, **_kwargs):
         imported.append(task_id)
         if task_id == "a-superseded":
-            raise ValueError("research_result_superseded_by_newer_snapshot")
+            raise ValueError(superseded_error)
         return ResearchImportResult(
             task_id=task_id,
             state="completed",

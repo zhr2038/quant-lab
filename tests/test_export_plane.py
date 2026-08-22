@@ -7,6 +7,7 @@ import tarfile
 import threading
 import time
 import zipfile
+from contextlib import contextmanager, nullcontext
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -206,6 +207,98 @@ def test_export_worker_attempt_uses_previous_cloud_status(
     config = SimpleNamespace(remote_queue_root="/queue")
 
     assert export_runner._next_attempt(config, task, tmp_path) == 2
+
+
+def test_export_worker_only_holds_heavy_lock_for_materialization(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    task = _task()
+    snapshot = _snapshot()
+    snapshot_root = tmp_path / "snapshot"
+    (snapshot_root / "files").mkdir(parents=True)
+    pack_path = tmp_path / "pack.zip"
+    pack_path.write_bytes(b"pack")
+    events: list[str] = []
+
+    def fake_scp_from(_config, _remote, target):
+        payload = (
+            task.model_dump_json()
+            if target.name == "task.json"
+            else snapshot.model_dump_json()
+        )
+        target.write_text(payload, encoding="utf-8")
+
+    def fake_sync(*_args, **_kwargs):
+        events.append("sync")
+        return SimpleNamespace(
+            snapshot_root=snapshot_root,
+            cache_hits=0,
+            downloaded_bytes=snapshot.total_input_bytes,
+        )
+
+    @contextmanager
+    def fake_heavy_lock(_path):
+        events.append("lock_enter")
+        try:
+            yield
+        finally:
+            events.append("lock_exit")
+
+    def fake_materialize(**_kwargs):
+        events.append("materialize")
+        return SimpleNamespace(pack_path=pack_path)
+
+    receipt = SimpleNamespace(
+        pack_id="pack-test",
+        pack_sha256="d" * 64,
+        pack_size_bytes=pack_path.stat().st_size,
+        download_relative_path="2026/07/pack.zip",
+    )
+    monkeypatch.setattr(export_runner, "_scp_from", fake_scp_from)
+    monkeypatch.setattr(export_runner, "_next_attempt", lambda *_args: 1)
+    monkeypatch.setattr(export_runner, "_verify_task", lambda *_args: None)
+    monkeypatch.setattr(export_runner, "_verify_snapshot", lambda *_args: None)
+    monkeypatch.setattr(export_runner, "_upload_status", lambda *_args: None)
+    monkeypatch.setattr(export_runner, "_heartbeat", lambda *_args: nullcontext())
+    monkeypatch.setattr(export_runner, "_heavy_job_lock", fake_heavy_lock)
+    monkeypatch.setattr(export_runner, "sync_snapshot_blobs", fake_sync)
+    monkeypatch.setattr(export_runner, "materialize_snapshot_pack", fake_materialize)
+    monkeypatch.setattr(
+        export_runner,
+        "accept_materialized_pack",
+        lambda **_kwargs: (receipt, tmp_path / "accepted"),
+    )
+    monkeypatch.setattr(export_runner, "_upload_receipt", lambda *_args: None)
+    monkeypatch.setattr(
+        export_runner,
+        "_wait_for_control_plane_verification",
+        lambda *_args: False,
+    )
+    monkeypatch.setattr(export_runner, "enforce_accepted_retention", lambda **_kwargs: None)
+    monkeypatch.setattr(export_runner, "_write_worker_status", lambda *_args, **_kwargs: None)
+    config = SimpleNamespace(
+        data_dir=tmp_path / "data",
+        remote_queue_root="/queue",
+        heavy_lock_path=tmp_path / "heavy.lock",
+        snapshot_fetch_workers=4,
+        min_free_disk_bytes=1,
+        max_snapshot_bytes=1024,
+        worker_id="worker-test",
+        worker_commit=COMMIT,
+        max_pack_bytes=1024,
+        accepted_root=tmp_path / "accepted",
+        index_path=tmp_path / "accepted_index.json",
+        worker_signing_key=tmp_path / "worker.pem",
+        worker_key_id="worker-key",
+        retention_days=90,
+        max_total_bytes=1024,
+        min_keep_packs=1,
+    )
+
+    export_runner.process_claimed_task(config, task.task_id)
+
+    assert events == ["sync", "lock_enter", "materialize", "lock_exit"]
 
 
 def test_ed25519_signature_detects_tampering(tmp_path: Path) -> None:

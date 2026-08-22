@@ -206,7 +206,7 @@ def process_claimed_task(config: Config, task_id: str) -> None:
         )
         _upload_status(config, status, work)
 
-        with _heartbeat(config, task, work), _heavy_job_lock(config.heavy_lock_path):
+        with _heartbeat(config, task, work):
             sync_result = sync_snapshot_blobs(
                 snapshot,
                 data_root=config.data_dir,
@@ -228,47 +228,48 @@ def process_claimed_task(config: Config, task_id: str) -> None:
                 min_free_disk_bytes=config.min_free_disk_bytes,
                 max_snapshot_bytes=config.max_snapshot_bytes,
             )
-            status = _status(
-                task,
-                ExportTaskState.MATERIALIZING,
-                config,
-                "materializing",
-                attempt=attempt,
-                input_bytes=snapshot.total_input_bytes,
-            )
-            _upload_status(config, status, work)
-            result = materialize_snapshot_pack(
-                snapshot_root=sync_result.snapshot_root / "files",
-                task=task,
-                snapshot=snapshot,
-                work_root=work / "materializer",
-                worker_id=config.worker_id,
-                worker_commit=config.worker_commit,
-            )
-            if result.pack_path.stat().st_size > config.max_pack_bytes:
-                raise RuntimeError("pack_output_limit_exceeded")
-            status = _status(
-                task,
-                ExportTaskState.VALIDATING_ON_NAS,
-                config,
-                "validating_on_nas",
-                attempt=attempt,
-                input_bytes=snapshot.total_input_bytes,
-                output_bytes=result.pack_path.stat().st_size,
-            )
-            _upload_status(config, status, work)
-            receipt, _ = accept_materialized_pack(
-                result=result,
-                task=task,
-                snapshot=snapshot,
-                accepted_root=config.accepted_root,
-                index_path=config.index_path,
-                worker_id=config.worker_id,
-                worker_signing_key_path=config.worker_signing_key,
-                worker_key_id=config.worker_key_id,
-                cache_hits=sync_result.cache_hits,
-                downloaded_bytes=sync_result.downloaded_bytes,
-            )
+            with _heavy_job_lock(config.heavy_lock_path):
+                status = _status(
+                    task,
+                    ExportTaskState.MATERIALIZING,
+                    config,
+                    "materializing",
+                    attempt=attempt,
+                    input_bytes=snapshot.total_input_bytes,
+                )
+                _upload_status(config, status, work)
+                result = materialize_snapshot_pack(
+                    snapshot_root=sync_result.snapshot_root / "files",
+                    task=task,
+                    snapshot=snapshot,
+                    work_root=work / "materializer",
+                    worker_id=config.worker_id,
+                    worker_commit=config.worker_commit,
+                )
+                if result.pack_path.stat().st_size > config.max_pack_bytes:
+                    raise RuntimeError("pack_output_limit_exceeded")
+                status = _status(
+                    task,
+                    ExportTaskState.VALIDATING_ON_NAS,
+                    config,
+                    "validating_on_nas",
+                    attempt=attempt,
+                    input_bytes=snapshot.total_input_bytes,
+                    output_bytes=result.pack_path.stat().st_size,
+                )
+                _upload_status(config, status, work)
+                receipt, _ = accept_materialized_pack(
+                    result=result,
+                    task=task,
+                    snapshot=snapshot,
+                    accepted_root=config.accepted_root,
+                    index_path=config.index_path,
+                    worker_id=config.worker_id,
+                    worker_signing_key_path=config.worker_signing_key,
+                    worker_key_id=config.worker_key_id,
+                    cache_hits=sync_result.cache_hits,
+                    downloaded_bytes=sync_result.downloaded_bytes,
+                )
 
         status = _status(
             task,

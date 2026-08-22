@@ -185,6 +185,7 @@ def test_expanded_universe_backfill_stays_within_bigscreen_freshness_window():
     assert "flock -E 75 -w 30 /var/lock/quant-lab-heavy.lock" in service
     assert "SKIP_EXPANDED_UNIVERSE_BACKFILL_LOCK_BUSY" in service
     assert 'echo "SKIP_EXPANDED_UNIVERSE_BACKFILL_LOCK_BUSY" >&2; exit 75' in service
+    assert "SuccessExitStatus=75" in service
 
 
 def test_nas_expert_export_has_a_guarded_daily_request_timer() -> None:

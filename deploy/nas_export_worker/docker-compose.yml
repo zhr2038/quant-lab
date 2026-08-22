@@ -13,7 +13,7 @@ services:
     environment:
       BUILD_GIT_COMMIT: ${BUILD_GIT_COMMIT:?set BUILD_GIT_COMMIT to the deployed full SHA}
     cpus: 3.0
-    mem_limit: ${NAS_EXPORT_WORKER_MEMORY_LIMIT:-8g}
+    mem_limit: ${NAS_EXPORT_WORKER_MEMORY_LIMIT:-10g}
     pids_limit: 256
     read_only: true
     user: "10002:10002"

@@ -33,6 +33,9 @@ def test_nas_export_worker_runtime_commit_matches_the_built_image() -> None:
     compose = (
         ROOT / "deploy" / "nas_export_worker" / "docker-compose.yml"
     ).read_text(encoding="utf-8")
+    environment = (
+        ROOT / "deploy" / "nas_export_worker" / ".env.example"
+    ).read_text(encoding="utf-8")
 
     assert "ARG BUILD_GIT_COMMIT\n" in dockerfile
     assert 'test "${#BUILD_GIT_COMMIT}" = 40' in dockerfile
@@ -43,6 +46,8 @@ def test_nas_export_worker_runtime_commit_matches_the_built_image() -> None:
     ) in compose
     assert "/app/BUILD_GIT_COMMIT" in compose
     assert "os.environ['BUILD_GIT_COMMIT'] == image" in compose
+    assert "mem_limit: ${NAS_EXPORT_WORKER_MEMORY_LIMIT:-10g}" in compose
+    assert "NAS_EXPORT_WORKER_MEMORY_LIMIT=10g" in environment
 
 
 def test_nas_export_worker_deploys_and_verifies_current_head() -> None:

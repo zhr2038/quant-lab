@@ -153,7 +153,7 @@ export function StrategyFlow({ flow }: { flow: Record<string, unknown> }) {
         <ResearchMiniPanel
           title="组合"
           rows={portfolioRows.slice(0, 4).map((row) => [
-            stringValue(row.factor_id, "factor"),
+            factorHorizonLabel(row),
             stringValue(row.portfolio_validity, "UNKNOWN"),
             `${stringValue(row.decision, "RESEARCH")} · PIT ${pct(row.cost_coverage, 0)} · trusted ${pct(row.trusted_cost_coverage, 0)}`
           ])}
@@ -161,6 +161,12 @@ export function StrategyFlow({ flow }: { flow: Record<string, unknown> }) {
       </div>
     </section>
   );
+}
+
+function factorHorizonLabel(row: Record<string, unknown>): string {
+  const factorId = stringValue(row.factor_id, "factor");
+  const horizonBars = stringValue(row.horizon_bars, "");
+  return horizonBars ? `${factorId} · ${horizonBars} bars` : factorId;
 }
 
 function LifecycleStage({ label, value }: { label: string; value: number | undefined }) {

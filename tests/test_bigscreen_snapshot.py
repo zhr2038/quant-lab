@@ -2715,6 +2715,8 @@ def test_web_v2_factor_generation_summary_does_not_compete_with_duplicate_list()
     assert 'data-testid="factor-generation-summary"' in strategy_flow
     assert 'className="factor-generation-cell verdict"' in strategy_flow
     assert 'className="factor-chip-grid"' not in strategy_flow
+    assert "factorHorizonLabel(row)" in strategy_flow
+    assert "`${factorId} · ${horizonBars} bars`" in strategy_flow
     assert (
         ".factor-generation-grid{display:grid;"
         "grid-template-columns:repeat(3,minmax(0,1fr))"

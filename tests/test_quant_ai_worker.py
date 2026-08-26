@@ -26,16 +26,19 @@ class _Output(BaseModel):
 
 class _Response:
     is_error = False
+    status_code = 200
+    text = ""
 
-    def __init__(self, output_text: str) -> None:
+    def __init__(self, output_text: str, usage: dict[str, int] | None = None) -> None:
         self._output_text = output_text
+        self._usage = usage or {}
 
     def json(self) -> dict[str, object]:
         return {
             "id": "response-test",
             "status": "completed",
             "output_text": self._output_text,
-            "usage": {},
+            "usage": self._usage,
         }
 
 
@@ -80,7 +83,9 @@ def test_schema_retry_includes_structured_feedback(monkeypatch) -> None:
 
     assert result["attempts"] == 2
     assert result["validation_events"][0]["event"] == "SCHEMA_VALIDATION_FAILED"
-    assert len(requests[1]["input"]) == 3  # type: ignore[arg-type]
+    assert len(requests[1]["input"]) == 2  # type: ignore[arg-type]
+    assert "previous_output" in str(requests[1]["input"])
+    assert "task_id" in str(requests[1]["input"])
     assert "secret-never-logged" not in str(requests)
 
 
@@ -267,6 +272,128 @@ def test_stage1_prompt_distinguishes_publication_lag_from_content_mismatch() -> 
 
     assert "proposal_content_snapshot_match=true" in prompt
     assert "不得称为内容哈希冲突" in prompt
+    assert "未来 1h、4h、24h" in prompt
+
+
+def test_schema_retry_uses_compact_repair_and_preserves_attempt_usage(monkeypatch) -> None:
+    requests: list[dict[str, object]] = []
+    responses = iter(
+        [
+            _Response(
+                '{"value":"invalid"}',
+                {"input_tokens": 2500, "output_tokens": 50, "total_tokens": 2550},
+            ),
+            _Response(
+                '{"value":2}',
+                {"input_tokens": 300, "output_tokens": 10, "total_tokens": 310},
+            ),
+        ]
+    )
+
+    class _Client:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def __enter__(self) -> _Client:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def post(self, _url: str, **kwargs: object) -> _Response:
+            requests.append(kwargs["json"])  # type: ignore[arg-type]
+            return next(responses)
+
+    monkeypatch.setattr(worker.httpx, "Client", _Client)
+    monkeypatch.setattr(worker, "_sleep", lambda _seconds: None)
+    config = SimpleNamespace(
+        model="gpt-test",
+        reasoning_effort="high",
+        api_key="secret-never-logged",
+        api_base_url="http://local/v1",
+        api_timeout_seconds=60,
+        api_retries=2,
+        api_provider_retries=1,
+        api_validation_retries=1,
+    )
+
+    result = worker._responses_call(
+        config,
+        system_prompt="system",
+        user_payload={"task_id": "task-1", "large_evidence": "x" * 20_000},
+        output_model=_Output,
+        schema_name="test_output",
+        max_output_tokens=4000,
+        stage="stage1",
+        retry_context={"task_id": "task-1"},
+    )
+
+    assert result["attempts"] == 2
+    assert len(result["attempt_usage"]) == 2
+    assert result["attempt_usage"][0]["outcome"] == "schema_validation_failed"
+    assert result["attempt_usage"][0]["usage"]["total_tokens"] == 2550
+    assert result["attempt_usage"][1]["outcome"] == "success"
+    assert result["attempt_usage"][1]["usage"]["total_tokens"] == 310
+    assert result["aggregate_usage"]["total_tokens"] == 2860
+    assert result["attempt_usage"][1]["request_bytes"] < result["attempt_usage"][0][
+        "request_bytes"
+    ]
+    assert "x" * 100 not in str(requests[1])
+
+
+def test_provider_retry_budget_stops_repeated_full_context_calls(monkeypatch) -> None:
+    calls = 0
+
+    class _ErrorResponse:
+        is_error = True
+        status_code = 408
+        text = '{"error":{"message":"stream closed"}}'
+
+    class _Client:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def __enter__(self) -> _Client:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def post(self, _url: str, **_kwargs: object) -> _ErrorResponse:
+            nonlocal calls
+            calls += 1
+            return _ErrorResponse()
+
+    monkeypatch.setattr(worker.httpx, "Client", _Client)
+    monkeypatch.setattr(worker, "_sleep", lambda _seconds: None)
+    config = SimpleNamespace(
+        model="gpt-test",
+        reasoning_effort="high",
+        api_key="secret-never-logged",
+        api_base_url="http://local/v1",
+        api_timeout_seconds=60,
+        api_retries=3,
+        api_provider_retries=1,
+        api_validation_retries=1,
+    )
+
+    with pytest.raises(worker._ResponsesCallError) as exc_info:
+        worker._responses_call(
+            config,
+            system_prompt="system",
+            user_payload={"task_id": "task-1", "large_evidence": "x" * 20_000},
+            output_model=_Output,
+            schema_name="test_output",
+            max_output_tokens=4000,
+            stage="stage2",
+        )
+
+    assert calls == 2
+    assert len(exc_info.value.attempt_audit) == 2
+    assert all(
+        item["outcome"] == "provider_or_transport_failed"
+        for item in exc_info.value.attempt_audit
+    )
 
 
 def test_worker_result_carries_materialized_effective_preflight(monkeypatch) -> None:

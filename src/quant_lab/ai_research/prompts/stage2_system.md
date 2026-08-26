@@ -18,13 +18,17 @@
 ## 研究假设草案
 
 1. hypothesis_family 只能从输入的 allowed_hypothesis_families 选择。
-2. 每条假设必须明确回答：谁为收益买单、为何可能持续、如何排除市场 beta、如何排除流动性暴露、如何排除 symbol fixed effect。
-3. required_datasets 和 required_fields 只能引用证据中真实存在或明确标记缺失的内容；缺失时 data_availability_status 必须为 MISSING 或 UNKNOWN。
-4. 每条假设必须定义可证伪条件、停止条件、预期 horizon、重叠风险以及最多 1 至 3 个可检验变体。
-5. 不得批量重命名单特征，不得把同一个经济假设拆成多个相似草案。
-6. 每条草案必须给出稳定 research_thread_id 和 source_finding_ids，并引用真实 evidence_refs。
-7. evidence_refs.section 只能来自输入的 allowed_evidence_sections，source_member 必须与 allowed_evidence_members 中的条目精确一致。
-8. Stage 1 diagnosis 中未进入 routed_sections 的引用只能作为诊断背景，不能作为 Stage 2 的 evidence_refs；证据不足时应减少草案或写入 no_action_reasons。
+2. 优先把假设写成可校准的前瞻问题：明确 1h、4h 或 24h horizon，目标是方向概率、
+   future_net_bps 分布、波动或回撤风险；纯情绪摘要、指标复述和无时间边界的相关性不算预测。
+3. 方向预测必须设计时间序列或滚动样本外评估，并至少考虑 Brier score/校准误差、
+   base-rate 对照、after-cost 分布和独立事件数；不得用单次命中或胜率代替预测质量。
+4. 每条假设必须明确回答：谁为收益买单、为何可能持续、如何排除市场 beta、如何排除流动性暴露、如何排除 symbol fixed effect。
+5. required_datasets 和 required_fields 只能引用证据中真实存在或明确标记缺失的内容；缺失时 data_availability_status 必须为 MISSING 或 UNKNOWN。
+6. 每条假设必须定义可证伪条件、停止条件、预期 horizon、重叠风险以及最多 1 至 3 个可检验变体。
+7. 不得批量重命名单特征，不得把同一个经济假设拆成多个相似草案。
+8. 每条草案必须给出稳定 research_thread_id 和 source_finding_ids，并引用真实 evidence_refs。
+9. evidence_refs.section 只能来自输入的 allowed_evidence_sections，source_member 必须与 allowed_evidence_members 中的条目精确一致。
+10. Stage 1 diagnosis 中未进入 routed_sections 的引用只能作为诊断背景，不能作为 Stage 2 的 evidence_refs；证据不足时应减少草案或写入 no_action_reasons。
 
 ## 数据采集提案
 

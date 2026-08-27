@@ -17,6 +17,7 @@ from polars.testing import assert_frame_equal
 from pydantic import ValidationError
 from typer.testing import CliRunner
 
+from quant_lab import cli as cli_module
 from quant_lab.cli import app
 from quant_lab.data.lake import read_parquet_dataset, write_market_bars, write_parquet_dataset
 from quant_lab.factors.factory import (
@@ -1018,6 +1019,73 @@ def test_factor_factory_cli_treats_no_change_as_success(
     assert damaged.exit_code == 0, damaged.output
     assert "FACTOR_FACTORY_GENERATION_INTEGRITY_FAILED" in damaged.output
     assert '"state": "generation_integrity_failed"' in damaged.output
+
+
+def test_factor_factory_cli_retries_source_write_race(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    lake = tmp_path / "lake"
+    queue = tmp_path / "queue"
+    lake.mkdir()
+    preflight = preflight_factor_factory_snapshot(
+        lake,
+        queue,
+        as_of_date=date(2026, 5, 20),
+        quant_lab_commit=COMMIT,
+    )
+    _write_verified_factor_factory_generation(
+        lake,
+        identity_payload=preflight.identity_payload,
+        snapshot_id=preflight.snapshot_id,
+        generation_id="cli-current-generation",
+    )
+    key = Ed25519PrivateKey.generate()
+    key_path = tmp_path / "task-key.pem"
+    key_path.write_bytes(
+        key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        )
+    )
+    monkeypatch.setenv("QUANT_LAB_NAS_RESEARCH_ENABLED", "1")
+    monkeypatch.setenv("QUANT_LAB_NAS_FACTOR_FACTORY_ENABLED", "1")
+    original = cli_module.create_factor_factory_task
+    attempts = 0
+
+    def race_once(*args: object, **kwargs: object):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("snapshot_source_changed_while_sealing")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(cli_module, "create_factor_factory_task", race_once)
+
+    result = CLI_RUNNER.invoke(
+        app,
+        [
+            "request-factor-factory",
+            "--lake-root",
+            str(lake),
+            "--queue-root",
+            str(queue),
+            "--signing-key-path",
+            str(key_path),
+            "--key-id",
+            TASK_KEY_ID,
+            "--quant-lab-commit",
+            COMMIT,
+            "--date",
+            "2026-05-21",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert attempts == 2
+    assert "FACTOR_FACTORY_SNAPSHOT_SOURCE_CHANGED_RETRY attempt=1" in result.output
+    assert "FACTOR_FACTORY_ALREADY_CURRENT" in result.output
 
 
 def test_released_factor_factory_snapshot_rehydrates_once_and_preserves_identity(

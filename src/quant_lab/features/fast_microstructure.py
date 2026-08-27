@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 import os
+from bisect import bisect_left, bisect_right
 from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
 from time import perf_counter
@@ -841,7 +842,17 @@ def _int(value: Any) -> int | None:
 
 def _window_rows(rows: list[dict[str, Any]], ts: datetime, *, minutes: int) -> list[dict[str, Any]]:
     start = ts - timedelta(minutes=minutes)
-    return [row for row in rows if start <= row.get("_ts") <= ts]
+    return rows[
+        bisect_left(rows, start, key=_row_ts) : bisect_right(rows, ts, key=_row_ts)
+    ]
+
+
+def _row_ts(row: dict[str, Any]) -> datetime:
+    return row["_ts"]
+
+
+def _last_index_at_or_before(rows: list[dict[str, Any]], ts: datetime) -> int:
+    return bisect_right(rows, ts, key=_row_ts) - 1
 
 
 def _avg_value(
@@ -857,21 +868,15 @@ def _avg_value(
 
 
 def _latest_value(rows: list[dict[str, Any]], ts: datetime, *, field: str) -> float | None:
-    candidates = [
-        row for row in rows if row.get("_ts") <= ts and _float(row.get(field)) is not None
-    ]
-    if not candidates:
-        return None
-    return _float(candidates[-1].get(field))
+    for index in range(_last_index_at_or_before(rows, ts), -1, -1):
+        value = _float(rows[index].get(field))
+        if value is not None:
+            return value
+    return None
 
 
 def _value_at_or_before(rows: list[dict[str, Any]], ts: datetime, *, field: str) -> float | None:
-    candidates = [
-        row for row in rows if row.get("_ts") <= ts and _float(row.get(field)) is not None
-    ]
-    if not candidates:
-        return None
-    return _float(candidates[-1].get(field))
+    return _latest_value(rows, ts, field=field)
 
 
 def _avg_spread_bps(rows: list[dict[str, Any]], ts: datetime, *, minutes: int) -> float | None:
@@ -881,13 +886,15 @@ def _avg_spread_bps(rows: list[dict[str, Any]], ts: datetime, *, minutes: int) -
 
 
 def _latest_spread_bps(rows: list[dict[str, Any]], ts: datetime) -> float | None:
-    candidates = [row for row in rows if row.get("_ts") <= ts and _spread_bps(row) is not None]
-    return _spread_bps(candidates[-1]) if candidates else None
+    for index in range(_last_index_at_or_before(rows, ts), -1, -1):
+        value = _spread_bps(rows[index])
+        if value is not None:
+            return value
+    return None
 
 
 def _spread_at_or_before(rows: list[dict[str, Any]], ts: datetime) -> float | None:
-    candidates = [row for row in rows if row.get("_ts") <= ts and _spread_bps(row) is not None]
-    return _spread_bps(candidates[-1]) if candidates else None
+    return _latest_spread_bps(rows, ts)
 
 
 def _spread_bps(row: dict[str, Any]) -> float | None:
@@ -924,10 +931,11 @@ def _avg_orderbook_imbalance(
 
 
 def _latest_orderbook_imbalance(rows: list[dict[str, Any]], ts: datetime) -> float | None:
-    candidates = [
-        row for row in rows if row.get("_ts") <= ts and _orderbook_imbalance(row) is not None
-    ]
-    return _orderbook_imbalance(candidates[-1]) if candidates else None
+    for index in range(_last_index_at_or_before(rows, ts), -1, -1):
+        value = _orderbook_imbalance(rows[index])
+        if value is not None:
+            return value
+    return None
 
 
 def _orderbook_imbalance(row: dict[str, Any]) -> float | None:
@@ -953,12 +961,11 @@ def _bid_depth_recovery(rows: list[dict[str, Any]], ts: datetime) -> float | Non
 
 
 def _latest_bid_depth(rows: list[dict[str, Any]], ts: datetime) -> float | None:
-    candidates = [
-        _bid_depth(row)
-        for row in rows
-        if row.get("_ts") <= ts and _bid_depth(row) is not None
-    ]
-    return candidates[-1] if candidates else None
+    for index in range(_last_index_at_or_before(rows, ts), -1, -1):
+        value = _bid_depth(rows[index])
+        if value is not None:
+            return value
+    return None
 
 
 def _avg_bid_depth(rows: list[dict[str, Any]], ts: datetime, *, minutes: int) -> float | None:
@@ -1097,8 +1104,11 @@ def _mid_price(row: dict[str, Any]) -> float | None:
 
 
 def _latest_mid_price(rows: list[dict[str, Any]], ts: datetime) -> float | None:
-    candidates = [row for row in rows if row.get("_ts") <= ts and _mid_price(row) is not None]
-    return _mid_price(candidates[-1]) if candidates else None
+    for index in range(_last_index_at_or_before(rows, ts), -1, -1):
+        value = _mid_price(rows[index])
+        if value is not None:
+            return value
+    return None
 
 
 def _first_float(row: dict[str, Any], fields: Iterable[str]) -> float | None:
@@ -1123,7 +1133,9 @@ def _cvd_divergence(return_1h_bps: float | None, taker_imbalance_5m: float | Non
 
 def _bars_window(rows: list[dict[str, Any]], ts: datetime, *, hours: int) -> list[dict[str, Any]]:
     start = ts - timedelta(hours=hours)
-    return [row for row in rows if start <= row.get("_ts") <= ts]
+    return rows[
+        bisect_left(rows, start, key=_row_ts) : bisect_right(rows, ts, key=_row_ts)
+    ]
 
 
 def _vwap(rows: list[dict[str, Any]], ts: datetime, *, hours: int) -> float | None:
@@ -1154,14 +1166,11 @@ def _return_bps(rows: list[dict[str, Any]], ts: datetime, *, hours: int) -> floa
 
 
 def _latest_close(rows: list[dict[str, Any]], ts: datetime) -> float | None:
-    candidates = [
-        row
-        for row in rows
-        if row.get("_ts") <= ts and _float(row.get("close")) is not None
-    ]
-    if not candidates:
-        return None
-    return _float(candidates[-1].get("close"))
+    for index in range(_last_index_at_or_before(rows, ts), -1, -1):
+        value = _float(rows[index].get("close"))
+        if value is not None:
+            return value
+    return None
 
 
 def _realized_vol_bps(rows: list[dict[str, Any]], ts: datetime, *, hours: int) -> float | None:
@@ -1263,10 +1272,9 @@ def _future_net_bps(
 
 
 def _close_at_or_after(rows: list[dict[str, Any]], ts: datetime) -> float | None:
-    for row in rows:
-        row_ts = _coerce_dt(row.get("_ts"))
+    for row in rows[bisect_left(rows, ts, key=_row_ts) :]:
         value = _float(row.get("close"))
-        if row_ts is not None and row_ts >= ts and value is not None:
+        if value is not None:
             return value
     return None
 
@@ -1293,10 +1301,10 @@ def _regime_rows(frame: pl.DataFrame | None) -> list[dict[str, Any]]:
 
 
 def _regime_for_ts(regime_rows: list[dict[str, Any]], ts: datetime) -> str | None:
-    candidates = [row for row in regime_rows if row["_ts"] <= ts]
-    if not candidates:
+    index = _last_index_at_or_before(regime_rows, ts)
+    if index < 0:
         return None
-    return str(candidates[-1].get("_regime") or "") or None
+    return str(regime_rows[index].get("_regime") or "") or None
 
 
 def _derived_regime(bars: list[dict[str, Any]], ts: datetime) -> str:

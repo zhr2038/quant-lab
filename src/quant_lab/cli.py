@@ -2125,33 +2125,42 @@ def request_factor_factory_command(
     horizons = tuple(
         sorted({int(value.strip()) for value in horizon_bars.split(",") if value.strip()})
     )
-    try:
-        result = create_factor_factory_task(
-            lake_root,
-            queue_root,
-            as_of_date=day,
-            feature_set=feature_set,
-            feature_version=feature_version,
-            factor_version=factor_version,
-            timeframe=timeframe,
-            horizon_bars=horizons,
-            decision_delay_bars=decision_delay_bars,
-            max_factors=max_factors,
-            min_samples=min_samples,
-            top_quantile=top_quantile,
-            cost_quantile=cost_quantile,
-            signing_key=load_signing_key(signing_key_path),
-            signature_key_id=key_id,
-            quant_lab_commit=quant_lab_commit,
-            max_input_bytes=max_input_bytes,
-            max_input_rows=max_input_rows,
-            max_pending_tasks=max_pending_tasks,
-            min_recompute_interval_seconds=min_recompute_interval_seconds,
-        )
-    except RuntimeError as exc:
-        if "snapshot_rehydrate" in str(exc):
-            typer.echo("FACTOR_FACTORY_SNAPSHOT_REHYDRATE_FAILED", err=True)
-        raise
+    for attempt in range(3):
+        try:
+            result = create_factor_factory_task(
+                lake_root,
+                queue_root,
+                as_of_date=day,
+                feature_set=feature_set,
+                feature_version=feature_version,
+                factor_version=factor_version,
+                timeframe=timeframe,
+                horizon_bars=horizons,
+                decision_delay_bars=decision_delay_bars,
+                max_factors=max_factors,
+                min_samples=min_samples,
+                top_quantile=top_quantile,
+                cost_quantile=cost_quantile,
+                signing_key=load_signing_key(signing_key_path),
+                signature_key_id=key_id,
+                quant_lab_commit=quant_lab_commit,
+                max_input_bytes=max_input_bytes,
+                max_input_rows=max_input_rows,
+                max_pending_tasks=max_pending_tasks,
+                min_recompute_interval_seconds=min_recompute_interval_seconds,
+            )
+            break
+        except RuntimeError as exc:
+            if str(exc) == "snapshot_source_changed_while_sealing" and attempt < 2:
+                typer.echo(
+                    f"FACTOR_FACTORY_SNAPSHOT_SOURCE_CHANGED_RETRY attempt={attempt + 1}",
+                    err=True,
+                )
+                time.sleep(0.25 * (attempt + 1))
+                continue
+            if "snapshot_rehydrate" in str(exc):
+                typer.echo("FACTOR_FACTORY_SNAPSHOT_REHYDRATE_FAILED", err=True)
+            raise
     event_by_state = {
         "task_created": "FACTOR_FACTORY_TASK_CREATED",
         "already_current": "FACTOR_FACTORY_ALREADY_CURRENT",

@@ -352,6 +352,9 @@ def test_nas_high_frequency_archive_requires_verified_copy_before_source_prune()
     assert 'du -sb "$stage"' not in pull_script
     assert "prune_verified_high_frequency_archive.py" in pull_script
     assert "--apply" in pull_script
+    assert '"reason":"heavy_lock_timeout"' in pull_script
+    assert "source_prune_deferred_heavy_lock" in pull_script
+    assert 'exit "$prune_exit_code"' in pull_script
     assert "rm -rf -- \"$source\"" not in pull_script
     assert "ALLOWED_DATASETS" in prune_script
     assert "manifest_sha256_mismatch" in prune_script

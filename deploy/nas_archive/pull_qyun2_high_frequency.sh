@@ -201,11 +201,27 @@ for dataset in "${DATASETS[@]}"; do
       }
     fi
 
-    "${SSH[@]}" "$REMOTE" sudo -u quantlab -n /usr/bin/python3 \
-      "$REMOTE_PRUNE_SCRIPT" "$dataset" "$day" "$manifest_sha256" --apply
-    pruned_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    printf '{"event":"source_pruned_after_verified_archive","dataset":"%s","day":"%s","manifest_sha256":"%s","pruned_at":"%s"}\n' \
-      "$dataset" "$day" "$manifest_sha256" "$pruned_at" >>"$AUDIT_LOG"
+    prune_exit_code=0
+    prune_output="$(
+      "${SSH[@]}" "$REMOTE" sudo -u quantlab -n /usr/bin/python3 \
+        "$REMOTE_PRUNE_SCRIPT" "$dataset" "$day" "$manifest_sha256" --apply 2>&1
+    )" || prune_exit_code=$?
+    if [[ "$prune_exit_code" -eq 0 ]]; then
+      printf '%s\n' "$prune_output"
+      pruned_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+      printf '{"event":"source_pruned_after_verified_archive","dataset":"%s","day":"%s","manifest_sha256":"%s","pruned_at":"%s"}\n' \
+        "$dataset" "$day" "$manifest_sha256" "$pruned_at" >>"$AUDIT_LOG"
+    elif [[ "$prune_exit_code" -eq 2 \
+      && "$prune_output" == '{"reason":"heavy_lock_timeout","status":"error"}' ]]; then
+      deferred_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+      printf 'source prune deferred while qyun2 heavy lock is busy: %s %s\n' \
+        "$dataset" "$day" >&2
+      printf '{"event":"source_prune_deferred_heavy_lock","dataset":"%s","day":"%s","manifest_sha256":"%s","deferred_at":"%s"}\n' \
+        "$dataset" "$day" "$manifest_sha256" "$deferred_at" >>"$AUDIT_LOG"
+    else
+      printf '%s\n' "$prune_output" >&2
+      exit "$prune_exit_code"
+    fi
 
     cleanup_batch_temp
     trap - EXIT

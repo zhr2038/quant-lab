@@ -197,6 +197,51 @@ def test_research_plane_task_prefers_newer_request_over_later_superseded_rejecti
     assert status["recent"][0]["task_id"] == "factor-factory-newer-completed"
 
 
+def test_research_plane_task_ignores_older_orphan_pending_after_newer_completion(
+    tmp_path: Path,
+) -> None:
+    queue = ensure_research_queue_layout(tmp_path / "queue")
+    write_research_status(
+        queue,
+        ResearchTaskStatus(
+            task_id="factor-factory-older-orphan-pending",
+            snapshot_id="factor-factory-snapshot-older",
+            task_type="factor_factory",
+            start_date=date(2026, 7, 18),
+            end_date=date(2026, 7, 18),
+            mode="research_only",
+            cost_mode="conservative",
+            state=ResearchTaskState.PENDING,
+            requested_at=GENERATED_AT,
+        ),
+    )
+    write_research_status(
+        queue,
+        ResearchTaskStatus(
+            task_id="factor-factory-newer-completed",
+            snapshot_id="factor-factory-snapshot-newer",
+            task_type="factor_factory",
+            start_date=date(2026, 7, 18),
+            end_date=date(2026, 7, 18),
+            mode="research_only",
+            cost_mode="conservative",
+            state=ResearchTaskState.COMPLETED,
+            requested_at=GENERATED_AT + timedelta(minutes=1),
+            completed_at=GENERATED_AT + timedelta(minutes=2),
+            gold_generation_id="factor-factory-newer-completed",
+        ),
+    )
+
+    status = research_plane_status(queue)
+
+    assert status["state"] == "completed"
+    assert status["tasks"]["factor_factory"]["state"] == "completed"
+    assert (
+        status["tasks"]["factor_factory"]["task"]["task_id"]
+        == "factor-factory-newer-completed"
+    )
+
+
 def _signed_snapshot(
     key: Ed25519PrivateKey,
     *,

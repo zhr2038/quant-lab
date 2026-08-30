@@ -225,21 +225,17 @@ def _research_plane_status_for_type(
             statuses.append(status)
     statuses.sort(key=_status_sort_key, reverse=True)
     latest = statuses[0] if statuses else None
-    active = next(
-        (
-            status
-            for status in statuses
-            if status.state
-            not in {
-                ResearchTaskState.COMPLETED,
-                ResearchTaskState.REJECTED,
-                ResearchTaskState.FAILED,
-                ResearchTaskState.EXPIRED,
-                ResearchTaskState.CANCELLED,
-            }
-        ),
-        None,
-    )
+    terminal_states = {
+        ResearchTaskState.COMPLETED,
+        ResearchTaskState.REJECTED,
+        ResearchTaskState.FAILED,
+        ResearchTaskState.EXPIRED,
+        ResearchTaskState.CANCELLED,
+    }
+    # Only the newest requested task can describe current work.  Superseded
+    # pending/running status files can survive queue recovery, but must not
+    # override a newer completed generation in Web V2.
+    active = latest if latest is not None and latest.state not in terminal_states else None
     selected = active or latest
     request_status_name = REQUEST_STATUS_FILES.get(task_type)
     request_status = (

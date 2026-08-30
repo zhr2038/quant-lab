@@ -11,7 +11,7 @@ from typing import Any
 
 import polars as pl
 
-from quant_lab.backtest.cost_model import conservative_cost_for_symbol
+from quant_lab.backtest.cost_model import build_conservative_cost_lookup
 from quant_lab.symbols import normalize_symbol
 
 FAST_MICROSTRUCTURE_SCHEMA_VERSION = "fast_microstructure_features.v0.1"
@@ -372,13 +372,14 @@ def build_fast_microstructure_forward_test(
         ts_fields=("minute_ts", "latest_trade_ts", "ts"),
     )
     regime_rows = _regime_rows(market_regime)
+    cost_lookup = build_conservative_cost_lookup(cost_bucket_daily)
     samples: dict[tuple[str, str, str, int], list[dict[str, Any]]] = {}
 
     for symbol in FAST_MICROSTRUCTURE_TARGET_SYMBOLS:
         bars = bars_by_symbol.get(symbol, [])
         if not bars:
             continue
-        cost = conservative_cost_for_symbol(cost_bucket_daily, symbol=symbol)
+        cost = cost_lookup.for_symbol(symbol)
         spread_rows = spreads_by_symbol.get(symbol, [])
         trade_rows = trades_by_symbol.get(symbol, [])
         for bar in bars[-lookback_bars:]:

@@ -5,7 +5,7 @@ from typing import Any
 
 import polars as pl
 
-from quant_lab.backtest.cost_model import conservative_cost_for_symbol
+from quant_lab.backtest.cost_model import build_conservative_cost_lookup
 from quant_lab.backtest.datasets import (
     coerce_dt,
     first_value,
@@ -63,6 +63,7 @@ def build_v5_decision_replay(
         equity = frame_with_schema([], V5_DECISION_REPLAY_EQUITY_FIELDS)
         return trades, equity, _summary_md(trades, equity)
     bars_by_symbol = market_rows_by_symbol(market_bars)
+    cost_lookup = build_conservative_cost_lookup(cost_bucket_daily)
     replay_rows: list[dict[str, Any]] = []
     for row in sorted(source_rows, key=lambda item: item["_ts"]):
         symbol = normalize_strategy_symbol(row.get("symbol"))
@@ -78,7 +79,7 @@ def build_v5_decision_replay(
         entry_px = float_or_none(entry_bar.get("close")) or entry_bar.get("_close")
         if entry_px is None or entry_px <= 0:
             continue
-        cost = conservative_cost_for_symbol(cost_bucket_daily, symbol=symbol)
+        cost = cost_lookup.for_symbol(symbol)
         exit_result = _exit_from_market(
             bars_by_symbol=bars_by_symbol,
             symbol=symbol,

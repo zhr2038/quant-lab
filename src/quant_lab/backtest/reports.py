@@ -8,7 +8,7 @@ from typing import Any
 
 import polars as pl
 
-from quant_lab.backtest.cost_model import conservative_cost_for_symbol
+from quant_lab.backtest.cost_model import build_conservative_cost_lookup
 from quant_lab.backtest.datasets import (
     boolish,
     coerce_dt,
@@ -273,6 +273,7 @@ def build_factor_forward_validation(
 
     bars_by_symbol = market_rows_by_symbol(market_bars)
     regime_rows = _forward_regime_rows(market_regime)
+    cost_lookup = build_conservative_cost_lookup(cost_bucket_daily)
     samples: dict[tuple[str, str, str, int], list[dict[str, Any]]] = {}
     for value_row in rows(factor_values):
         factor_id = str(value_row.get("factor_id") or "")
@@ -297,7 +298,7 @@ def build_factor_forward_validation(
         entry_px = price_at_or_after(bars_by_symbol, symbol, ts)
         if entry_px is None or entry_px <= 0:
             continue
-        cost = conservative_cost_for_symbol(cost_bucket_daily, symbol=symbol)
+        cost = cost_lookup.for_symbol(symbol)
         regime = (
             _canonical_forward_regime(
                 first_value(
@@ -375,6 +376,7 @@ def build_bottom_zone_backtest(
     cost_bucket_daily: pl.DataFrame | None,
 ) -> pl.DataFrame:
     bars_by_symbol = market_rows_by_symbol(market_bars)
+    cost_lookup = build_conservative_cost_lookup(cost_bucket_daily)
     out: list[dict[str, Any]] = []
     for row in rows(bottom_zone_reversal_shadow):
         symbol = normalize_strategy_symbol(row.get("symbol"))
@@ -382,7 +384,7 @@ def build_bottom_zone_backtest(
         entry_px = entry_price_from_row(row)
         if entry_px is None or ts is None or symbol == "UNKNOWN":
             continue
-        cost = conservative_cost_for_symbol(cost_bucket_daily, symbol=symbol)
+        cost = cost_lookup.for_symbol(symbol)
         futures = {
             horizon: future_net_bps_from_market(
                 bars_by_symbol=bars_by_symbol,

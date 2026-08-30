@@ -182,7 +182,8 @@ def test_expanded_universe_backfill_stays_within_bigscreen_freshness_window():
     assert "MALLOC_ARENA_MAX=2" in service
     assert "MemoryHigh=1792M" in service
     assert "MemoryMax=2G" in service
-    assert "flock -E 75 -w 30 /var/lock/quant-lab-heavy.lock" in service
+    assert "flock -E 75 -w 3000 /var/lock/quant-lab-heavy.lock" in service
+    assert "TimeoutStartSec=75min" in service
     assert "SKIP_EXPANDED_UNIVERSE_BACKFILL_LOCK_BUSY" in service
     assert 'echo "SKIP_EXPANDED_UNIVERSE_BACKFILL_LOCK_BUSY" >&2; exit 75' in service
     assert "SuccessExitStatus=75" in service

@@ -916,6 +916,68 @@ def test_export_plane_status_keeps_genuinely_running_task_visible(tmp_path: Path
     assert result["task"]["task_id"] == active.task_id
 
 
+def test_export_plane_status_ignores_active_task_superseded_by_newer_pack(
+    tmp_path: Path,
+) -> None:
+    accepted_at = datetime(2026, 7, 16, 14, 46, tzinfo=UTC)
+    pack = ExportPackIndexEntry(
+        pack_id="expert-pack-current",
+        task_id="export-current",
+        pack_name="current.zip",
+        export_date=accepted_at.date(),
+        generated_at=accepted_at,
+        accepted_at=accepted_at,
+        pack_sha256="1" * 64,
+        pack_size_bytes=10,
+        snapshot_id="export-snapshot-current",
+        authoritative_input_snapshot=True,
+        nas_artifact_validated=True,
+        control_plane_receipt_verified=True,
+        download_ready=True,
+        download_relative_path="2026/07/16/expert-pack-current/current.zip",
+        selected_v5_bundle_sha256=V5_SHA,
+        acceptance_set_id="acceptance-current",
+        worker_id="worker",
+        worker_commit=COMMIT,
+    )
+    write_cloud_index(tmp_path, [pack])
+    stale = ExportTaskStatus(
+        task_id="export-stale-running",
+        snapshot_id="export-snapshot-stale-running",
+        state=ExportTaskState.MATERIALIZING,
+        requested_at=accepted_at - timedelta(hours=1),
+        updated_at=accepted_at - timedelta(minutes=30),
+        current_stage="materializing",
+    )
+    status_root = tmp_path / "status"
+    status_root.mkdir(exist_ok=True)
+    (status_root / f"{stale.task_id}.json").write_text(
+        stale.model_dump_json(),
+        encoding="utf-8",
+    )
+    (tmp_path / "running" / stale.task_id).mkdir(parents=True)
+    request_status = tmp_path / "requests" / "status" / "export-request-stale.json"
+    request_status.parent.mkdir(parents=True, exist_ok=True)
+    request_status.write_text(
+        json.dumps(
+            {
+                "request_id": "export-request-stale",
+                "task_id": stale.task_id,
+                "state": "pending",
+                "updated_at": stale.updated_at.isoformat(),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = export_plane_status(tmp_path, export_date=accepted_at.date())
+
+    assert result["state"] == "download_ready"
+    assert result["task"] is None
+    assert result["request"] is None
+    assert result["requested_date_pack"]["pack_name"] == pack.pack_name
+
+
 def test_export_plane_status_does_not_mark_previous_pack_ready_for_requested_date(
     tmp_path: Path,
 ) -> None:

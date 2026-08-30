@@ -138,6 +138,7 @@ def export_plane_status(
             for item in statuses
             if item.task_id in active_task_ids
             and item.state.value not in _TERMINAL_TASK_STATES
+            and (latest is None or item.updated_at > latest.accepted_at)
         ),
         None,
     )
@@ -145,8 +146,11 @@ def export_plane_status(
         (
             item
             for item in request_statuses
-            if str(item.get("request_id") or "") in active_request_ids
-            or str(item.get("task_id") or "") in active_task_ids
+            if (
+                str(item.get("request_id") or "") in active_request_ids
+                or str(item.get("task_id") or "") in active_task_ids
+            )
+            and (latest is None or _request_status_updated_at(item) > latest.accepted_at)
         ),
         None,
     )

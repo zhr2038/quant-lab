@@ -670,10 +670,13 @@ def test_refresh_web_derived_snapshots_updates_export_backed_gold_tables(
     def row_counts(frames):
         return {name: frame.height for name, frame in frames.items()}
 
-    def fake_load(root, *, dataset_names=None):
+    def fake_load(root, *, dataset_names=None, latest_only_dataset_names=None):
         assert root == lake_root
         assert tuple(dataset_names or ()) == (
             daily_export_module.WEB_DERIVED_SNAPSHOT_SOURCE_DATASETS
+        )
+        assert set(latest_only_dataset_names or ()) == set(
+            daily_export_module.WEB_DERIVED_SNAPSHOT_LATEST_ONLY_DATASETS
         )
         calls.append("load")
         return seed_snapshot
@@ -819,6 +822,45 @@ def test_load_snapshot_reads_only_requested_web_sources(monkeypatch, tmp_path):
 
     with pytest.raises(ValueError, match="unknown snapshot datasets"):
         daily_export_module._load_snapshot(tmp_path, dataset_names=("not_a_dataset",))
+
+
+def test_load_snapshot_uses_latest_slice_for_append_only_web_sources(monkeypatch, tmp_path):
+    full_seen: list[str] = []
+    latest_seen: list[str] = []
+
+    def fake_load_export_frame(root, dataset_name):
+        assert root == tmp_path
+        full_seen.append(dataset_name)
+        return pl.DataFrame({"dataset": [dataset_name]}), 1, None
+
+    def fake_load_latest_export_frame(root, dataset_name):
+        assert root == tmp_path
+        latest_seen.append(dataset_name)
+        return pl.DataFrame({"dataset": [dataset_name]}), 10, None
+
+    monkeypatch.setattr(daily_export_module, "_load_export_frame", fake_load_export_frame)
+    monkeypatch.setattr(
+        daily_export_module,
+        "_load_latest_export_frame",
+        fake_load_latest_export_frame,
+    )
+
+    snapshot = daily_export_module._load_snapshot(
+        tmp_path,
+        dataset_names=("market_bar", "v5_bundle_manifest"),
+        latest_only_dataset_names=("v5_bundle_manifest",),
+    )
+
+    assert full_seen == ["market_bar"]
+    assert latest_seen == ["v5_bundle_manifest"]
+    assert snapshot.row_counts == {"market_bar": 1, "v5_bundle_manifest": 10}
+
+    with pytest.raises(ValueError, match="latest-only snapshot datasets not requested"):
+        daily_export_module._load_snapshot(
+            tmp_path,
+            dataset_names=("market_bar",),
+            latest_only_dataset_names=("v5_bundle_manifest",),
+        )
 
 
 def test_research_validation_v3_reports_export_forward_and_cost_coverage(tmp_path):

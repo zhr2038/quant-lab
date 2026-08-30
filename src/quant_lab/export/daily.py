@@ -283,6 +283,21 @@ WEB_DERIVED_SNAPSHOT_SOURCE_DATASETS = (
     "v5_risk_on_multi_buy_shadow",
     "v5_trade_event",
 )
+# These append-only V5 telemetry datasets repeat the current snapshot in every
+# bundle. Web refresh consumers already select the latest bundle, so loading the
+# full history only inflates resident memory without changing the result.
+WEB_DERIVED_SNAPSHOT_LATEST_ONLY_DATASETS = frozenset(
+    {
+        "v5_bundle_manifest",
+        "v5_paper_slippage_coverage",
+        "v5_paper_strategy_daily",
+        "v5_paper_strategy_registry",
+        "v5_paper_strategy_registry_history",
+        "v5_paper_strategy_run",
+        "v5_paper_strategy_signal",
+        "v5_paper_strategy_state",
+    }
+)
 SNAPSHOT_META_DATASETS = {
     "cost_bucket_daily",
     "cost_health_daily",
@@ -5534,6 +5549,7 @@ def refresh_web_derived_snapshots(
     snapshot = _load_snapshot(
         root,
         dataset_names=WEB_DERIVED_SNAPSHOT_SOURCE_DATASETS,
+        latest_only_dataset_names=WEB_DERIVED_SNAPSHOT_LATEST_ONLY_DATASETS,
     )
     snapshot = _publish_strategy_opportunity_advisory_snapshot(
         root,
@@ -6347,16 +6363,25 @@ def _load_snapshot(
     lake_root: Path,
     *,
     dataset_names: Iterable[str] | None = None,
+    latest_only_dataset_names: Iterable[str] | None = None,
 ) -> _DatasetSnapshot:
     frames: dict[str, pl.DataFrame] = {}
     row_counts: dict[str, int] = {}
     warnings: list[str] = []
     names = sorted(set(dataset_names) if dataset_names is not None else readers.DATASET_PATHS)
+    latest_only_names = set(latest_only_dataset_names or ())
     unknown = [name for name in names if name not in readers.DATASET_PATHS]
     if unknown:
         raise ValueError(f"unknown snapshot datasets: {','.join(unknown)}")
+    unrequested_latest_only = sorted(latest_only_names.difference(names))
+    if unrequested_latest_only:
+        raise ValueError(
+            "latest-only snapshot datasets not requested: "
+            f"{','.join(unrequested_latest_only)}"
+        )
     for name in names:
-        frame, row_count, warning = _load_export_frame(lake_root, name)
+        loader = _load_latest_export_frame if name in latest_only_names else _load_export_frame
+        frame, row_count, warning = loader(lake_root, name)
         frames[name] = frame
         row_counts[name] = row_count
         if warning:
@@ -6370,6 +6395,25 @@ def _load_snapshot(
                 continue
             warnings.append(f"{name} dataset is {_missing_dataset_reason(name)}")
     return _DatasetSnapshot(frames=frames, row_counts=row_counts, warnings=warnings)
+
+
+def _load_latest_export_frame(
+    lake_root: Path,
+    dataset_name: str,
+) -> tuple[pl.DataFrame, int, str | None]:
+    dataset_path = readers.dataset_path_for(lake_root, dataset_name)
+    row_count = _raw_export_row_count(dataset_path, allow_metadata_scan=True)
+    try:
+        frame = readers._latest_dataset_slice(dataset_path, dataset_name)  # type: ignore[attr-defined]
+    except Exception as exc:
+        return pl.DataFrame(), row_count, f"{dataset_name} latest slice read failed: {exc}"
+    if frame.is_empty() and row_count:
+        return (
+            frame,
+            row_count,
+            f"{dataset_name} latest slice is empty while source rows exist",
+        )
+    return frame, row_count, None
 
 
 def _load_export_frame(

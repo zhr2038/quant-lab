@@ -23,6 +23,7 @@ const $ = id => document.getElementById(id);
 const esc = value => String(value ?? "").replace(/[&<>"']/g, x => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[x]));
 const num = (value, digits = 1) => typeof value === "number" && Number.isFinite(value) ? value.toLocaleString("zh-CN", {maximumFractionDigits: digits, minimumFractionDigits: digits}) : "—";
 const bps = value => typeof value === "number" && Number.isFinite(value) ? `${value > 0 ? "+" : ""}${num(value)} bps` : "—";
+const bookBps = value => typeof value === "number" && Number.isFinite(value) ? `${num(value, 3)} bps` : "—";
 const time = (value, full = false) => {
   if (!value || !Number.isFinite(Date.parse(value))) return "—";
   return new Intl.DateTimeFormat("zh-CN", {timeZone: "Asia/Shanghai", ...(full ? {month:"2-digit", day:"2-digit"} : {}), hour:"2-digit", minute:"2-digit", hour12:false}).format(new Date(value));
@@ -147,9 +148,9 @@ function renderCost(cost) {
   const stale = !c.valid_until || Date.now() + state.offset >= Date.parse(c.valid_until);
   const label = state.error ? "连接失败 · 上次观测" : c.status !== "ESTIMATED" ? "当前成本不可用" : stale ? "成本快照已过期" : "当前成本 · 估计未校准";
   return `<section class="cost-detail" aria-label="成本拆解"><h3>${label}</h3>
-    <dl class="cost-components">${metric("往返手续费", bps(s?.fee_roundtrip_bps))}${metric("盘口影响（含价差）", bps(s?.book_roundtrip_bps))}${metric("预留误差", bps(s?.uncertainty_bps))}</dl>
+    <dl class="cost-components">${metric("往返手续费", bps(s?.fee_roundtrip_bps))}${metric("盘口影响（含价差）", bookBps(s?.book_roundtrip_bps))}${metric("预留误差", bps(s?.uncertainty_bps))}</dl>
     <p>合计 ${bps(cost.roundtrip_bps)}。以吃单进出估计，盘口影响已含价差，只扣一次。预留误差为固定假设，不是已验证的滑点上限。</p>
-    <div class="table-scroll"><table class="simple-table cost-table"><thead><tr><th>参考金额</th><th>盘口影响</th><th>往返合计</th></tr></thead><tbody>${c.sizes.map(v => `<tr><td>${num(v.notional_usdt,0)} USDT</td><td>${bps(v.book_roundtrip_bps)}</td><td>${v.status === "ESTIMATED" ? bps(v.roundtrip_bps) : esc(REASONS[v.status] || v.status)}</td></tr>`).join("") || `<tr><td colspan="3">缺少完整成本输入，暂不测算。</td></tr>`}</tbody></table></div>
+    <div class="table-scroll"><table class="simple-table cost-table"><thead><tr><th>参考金额</th><th>盘口影响</th><th>往返合计</th></tr></thead><tbody>${c.sizes.map(v => `<tr><td>${num(v.notional_usdt,0)} USDT</td><td>${bookBps(v.book_roundtrip_bps)}</td><td>${v.status === "ESTIMATED" ? bps(v.roundtrip_bps) : esc(REASONS[v.status] || v.status)}</td></tr>`).join("") || `<tr><td colspan="3">缺少完整成本输入，暂不测算。</td></tr>`}</tbody></table></div>
     <p>费率：吃单 ${bps(c.fee?.taker_bps)} / 挂单 ${bps(c.fee?.maker_bps)}（单边）。读取于 ${time(c.fee?.fetched_at, true)}。<br>盘口 ${time(c.book_as_of, true)} · 成本有效至 ${time(c.valid_until)}。金额按中间价折算数量；未来退出盘口仍有不确定性，挂单成交尚未假定。</p>
     <details><summary>成本依据与历史留存</summary><p>${cost.missing_reasons.map(r => esc(REASONS[r] || r)).join(" · ")}</p><p>成本版本：${esc(cost.version)}。当前估计没有计入真实成交校准样本。</p>${c.historical_anchor ? `<p>历史留存：${time(c.historical_anchor.as_of, true)}，旧模型往返场景 ${bps(c.historical_anchor.roundtrip_bps)}。仅供核对，不用它代替当前成本。</p>` : "<p>本快照无旧模型锚点；原始历史数据继续保存在 NAS。</p>"}</details></section>`;
 }

@@ -42,14 +42,14 @@ function plot(distribution) {
   const lo = Math.min(0, values[0]), hi = Math.max(0, values[2]);
   const span = Math.max(hi - lo, 1), x = value => 25 + (value - lo) / span * 240;
   return `<svg viewBox="0 0 290 105" role="img" aria-label="历史净结果第十、五十和九十分位"><title>当前成本假设下的历史分布</title>
-    <line x1="25" y1="36" x2="265" y2="36" stroke="#e4e8ee" stroke-width="4"/>
-    <line x1="${x(0)}" y1="12" x2="${x(0)}" y2="54" stroke="#c5cdd7" stroke-dasharray="3 3"/>
-    <line x1="${x(values[0])}" y1="36" x2="${x(values[2])}" y2="36" stroke="#789be0" stroke-width="5"/>
-    <circle cx="${x(values[1])}" cy="36" r="5" fill="#235cda"/>
-    <text x="25" y="75" fill="#7c8797" font-size="10">P10 ${esc(num(values[0]))}</text>
-    <text x="145" y="75" text-anchor="middle" fill="#365b9b" font-size="10">P50 ${esc(num(values[1]))}</text>
-    <text x="265" y="75" text-anchor="end" fill="#7c8797" font-size="10">P90 ${esc(num(values[2]))}</text>
-    <text x="145" y="96" text-anchor="middle" fill="#97a1af" font-size="9">单位 bps · 虚线为零</text></svg>`;
+    <line x1="25" y1="36" x2="265" y2="36" stroke="var(--line)" stroke-width="4"/>
+    <line x1="${x(0)}" y1="12" x2="${x(0)}" y2="54" stroke="var(--plot-zero)" stroke-dasharray="3 3"/>
+    <line x1="${x(values[0])}" y1="36" x2="${x(values[2])}" y2="36" stroke="var(--plot-range)" stroke-width="5"/>
+    <circle cx="${x(values[1])}" cy="36" r="5" fill="var(--accent)"/>
+    <text x="25" y="75" fill="var(--muted)" font-size="10">P10 ${esc(num(values[0]))}</text>
+    <text x="145" y="75" text-anchor="middle" fill="var(--accent)" font-size="10">P50 ${esc(num(values[1]))}</text>
+    <text x="265" y="75" text-anchor="end" fill="var(--muted)" font-size="10">P90 ${esc(num(values[2]))}</text>
+    <text x="145" y="96" text-anchor="middle" fill="var(--muted)" font-size="9">单位 bps · 虚线为零</text></svg>`;
 }
 
 function renderReference() {

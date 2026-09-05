@@ -16,6 +16,7 @@ from quant_lab.decision.contracts import (
     HourBar,
     InputSnapshot,
 )
+from quant_lab.decision.current_cost_contracts import CurrentCostObservation
 
 HOUR = timedelta(hours=1)
 MIN_SAMPLES = 40
@@ -177,7 +178,13 @@ def build_advice(
         missing.append("CONTEXT_WINDOW_INCOMPLETE")
     if cost.roundtrip_bps is None:
         missing.append("COST_MISSING")
-    if cost.as_of is None or now - cost.as_of > timedelta(days=2):
+    current_cost_expiry = (
+        cost.current.valid_until if isinstance(cost, CurrentCostObservation) else None
+    )
+    if isinstance(cost, CurrentCostObservation):
+        if current_cost_expiry is None or now >= current_cost_expiry:
+            missing.append("CURRENT_COST_EXPIRED_OR_UNAVAILABLE")
+    elif cost.as_of is None or now - cost.as_of > timedelta(days=2):
         missing.append("COST_STALE_OR_UNDATED")
     if cost.as_of is not None and cost.as_of > now:
         missing.append("COST_TIMESTAMP_FUTURE")
@@ -190,6 +197,11 @@ def build_advice(
     reasons = list(missing)
     action = "NO_VIEW"
     explanation = "当前不形成方向观点；请查看缺失原因，按 V5 原有规则处理。"
+    if "CURRENT_COST_EXPIRED_OR_UNAVAILABLE" in missing:
+        explanation = (
+            "当前账户费率或盘口成本不可用或已过期，暂不形成方向观点。"
+            "等待下一次只读采样；历史探针仅保留作核对依据。"
+        )
     if "COST_STALE_OR_UNDATED" in missing:
         explanation = (
             "先更新只读成交成本并核对样本，再复核入场候选。当前成本依据过旧或缺少时间，"
@@ -224,6 +236,8 @@ def build_advice(
             explanation = "历史窗口、近期窗口或成本压力结果不一致，保持 V5 原规则。"
     if not cost.trusted_for_paper:
         reasons.append("COST_NOT_PAPER_TRUSTED")
+    if isinstance(cost, CurrentCostObservation):
+        reasons.append("CURRENT_COST_IS_ESTIMATE")
     reasons.append("FORWARD_VALUE_NOT_ESTABLISHED")
     data_hash = content_hash([bar.model_dump(mode="json") for bar in bars])
     opportunity = content_hash(
@@ -238,6 +252,8 @@ def build_advice(
         }
     )
     expiry = entry_at if entry_at and now < entry_at else now
+    if current_cost_expiry is not None:
+        expiry = max(now, min(expiry, current_cost_expiry))
     advice = Advice(
         advice_id="advice-" + identity,
         opportunity_id="opportunity-" + opportunity,

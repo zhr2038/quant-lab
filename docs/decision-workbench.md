@@ -26,7 +26,7 @@
 
 - 完整归档仍在 NAS HDD `/volume2/quant-lab/archive/retirement-20260905`，新工作目录独立创建，不修改封存原件。
 - NAS 分析默认并发 1，最多 3 CPU、4 GiB RAM，不使用 swap 扩张工作集；暂存和结果设置容量上限，历史大文件留 HDD。
-- qyun2 新任务目标 1 GiB 内、与现有重任务锁协调，输入输出均按不可变版本/内容哈希组织。
+- qyun2 新任务目标 1 GiB 内，当前四币输入独立于历史湖重任务锁，输入输出均按不可变版本/内容哈希组织。
 - 使用现有签名实现与原子发布机制；NAS 断网时保留待处理任务，云端到期输出无观点，不将重计算搬回云端。
 
 ## Web 设计
@@ -60,10 +60,10 @@ API 仅限量读取两个紧凑 JSON，并通过字段白名单和容量/时间�
 
 | 对象 | 路径与机制 |
 | --- | --- |
-| 云端任务 | `quant-lab-decision.timer` 每五分钟，`qlab decision cloud-cycle`；共用 heavy lock，1 GiB / 50% CPU / 150 秒 |
+| 云端任务 | `quant-lab-decision.timer` 每五分钟的第 10 秒，`qlab decision cloud-cycle`；限量当前 REST 读取，1 GiB / 50% CPU / 150 秒 |
 | 云端传输 | `/var/lib/quant-lab/decision/{inputs,inbox,results,receipts}`；独立 `quant-decision` 组；NAS 只能写 inbox |
 | API 发布 | `/var/lib/quant-lab/lake/gold/decision_reference/publication.json` 为原子提交点；读失败显式 503，过期视图变为 NO_VIEW |
-| NAS 任务 | `deploy/decision/run_nas_decision.sh`，单锁，12 分钟超时，3 CPU / 4 GiB / 128 PID / 256 MiB 临时盘，运行后退出 |
+| NAS 任务 | 每五分钟错开云端一分钟，`deploy/decision/run_nas_decision.sh`，单锁，12 分钟超时，3 CPU / 4 GiB / 128 PID / 256 MiB 临时盘，运行后退出 |
 | NAS 历史 | `/volume2/quant-lab/decision/archive/{inputs,history,corrections,results}` 与单写者 `forward.duckdb`；不自动删除原件 |
 | 传输安全 | 复用现有 `quant-research` SSH 账号和固定 known_hosts；输入与发布回执由云端 Ed25519 签名，结果与归档回执由 NAS 独立密钥签名 |
 | 热数据回收 | 云端保留七天；只回收匹配 NAS 已签名逐文件 SHA256 读回回执的原件，当前结果和引用保留；原始数据与完整结果留 HDD |
@@ -77,3 +77,25 @@ API 仅限量读取两个紧凑 JSON，并通过字段白名单和容量/时间�
 启用前先生成两端专用签名密钥并交换公钥，建立 setgid 传输目录，配置固定 SSH known_hosts，运行一次 cloud-cycle，再运行 NAS 单次任务、再次 cloud-cycle 完成签名发布。只有实际链路通过后才启用定时任务。
 
 回滚新版本时停用新增 decision timer 和 NAS 新任务，恢复精简底座提交 `ed576ff7bb9557df6b2bbd66eaf988bdcd531379`，重启 API；保留新输入、历史和结果供检查。HTTPS 代理可继续提供底座入口，或单独停用。无需启动已退役模块或覆盖湖数据。恢复新版本时必须同时固定两端代码与匹配公钥，禁止用旧数据伪造新发布时间。
+
+## 当前成本与时效修复（2026-09-05）
+
+当前建议使用 `current-cost-v1`，旧 `/v1/costs/estimate` 的探针排序和 paper-only 语义保持原样。旧签名对象仍按原始字段解析；新增成本详情使用独立的必填扩展结构，不给旧记录补默认字段或重签名。输入内保留旧成本锚点，其数值标为旧模型场景，不能冒充当前成本或探针精确实测值。
+
+成本每轮读取四币各 20 档公开盘口，使用两侧中间价作为统一基准，按 20 / 50 / 100 USDT 名义金额换算同一基础币数量，逐档算买卖 VWAP。买卖相对中间价的偏差已含价差，不再叠加全价差或固定滑点；往返成本为两边偏差、两边吃单费率与固定 6 bps 预留误差之和。两侧盘口任一不足或数量低于交易所最小要求时，对该金额输出不可用。该测算不是已取整的下单数量，也不预测未来退出盘口。
+
+费率来自 OKX `GET /api/v5/account/trade-fee?instType=SPOT&instId=...`，与公开 instruments 的 `groupId` 精确匹配；优先使用 `feeGroup`，仅在整个新字段缺失时读取旧版字段。账户配置必须确认密钥 `perm=read_only`。费率负号转换为正的费用、返佣保留为负值；零费率是有效数值，不使用 truthiness 回退。估计不预先计入返佣收益，挂单费率仅展示，不假定必然成交。临时零费活动可能不反映在费率 API，最终以真实账单核对。
+
+服务通过 systemd 读取现有 `/etc/quant-lab/okx_readonly.env`；凭据不复制到 NAS、不进入输入/结果/日志。费率正常每 6 小时重读，最多沿用 24 小时；读取失败显示原因，沿用记录保留原读取时间。更换只读账户时应主动使旧费率缓存失效（从旧输入重新采样或等待过期），不能将此前账户费率视为新账户费率。缺费率时不伪造默认费率，也不启用新建议。
+
+盘口采样时必须在 60 秒内，之后当前研究场景最多有效 15 分钟；建议有效期取成本有效期和延迟入场边界的较早者，网络失败不会续期。所有成本仍为 `estimated_uncalibrated`，真实校准样本为零；保留 `research_only` 与 `live_order_effect=none`。历史参考为负可以建议等待；正向参考仍要求成交校准后才进入复核层级。
+
+每轮直接获取各币最多 200 根当前小时线，只接受 `confirm=1` 且已闭合的记录。重复读取同一根线保留首次观测时间，修订有独立归档；失败时保留旧事实和明确警告，时间检查照常生效。云端不再因扫描历史湖或等待每十五分钟回填而漏掉当前小时；完整历史合并和分析仍在 NAS 上。
+
+`quant-lab-decision-accept.path` 观察 inbox 变更，触发仅校验发布的 oneshot（256 MiB / 25% CPU）；无结果文件即退出。发布与 cloud-cycle 通过独立 flock 串行，防止回执或发布指针竞争。普通 cloud-cycle 仍检查结果，作为事件通知遗漏后的恢复路径。不新增常驻容器或数据库。
+
+本次回滚点：Web/API 源码 `e08783913a7a8b6b1fbfb3cfda5cd38f9834b8c9`，旧云端分析版本与 NAS 镜像均为 `ea2046fcee4b192f0c650a5af68cd7f73761a966`。回滚时先暂停新定时与 path、保存升级后的整个 workflow 指针和前向库；恢复部署前备份的指针/定时配置及对应源码和镜像。新旧成本记录的解析形状不同，不能直接让旧二进制读取新指针；不可修改或删除不可变归档来绕过校验。
+
+V5 候选消费回执和同资金收益对照仍未接入。本轮解决成本可测量和参考及时发布，不将历史描述统计或预留误差误报为账户盈利证据。
+
+接口依据：[OKX 费率文档](https://www.okx.com/docs-v5#trading-account-rest-api-get-fee-rates)、[OKX 字段变更记录](https://www.okx.com/docs-v5/log_en/)。

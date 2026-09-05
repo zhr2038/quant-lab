@@ -21,7 +21,7 @@ accept = fixtures.accept
 artifacts = fixtures.artifacts
 
 
-def test_cloud_publication_proceeds_when_lake_read_lock_is_busy(artifacts, monkeypatch):
+def test_cloud_publication_proceeds_independently_of_current_input_status(artifacts, monkeypatch):
     from quant_lab.decision.jobs import cloud_cycle
     from quant_lab.export_plane.signatures import verify_payload
 
@@ -34,8 +34,8 @@ def test_cloud_publication_proceeds_when_lake_read_lock_is_busy(artifacts, monke
         )
     )
     monkeypatch.setattr(
-        "quant_lab.decision.jobs.publish_when_idle",
-        lambda *args, **kw: {"status": "DEFERRED_HEAVY_LOCK"},
+        "quant_lab.decision.jobs.publish_current",
+        lambda *args, **kw: {"status": "WARNING"},
     )
     cloud_cycle(
         code_revision="abcdef1",

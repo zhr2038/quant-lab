@@ -10,8 +10,9 @@ SupplementaryGroups=quant-decision
 UMask=0027
 WorkingDirectory=/opt/quant-lab
 EnvironmentFile=/etc/quant-lab/decision/runtime.env
+EnvironmentFile=-/etc/quant-lab/okx_readonly.env
 Environment=POLARS_MAX_THREADS=1
-ExecStart=/opt/quant-lab/.venv/bin/qlab decision cloud-cycle --code-revision ${QUANT_LAB_CODE_REVISION}
+ExecStart=/usr/bin/flock -w 10 /var/lib/quant-lab/decision/publication.lock /opt/quant-lab/.venv/bin/qlab decision cloud-cycle --code-revision ${QUANT_LAB_CODE_REVISION}
 TimeoutStartSec=150
 MemoryMax=1G
 CPUQuota=50%

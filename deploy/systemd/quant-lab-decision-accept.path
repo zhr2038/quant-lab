@@ -1,0 +1,9 @@
+[Unit]
+Description=Publish completed NAS advice as soon as it arrives
+
+[Path]
+PathChanged=/var/lib/quant-lab/decision/inbox
+Unit=quant-lab-decision-accept.service
+
+[Install]
+WantedBy=multi-user.target

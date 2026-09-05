@@ -173,6 +173,13 @@ meter::-moz-meter-bar { background: var(--accent); }
 .container-row small { display: block; color: var(--muted); font-size: .75rem; margin-top: .2rem; }
 .container-row > .number { color: var(--muted); font-size: .8125rem; }
 @keyframes appear { from { opacity: .4; transform: translateY(3px); } to { opacity: 1; transform: none; } }
+.cost-detail { border-block: 1px solid var(--line); padding: 1.25rem 0; margin: 1.25rem 0; }
+.cost-detail h3 { color: var(--accent); }
+.cost-detail p { color: var(--muted); font-size: .8125rem; margin-top: .7rem; }
+.cost-components { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .75rem; margin: 1rem 0; }
+.cost-components .metric dd { font-size: 1rem; }
+.cost-table { font-size: .8125rem; margin: .8rem 0; min-width: 340px; }
+.cost-table th, .cost-table td { padding: .6rem .4rem; }
 @media (min-width: 2300px) { .reference-table td { padding-block: 2rem; } }
 @media (max-width: 1480px) {
   .server-hosts { grid-template-columns: minmax(0, 1fr); }

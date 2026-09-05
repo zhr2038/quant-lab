@@ -4,18 +4,17 @@ from datetime import datetime, timedelta
 from math import isclose
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import Field, field_validator, model_validator
 
 from quant_lab.contracts.models import require_utc
+from quant_lab.decision.contracts_base import Contract as Contract
+from quant_lab.decision.contracts_base import CostObservation as CostObservation
+from quant_lab.decision.current_cost_contracts import CurrentCostObservation
 
 SYMBOLS = ("BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT")
 HORIZONS = (4, 24)
 EXPERIMENT_VERSION = "trend-reference-1h-v1"
 Action = Literal["DEFER", "REVIEW_ENTRY", "KEEP_BASELINE", "NO_VIEW"]
-
-
-class Contract(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True, allow_inf_nan=False)
 
 
 class HourBar(Contract):
@@ -44,31 +43,13 @@ class HourBar(Contract):
         return self
 
 
-class CostObservation(Contract):
-    symbol: Literal["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT"]
-    roundtrip_bps: float | None = Field(default=None, ge=0, le=10_000)
-    notional_usdt: float = Field(default=20, gt=0, le=100_000)
-    source: str = Field(min_length=1, max_length=100)
-    quality: str = Field(min_length=1, max_length=100)
-    version: str = Field(min_length=1, max_length=200)
-    as_of: datetime | None = None
-    trusted_for_paper: bool = False
-    actual_sample_count: int = Field(default=0, ge=0)
-    missing_reasons: list[str] = Field(default_factory=list, max_length=20)
-
-    @field_validator("as_of")
-    @classmethod
-    def utc(cls, value: datetime | None) -> datetime | None:
-        return require_utc(value) if value is not None else None
-
-
 class InputSnapshot(Contract):
     schema_version: Literal["qlab.decision.input.v1"] = "qlab.decision.input.v1"
     snapshot_id: str = Field(pattern=r"^input-[a-f0-9]{64}$")
     generated_at: datetime
     producer_commit: str = Field(min_length=7, max_length=64)
     bars: list[HourBar] = Field(max_length=4_096)
-    costs: list[CostObservation] = Field(max_length=4)
+    costs: list[CurrentCostObservation | CostObservation] = Field(max_length=4)
     warnings: list[str] = Field(default_factory=list, max_length=40)
     signature: str = Field(min_length=1, max_length=200)
 
@@ -151,7 +132,7 @@ class Advice(Contract):
     last_close: float | None = Field(default=None, gt=0)
     trend_24h_bps: float | None = None
     volatility_24h_bps: float | None = Field(default=None, ge=0)
-    cost: CostObservation
+    cost: CurrentCostObservation | CostObservation
     distribution: Distribution
     input_snapshot_id: str = Field(pattern=r"^input-[a-f0-9]{64}$")
     data_snapshot_hash: str = Field(pattern=r"^[a-f0-9]{64}$")

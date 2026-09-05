@@ -9,6 +9,7 @@ import duckdb
 from quant_lab.costs.model import estimate_cost_from_lake
 from quant_lab.data.lake import _all_parquet_files
 from quant_lab.decision.contracts import SYMBOLS, CostObservation, HourBar, InputSnapshot
+from quant_lab.decision.current_inputs import CurrentInputs
 from quant_lab.decision.storage import (
     MAX_INPUT_BYTES,
     MAX_RESULT_BYTES,
@@ -102,12 +103,15 @@ def publish_input(
     code_revision: str,
     now: datetime | None = None,
     notional_usdt: float = 20,
+    current_inputs: CurrentInputs | None = None,
 ) -> InputSnapshot:
-    current = now or datetime.now(UTC)
+    current = current_inputs.generated_at if current_inputs else now or datetime.now(UTC)
     key = load_signing_key(signing_key)
-    bars = read_hour_bars(lake_root, now=current, days=8)
-    costs = collect_costs(lake_root, notional_usdt=notional_usdt)
-    warnings = [
+    bars = current_inputs.bars if current_inputs else read_hour_bars(lake_root, now=current, days=8)
+    costs = current_inputs.costs if current_inputs else collect_costs(
+        lake_root, notional_usdt=notional_usdt
+    )
+    warnings = (current_inputs.warnings if current_inputs else []) + [
         f"{symbol}:CURRENT_MARKET_MISSING"
         for symbol in SYMBOLS
         if not any(bar.symbol == symbol for bar in bars)

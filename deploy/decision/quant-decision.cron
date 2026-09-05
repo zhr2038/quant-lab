@@ -1,0 +1,4 @@
+# Current input is produced at :00/5:10; NAS reads it one minute later.
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+1-59/5 * * * * root /usr/bin/nice -n 15 /bin/bash /volume2/quant-lab/decision/run.sh > /volume2/quant-lab/decision/logs/cron-last.log 2>&1

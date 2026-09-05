@@ -1,0 +1,19 @@
+[Unit]
+Description=Validate and publish compact NAS advice without waiting for collection
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=quantlab
+Group=quantlab
+SupplementaryGroups=quant-decision
+UMask=0027
+WorkingDirectory=/opt/quant-lab
+Environment=POLARS_MAX_THREADS=1
+ExecStart=/usr/bin/flock -w 90 /var/lib/quant-lab/decision/publication.lock /opt/quant-lab/.venv/bin/qlab decision accept-only
+TimeoutStartSec=120
+MemoryMax=256M
+CPUQuota=25%
+Nice=10
+NoNewPrivileges=true
+PrivateTmp=true

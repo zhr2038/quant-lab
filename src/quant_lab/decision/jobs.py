@@ -7,39 +7,64 @@ from pathlib import Path
 
 import typer
 
+from quant_lab.decision.current_inputs import collect_current_inputs
 from quant_lab.decision.pipeline import accept_results, publish_input
 from quant_lab.decision.retention import prune_acknowledged
-from quant_lab.decision.storage import atomic_json
+from quant_lab.decision.storage import atomic_json, load_input
+from quant_lab.export_plane.signatures import load_signing_key
 
 app = typer.Typer(help="Bounded decision reference jobs; no exchange writes.")
 
 
-def publish_when_idle(lake_root, job_root, *, signing_key, code_revision, now):
-    import fcntl
+def publish_current(lake_root, job_root, *, signing_key, code_revision, now):
+    # Current REST reads are bounded to four symbols. They do not wait for the
+    # historical lake's heavy lock, nor rewrite the lake during compaction.
+    path = job_root / "current-input.json"
+    previous = (
+        load_input(path, load_signing_key(signing_key).public_key()) if path.exists() else None
+    )
+    try:
+        collected = collect_current_inputs(previous)
+        snapshot = publish_input(
+            lake_root,
+            job_root,
+            signing_key=signing_key,
+            code_revision=code_revision,
+            current_inputs=collected,
+        )
+        status = {
+            "status": "WARNING" if snapshot.warnings else "OK",
+            "at": snapshot.generated_at.isoformat(),
+            "input_snapshot_id": snapshot.snapshot_id,
+            "bars": len(snapshot.bars),
+            "warnings": snapshot.warnings,
+        }
+    except (ValueError, OSError) as exc:
+        status = {"status": "FAILED", "at": now.isoformat(), "reason": type(exc).__name__}
+        atomic_json(job_root / "input-status.json", status)
+        raise
+    atomic_json(job_root / "input-status.json", status)
+    return status
 
-    # Accepting compact signed results needs no historical read lock. Only the
-    # input read competes with lake compaction; never delay publication behind it.
-    with Path("/var/lock/quant-lab-heavy.lock").open("a") as lock:
-        try:
-            fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            status = {"status": "DEFERRED_HEAVY_LOCK", "at": now.isoformat()}
-            atomic_json(job_root / "input-status.json", status)
-            return status
-        try:
-            snapshot = publish_input(
-                lake_root, job_root, signing_key=signing_key, code_revision=code_revision, now=now
-            )
-            status = {
-                "status": "OK",
-                "at": now.isoformat(),
-                "input_snapshot_id": snapshot.snapshot_id,
-                "bars": len(snapshot.bars),
-            }
-            atomic_json(job_root / "input-status.json", status)
-            return status
-        finally:
-            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+
+@app.command("accept-only")
+def accept_only(
+    lake_root: Path = Path("/var/lib/quant-lab/lake"),
+    job_root: Path = Path("/var/lib/quant-lab/decision"),
+    private_root: Path = Path("/etc/quant-lab/decision"),
+) -> None:
+    if not any((job_root / "inbox").glob("result-*.json")):
+        return
+    status = accept_results(
+        job_root,
+        worker_public_key=private_root / "worker.pub",
+        input_public_key=private_root / "producer.pub",
+        publication_root=lake_root / "gold" / "decision_reference",
+        publication_signing_key=private_root / "producer.key",
+    )
+    typer.echo(json.dumps(status))
+    if status["rejected"]:
+        raise typer.Exit(2)
 
 
 @app.command("cloud-cycle")
@@ -62,7 +87,7 @@ def cloud_cycle(
         publication_signing_key=private_root / "producer.key",
         now=now,
     )
-    inputs = publish_when_idle(
+    inputs = publish_current(
         lake_root,
         job_root,
         signing_key=private_root / "producer.key",

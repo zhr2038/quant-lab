@@ -28,6 +28,7 @@ ORDERS_HISTORY_ARCHIVE_ENDPOINT = f"{_TRADE_PREFIX}/orders-history-archive"
 ACCOUNT_BILLS_ENDPOINT = f"{_ACCOUNT_PREFIX}/bills"
 ACCOUNT_BILLS_ARCHIVE_ENDPOINT = f"{_ACCOUNT_PREFIX}/bills-archive"
 ACCOUNT_CONFIG_ENDPOINT = f"{_ACCOUNT_PREFIX}/config"
+ACCOUNT_TRADE_FEE_ENDPOINT = f"{_ACCOUNT_PREFIX}/trade-fee"
 
 ALLOWED_GET_ENDPOINTS = frozenset(
     {
@@ -37,6 +38,7 @@ ALLOWED_GET_ENDPOINTS = frozenset(
         ACCOUNT_BILLS_ENDPOINT,
         ACCOUNT_BILLS_ARCHIVE_ENDPOINT,
         ACCOUNT_CONFIG_ENDPOINT,
+        ACCOUNT_TRADE_FEE_ENDPOINT,
     }
 )
 
@@ -336,6 +338,11 @@ class OKXReadOnlyClient:
     def get_account_config(self) -> dict[str, Any]:
         data = self._private_get(ACCOUNT_CONFIG_ENDPOINT, {})
         return data[0] if data else {}
+
+    def get_spot_fee_rates(self, inst_id: str) -> list[dict[str, Any]]:
+        return self._private_get(
+            ACCOUNT_TRADE_FEE_ENDPOINT, {"instType": "SPOT", "instId": inst_id}
+        )
 
     def _private_get(
         self,

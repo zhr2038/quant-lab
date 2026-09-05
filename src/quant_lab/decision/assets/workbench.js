@@ -7,10 +7,17 @@ const REASONS = {
   HISTORY_CURRENT_MISMATCH: "历史与当前输入不一致", CONTEXT_WINDOW_INCOMPLETE: "趋势窗口有缺口",
   COST_MISSING: "缺少成本估计", COST_STALE_OR_UNDATED: "成本时间过旧或缺失",
   COST_TIMESTAMP_FUTURE: "成本时间异常", HISTORICAL_SAMPLE_INSUFFICIENT: "历史非重叠样本不足",
-  RECENT_DIAGNOSTIC_SAMPLE_INSUFFICIENT: "近期诊断窗口样本不足", COST_NOT_PAPER_TRUSTED: "成本尚未通过模拟验证要求",
+  RECENT_DIAGNOSTIC_SAMPLE_INSUFFICIENT: "近期诊断窗口样本不足", COST_NOT_PAPER_TRUSTED: "成本尚未用正常成交校准",
   HISTORICAL_COST_DRAG: "相似窗口的成本压力较大", POSITIVE_HISTORICAL_REFERENCE: "历史参考偏正",
   COST_REQUIRES_CALIBRATION: "需要进一步校准成交成本", HISTORICAL_REFERENCE_MIXED: "历史与近期结果不一致",
-  FORWARD_VALUE_NOT_ESTABLISHED: "前向交易增益尚未建立", ADVICE_EXPIRED: "建议已到期"
+  FORWARD_VALUE_NOT_ESTABLISHED: "前向交易增益尚未建立", ADVICE_EXPIRED: "建议已到期",
+  CURRENT_COST_EXPIRED_OR_UNAVAILABLE: "当前费率或盘口成本缺失、过期", CURRENT_COST_IS_ESTIMATE: "当前成本为估计值",
+  COST_ESTIMATE_UNCALIBRATED: "尚未用正常成交校准", EXIT_BOOK_ASSUMED_CURRENT: "退出成本按当前盘口估计",
+  ACCOUNT_FEE_UNAVAILABLE: "缺少账户费率", ACCOUNT_FEE_EXPIRED: "账户费率已过期",
+  READONLY_FEE_ACCESS_UNAVAILABLE: "账户费率读取权限或连接不可用", ACCOUNT_FEE_REFRESH_FAILED: "账户费率本次读取失败",
+  ACCOUNT_FEE_USING_PREVIOUS_OBSERVATION: "沿用此前读取的费率，未更新其时间",
+  CURRENT_BOOK_FETCH_FAILED: "本次盘口读取失败", CURRENT_BOOK_OR_INSTRUMENT_UNAVAILABLE: "盘口或交易规格校验未通过",
+  REBATE_NOT_CREDITED_IN_ESTIMATE: "潜在返佣未计为成本折扣", INSUFFICIENT_DEPTH: "盘口深度不足", BELOW_MINIMUM_SIZE: "低于最小数量"
 };
 const $ = id => document.getElementById(id);
 const esc = value => String(value ?? "").replace(/[&<>"']/g, x => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[x]));
@@ -127,9 +134,24 @@ function renderReference() {
   $("advice-detail").innerHTML = `<div class="detail-title"><h3>${esc(row.symbol.replace("USDT", ""))}</h3>${badge(effective(row))}</div>
     <p class="explanation">${esc(row.explanation)}</p>
     <dl class="metrics">${metric("24h 趋势", bps(row.trend_24h_bps))}${metric("24h 实现波动", bps(row.volatility_24h_bps))}${metric("往返成本假设", bps(row.cost.roundtrip_bps))}${metric("参考金额", `${num(row.cost.notional_usdt, 0)} USDT`)}</dl>
+    ${renderCost(row.cost)}
     <div class="distribution"><p>相似行情 · 当前成本下的历史分布</p>${plot(row.distribution)}</div>
-    <div class="detail-list"><p><strong>行情截至</strong>　${time(row.market_asof, true)}</p><p><strong>历史范围</strong>　${time(row.distribution.first_signal_at, true)} — ${time(row.distribution.last_signal_at, true)}</p><p><strong>近期窗口净均值</strong>　${bps(row.distribution.chronological_tail_net_mean_bps)}</p><p><strong>双倍成本净均值</strong>　${bps(row.distribution.double_cost_mean_bps)}</p><p><strong>成本观测时间</strong>　${time(row.cost.as_of, true)}</p><p><strong>成本来源</strong>　${esc(row.cost.source)} · ${esc(row.cost.quality)}</p><p><strong>依据与限制</strong><br>${reasons.map(r => esc(REASONS[r] || r)).join(" · ")}</p><p><strong>失效条件</strong><br>${row.invalidation_conditions.map(esc).join(" · ")}</p></div>
+    <div class="detail-list"><p><strong>行情截至</strong>　${time(row.market_asof, true)}</p><p><strong>历史范围</strong>　${time(row.distribution.first_signal_at, true)} — ${time(row.distribution.last_signal_at, true)}</p><p><strong>成本前历史均值</strong>　${bps(row.distribution.gross_mean_bps)}</p><p><strong>近期窗口净均值</strong>　${bps(row.distribution.chronological_tail_net_mean_bps)}</p><p><strong>双倍成本净均值</strong>　${bps(row.distribution.double_cost_mean_bps)}</p><p><strong>成本观测时间</strong>　${time(row.cost.as_of, true)}</p><p><strong>依据与限制</strong><br>${reasons.map(r => esc(REASONS[r] || r)).join(" · ")}</p><p><strong>失效条件</strong><br>${row.invalidation_conditions.map(esc).join(" · ")}</p></div>
     <details><summary>查看证据标识</summary><p>建议：<code>${esc(row.advice_id)}</code></p><p>输入：<code>${esc(row.input_snapshot_id)}</code></p><p>数据：<code>${esc(row.data_snapshot_hash)}</code></p></details>`;
+}
+
+function renderCost(cost) {
+  const c = cost.current;
+  if (!c) return `<p class="flat-note">当前显示旧版历史成本场景，观测时间 ${time(cost.as_of, true)}。等待当前费率与盘口快照。</p>`;
+  const s = c.sizes.find(s => s.notional_usdt === cost.notional_usdt);
+  const stale = !c.valid_until || Date.now() + state.offset >= Date.parse(c.valid_until);
+  const label = state.error ? "连接失败 · 上次观测" : c.status !== "ESTIMATED" ? "当前成本不可用" : stale ? "成本快照已过期" : "当前成本 · 估计未校准";
+  return `<section class="cost-detail" aria-label="成本拆解"><h3>${label}</h3>
+    <dl class="cost-components">${metric("往返手续费", bps(s?.fee_roundtrip_bps))}${metric("盘口影响（含价差）", bps(s?.book_roundtrip_bps))}${metric("预留误差", bps(s?.uncertainty_bps))}</dl>
+    <p>合计 ${bps(cost.roundtrip_bps)}。以吃单进出估计，盘口影响已含价差，只扣一次。预留误差为固定假设，不是已验证的滑点上限。</p>
+    <div class="table-scroll"><table class="simple-table cost-table"><thead><tr><th>参考金额</th><th>盘口影响</th><th>往返合计</th></tr></thead><tbody>${c.sizes.map(v => `<tr><td>${num(v.notional_usdt,0)} USDT</td><td>${bps(v.book_roundtrip_bps)}</td><td>${v.status === "ESTIMATED" ? bps(v.roundtrip_bps) : esc(REASONS[v.status] || v.status)}</td></tr>`).join("") || `<tr><td colspan="3">缺少完整成本输入，暂不测算。</td></tr>`}</tbody></table></div>
+    <p>费率：吃单 ${bps(c.fee?.taker_bps)} / 挂单 ${bps(c.fee?.maker_bps)}（单边）。读取于 ${time(c.fee?.fetched_at, true)}。<br>盘口 ${time(c.book_as_of, true)} · 成本有效至 ${time(c.valid_until)}。金额按中间价折算数量；未来退出盘口仍有不确定性，挂单成交尚未假定。</p>
+    <details><summary>成本依据与历史留存</summary><p>${cost.missing_reasons.map(r => esc(REASONS[r] || r)).join(" · ")}</p><p>成本版本：${esc(cost.version)}。当前估计没有计入真实成交校准样本。</p>${c.historical_anchor ? `<p>历史留存：${time(c.historical_anchor.as_of, true)}，旧模型往返场景 ${bps(c.historical_anchor.roundtrip_bps)}。仅供核对，不用它代替当前成本。</p>` : "<p>本快照无旧模型锚点；原始历史数据继续保存在 NAS。</p>"}</details></section>`;
 }
 
 function renderForward() {

@@ -190,6 +190,11 @@ def build_advice(
     reasons = list(missing)
     action = "NO_VIEW"
     explanation = "当前不形成方向观点；请查看缺失原因，按 V5 原有规则处理。"
+    if "COST_STALE_OR_UNDATED" in missing:
+        explanation = (
+            "先更新只读成交成本并核对样本，再复核入场候选。当前成本依据过旧或缺少时间，"
+            "下方数值仅用于历史成本场景比较，暂不形成可用方向观点。"
+        )
     if not missing:
         mean = distribution.net_mean_bps
         tail_mean = distribution.chronological_tail_net_mean_bps

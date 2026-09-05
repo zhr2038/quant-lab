@@ -141,6 +141,7 @@ def accept_results(
     worker_public_key: Path,
     input_public_key: Path,
     publication_root: Path | None = None,
+    publication_signing_key: Path | None = None,
     now: datetime | None = None,
 ) -> dict[str, Any]:
     current = now or datetime.now(UTC)
@@ -261,7 +262,10 @@ def accept_results(
             publications.append(receipt)
     if len(publications) > 5_000:
         raise ValueError("publication receipt budget exceeded; archive acknowledged history")
-    atomic_json(root / "publication-receipts.json", {"publications": publications})
+    value = {"publications": publications}
+    if publication_signing_key is not None:
+        value["signature"] = sign_payload(value, load_signing_key(publication_signing_key))
+    atomic_json(root / "publication-receipts.json", value)
     return status
 
 

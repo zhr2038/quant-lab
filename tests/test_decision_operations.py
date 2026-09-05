@@ -21,6 +21,34 @@ accept = fixtures.accept
 artifacts = fixtures.artifacts
 
 
+def test_cloud_publication_proceeds_when_lake_read_lock_is_busy(artifacts, monkeypatch):
+    from quant_lab.decision.jobs import cloud_cycle
+    from quant_lab.export_plane.signatures import verify_payload
+
+    a = artifacts
+    (a["root"] / "producer.key").write_bytes(
+        a["producer"].private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        )
+    )
+    monkeypatch.setattr(
+        "quant_lab.decision.jobs.publish_when_idle",
+        lambda *args, **kw: {"status": "DEFERRED_HEAVY_LOCK"},
+    )
+    cloud_cycle(
+        code_revision="abcdef1",
+        lake_root=a["root"] / "lake",
+        job_root=a["root"],
+        private_root=a["root"],
+    )
+    publication = a["root"] / "lake/gold/decision_reference/publication.json"
+    assert read_json(publication, max_bytes=1024**2)["result"]["result_id"] == a["result"].result_id
+    receipts = read_json(a["root"] / "publication-receipts.json", max_bytes=1024**2)
+    verify_payload(receipts, receipts["signature"], a["producer"].public_key())
+
+
 def test_only_actual_timely_publication_registers_and_replays_do_not_add(artifacts):
     a = artifacts
     with Ledger(a["root"] / "forward.duckdb") as ledger:

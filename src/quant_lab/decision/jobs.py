@@ -9,10 +9,37 @@ import typer
 
 from quant_lab.decision.pipeline import accept_results, publish_input
 from quant_lab.decision.retention import prune_acknowledged
-from quant_lab.decision.storage import atomic_json, read_json
-from quant_lab.export_plane.signatures import load_signing_key, sign_payload
+from quant_lab.decision.storage import atomic_json
 
 app = typer.Typer(help="Bounded decision reference jobs; no exchange writes.")
+
+
+def publish_when_idle(lake_root, job_root, *, signing_key, code_revision, now):
+    import fcntl
+
+    # Accepting compact signed results needs no historical read lock. Only the
+    # input read competes with lake compaction; never delay publication behind it.
+    with Path("/var/lock/quant-lab-heavy.lock").open("a") as lock:
+        try:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            status = {"status": "DEFERRED_HEAVY_LOCK", "at": now.isoformat()}
+            atomic_json(job_root / "input-status.json", status)
+            return status
+        try:
+            snapshot = publish_input(
+                lake_root, job_root, signing_key=signing_key, code_revision=code_revision, now=now
+            )
+            status = {
+                "status": "OK",
+                "at": now.isoformat(),
+                "input_snapshot_id": snapshot.snapshot_id,
+                "bars": len(snapshot.bars),
+            }
+            atomic_json(job_root / "input-status.json", status)
+            return status
+        finally:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
 
 
 @app.command("cloud-cycle")
@@ -32,13 +59,10 @@ def cloud_cycle(
         worker_public_key=worker_key,
         input_public_key=private_root / "producer.pub",
         publication_root=public,
+        publication_signing_key=private_root / "producer.key",
         now=now,
     )
-    key = load_signing_key(private_root / "producer.key")
-    receipts = read_json(job_root / "publication-receipts.json", max_bytes=2 * 1024**2)
-    receipts["signature"] = sign_payload(receipts, key)
-    atomic_json(job_root / "publication-receipts.json", receipts)
-    snapshot = publish_input(
+    inputs = publish_when_idle(
         lake_root,
         job_root,
         signing_key=private_root / "producer.key",
@@ -46,8 +70,7 @@ def cloud_cycle(
         now=now,
     )
     status = {
-        "input_snapshot_id": snapshot.snapshot_id,
-        "bars": len(snapshot.bars),
+        "input": inputs,
         "acceptance": accepted,
         "pruned": len(retained["removed"]),
         "retention_status": retained["status"],

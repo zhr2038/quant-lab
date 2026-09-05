@@ -20,7 +20,7 @@ const time = (value, full = false) => {
   if (!value || !Number.isFinite(Date.parse(value))) return "—";
   return new Intl.DateTimeFormat("zh-CN", {timeZone: "Asia/Shanghai", ...(full ? {month:"2-digit", day:"2-digit"} : {}), hour:"2-digit", minute:"2-digit", hour12:false}).format(new Date(value));
 };
-const state = {data: null, symbol: "BTCUSDT", horizon: 4, page: "reference", busy: false, error: "", offset: 0, expiryTimer: null, token: ""};
+const state = {data: null, symbol: "BTCUSDT", horizon: 4, page: "reference", busy: false, error: "", offset: 0, expiryTimer: null, token: "", authRequired: false};
 try { state.token = sessionStorage.getItem("qyun2.access") || ""; } catch (_) { /* Session storage may be disabled. */ }
 const effective = advice => !advice || state.error || Date.now() + state.offset >= Date.parse(advice.expires_at) ? "NO_VIEW" : (advice.effective_action || advice.action);
 const badge = action => `<span class="action ${esc(action)}">${esc(LABELS[action] || "暂无观点")}</span>`;
@@ -70,7 +70,7 @@ function renderReference() {
     <p class="explanation">${esc(row.explanation)}</p>
     <dl class="metrics">${metric("24h 趋势", bps(row.trend_24h_bps))}${metric("24h 实现波动", bps(row.volatility_24h_bps))}${metric("往返成本假设", bps(row.cost.roundtrip_bps))}${metric("参考金额", `${num(row.cost.notional_usdt, 0)} USDT`)}</dl>
     <div class="distribution"><p>相似行情 · 当前成本下的历史分布</p>${plot(row.distribution)}</div>
-    <div class="detail-list"><p><strong>行情截至</strong>　${time(row.market_asof, true)}</p><p><strong>历史范围</strong>　${time(row.distribution.first_signal_at, true)} — ${time(row.distribution.last_signal_at, true)}</p><p><strong>近期窗口净均值</strong>　${bps(row.distribution.chronological_tail_net_mean_bps)}</p><p><strong>双倍成本净均值</strong>　${bps(row.distribution.double_cost_mean_bps)}</p><p><strong>成本来源</strong>　${esc(row.cost.source)} · ${esc(row.cost.quality)}</p><p><strong>依据与限制</strong><br>${reasons.map(r => esc(REASONS[r] || r)).join(" · ")}</p><p><strong>失效条件</strong><br>${row.invalidation_conditions.map(esc).join(" · ")}</p></div>
+    <div class="detail-list"><p><strong>行情截至</strong>　${time(row.market_asof, true)}</p><p><strong>历史范围</strong>　${time(row.distribution.first_signal_at, true)} — ${time(row.distribution.last_signal_at, true)}</p><p><strong>近期窗口净均值</strong>　${bps(row.distribution.chronological_tail_net_mean_bps)}</p><p><strong>双倍成本净均值</strong>　${bps(row.distribution.double_cost_mean_bps)}</p><p><strong>成本观测时间</strong>　${time(row.cost.as_of, true)}</p><p><strong>成本来源</strong>　${esc(row.cost.source)} · ${esc(row.cost.quality)}</p><p><strong>依据与限制</strong><br>${reasons.map(r => esc(REASONS[r] || r)).join(" · ")}</p><p><strong>失效条件</strong><br>${row.invalidation_conditions.map(esc).join(" · ")}</p></div>
     <details><summary>查看证据标识</summary><p>建议：<code>${esc(row.advice_id)}</code></p><p>输入：<code>${esc(row.input_snapshot_id)}</code></p><p>数据：<code>${esc(row.data_snapshot_hash)}</code></p></details>`;
 }
 
@@ -109,6 +109,7 @@ async function refresh() {
   try {
     const response = await fetch("/v1/trade-advice/latest", {headers: state.token ? {Authorization: `Bearer ${state.token}`} : {}, cache: "no-store", signal: controller.signal});
     if (response.status === 401 || response.status === 403) {
+      state.authRequired = true;
       state.data = null; state.error = ""; render();
       $("auth-panel").hidden = false; $("workspace").hidden = true; $("disconnect").hidden = true;
       $("auth-error").textContent = state.token ? (response.status === 403 ? "当前网络没有访问权限。" : "访问密钥未通过验证。") : "";
@@ -117,7 +118,7 @@ async function refresh() {
     if (!response.ok) throw new Error(`接口暂不可用（HTTP ${response.status}）`);
     const data = await response.json();
     if (!Array.isArray(data.advice)) throw new Error("接口返回了无法识别的结果");
-    state.data = data; state.error = "";
+    state.data = data; state.error = ""; state.authRequired = false;
     state.offset = data.viewed_at ? Date.parse(data.viewed_at) - Date.now() : 0;
     $("auth-panel").hidden = true; $("workspace").hidden = false; $("disconnect").hidden = !state.token;
     $("token").value = ""; render();
@@ -143,6 +144,6 @@ $("export").addEventListener("click", () => {
   const url = URL.createObjectURL(new Blob([JSON.stringify(state.data, null, 2)], {type: "application/json"}));
   const link = document.createElement("a"); link.href = url; link.download = `${state.data.result_id}.json`; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
 });
-setInterval(() => {if (!document.hidden) refresh();}, 30000);
-document.addEventListener("visibilitychange", () => { if (!document.hidden) {render(); refresh();} });
+setInterval(() => {if (!document.hidden && !state.authRequired) refresh();}, 30000);
+document.addEventListener("visibilitychange", () => { if (!document.hidden) {render(); if (!state.authRequired) refresh();} });
 refresh();

@@ -10,6 +10,7 @@ from pathlib import Path
 import polars as pl
 
 from quant_lab.decision.contracts import HORIZONS, SYMBOLS, AnalysisResult, HourBar
+from quant_lab.decision.contracts_v2 import EXPERIMENT_VERSION, STRATEGY_VERSION, AnalysisResultV2
 from quant_lab.decision.engine import build_advice, content_hash, prepare_history
 from quant_lab.decision.ledger import Ledger
 from quant_lab.decision.pipeline import read_hour_bars
@@ -257,15 +258,25 @@ def run_worker(
                 saved, published_at=datetime.fromisoformat(receipt["published_at"]), now=current
             )
         ledger.mature(history, now=current)
-        forward = ledger.summary(now=current)
+        forward = ledger.summary(
+            now=current,
+            experiment=EXPERIMENT_VERSION,
+            strategy_version=STRATEGY_VERSION,
+            cost_versions=sorted({cost.version for cost in inputs.costs}) or ["unavailable"],
+            published_from=current - timedelta(days=180),
+            published_until=current,
+        )
     previous_path = archive / "current-result.json"
     previous = (
         load_result(previous_path, signing_key.public_key()) if previous_path.exists() else None
     )
     if (
         previous
+        and previous.experiment_version == EXPERIMENT_VERSION
+        and previous.worker_commit == code_revision
         and previous.input_snapshot_id == inputs.snapshot_id
-        and previous.forward == forward
+        and previous.forward.model_dump(exclude={"published_from", "published_until"})
+        == forward.model_dump(exclude={"published_from", "published_until"})
     ):
         ack = write_archive_ack(archive, signing_key, input_key, current)
         transfer.push(ack, name="archive-ack.json")
@@ -282,7 +293,12 @@ def run_worker(
             },
         )
         return previous
-    if previous and previous.input_snapshot_id == inputs.snapshot_id:
+    if (
+        previous
+        and previous.experiment_version == EXPERIMENT_VERSION
+        and previous.worker_commit == code_revision
+        and previous.input_snapshot_id == inputs.snapshot_id
+    ):
         advice = previous.advice
     else:
         advice = [
@@ -290,7 +306,7 @@ def run_worker(
             for symbol in SYMBOLS
             for horizon in HORIZONS
         ]
-    result = AnalysisResult(
+    result = AnalysisResultV2(
         result_id="result-" + "0" * 64,
         generated_at=current,
         input_snapshot_id=inputs.snapshot_id,

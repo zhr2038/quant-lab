@@ -54,7 +54,7 @@ def test_only_actual_timely_publication_registers_and_replays_do_not_add(artifac
     with Ledger(a["root"] / "forward.duckdb") as ledger:
         assert ledger.register(a["result"], published_at=a["now"], now=a["now"]) == 2
         assert ledger.register(a["result"], published_at=a["now"], now=a["now"]) == 0
-        summary = ledger.summary(now=a["now"])
+        summary = scoped_summary(ledger, a, now=a["now"])
         assert summary.registered_opportunities == 1
         assert summary.registered_horizon_observations == 2
         assert summary.waiting_observations == 2
@@ -75,12 +75,14 @@ def test_labels_require_closed_observed_complete_window_and_freeze_original_cost
     with Ledger(a["root"] / "forward.duckdb") as ledger:
         ledger.register(a["result"], published_at=a["now"], now=a["now"])
         ledger.mature(bars, now=matured - timedelta(seconds=1))
-        assert ledger.summary(now=matured - timedelta(seconds=1)).matured_observations == 0
+        assert (
+            scoped_summary(ledger, a, now=matured - timedelta(seconds=1)).matured_observations == 0
+        )
         missing = [v for v in bars if v.ts != advice.reference_entry_at + timedelta(hours=1)]
         ledger.mature(missing, now=matured)
-        assert ledger.summary(now=matured).missing_label_observations == 1
+        assert scoped_summary(ledger, a, now=matured).missing_label_observations == 1
         ledger.mature(bars, now=matured)
-        summary = ledger.summary(now=matured)
+        summary = scoped_summary(ledger, a, now=matured)
         assert summary.matured_observations == 1
         assert summary.net_mean_bps is None
         group = summary.by_group[0]
@@ -89,7 +91,7 @@ def test_labels_require_closed_observed_complete_window_and_freeze_original_cost
         # Later corrected prices do not rewrite a sealed outcome.
         corrected = [v.model_copy(update={"open": v.open * 2}) for v in bars]
         ledger.mature(corrected, now=matured)
-        assert ledger.summary(now=matured) == summary
+        assert scoped_summary(ledger, a, now=matured) == summary
 
 
 def test_api_reads_only_published_gold_and_fails_closed_on_corruption(artifacts, monkeypatch):
@@ -145,9 +147,12 @@ def test_public_workbench_does_not_open_other_methods_or_strategy_apis(tmp_path,
         assert client.post("/v1/trade-advice/advice-" + "a" * 64).status_code == 401
         assert client.get("/v1/trade-advice/latest/private").status_code == 401
         assert client.get("/v1/catalog/datasets").status_code == 401
-        assert client.get(
-            "/v1/catalog/datasets", headers={"Authorization": "Bearer private-strategy-token"}
-        ).status_code == 200
+        assert (
+            client.get(
+                "/v1/catalog/datasets", headers={"Authorization": "Bearer private-strategy-token"}
+            ).status_code
+            == 200
+        )
 
 
 def test_public_workbench_respects_explicit_ip_restrictions(monkeypatch):
@@ -269,3 +274,75 @@ def test_worker_archives_then_uploads_and_unchanged_input_never_renews_advice(
     third = run_worker(**args, now=a["now"] + timedelta(minutes=10))
     assert third == second
     assert uploaded.count(second.result_id + ".json") == 1
+
+
+def scoped_summary(ledger, a, *, now):
+    from quant_lab.decision.contracts_v2 import EXPERIMENT_VERSION, STRATEGY_VERSION
+
+    return ledger.summary(
+        now=now,
+        experiment=EXPERIMENT_VERSION,
+        strategy_version=STRATEGY_VERSION,
+        cost_versions=[a["input"].costs[0].version],
+        published_from=a["now"] - timedelta(days=180),
+        published_until=now,
+    )
+
+
+def test_registered_opportunity_cannot_silently_change_versions(artifacts):
+    a = artifacts
+    with Ledger(a["root"] / "immutable-scope.duckdb") as ledger:
+        assert ledger.register(a["result"], published_at=a["now"], now=a["now"]) == 2
+        changed = a["result"].model_copy(
+            update={
+                "advice": [
+                    advice.model_copy(
+                        update={"cost": advice.cost.model_copy(update={"version": "changed-cost"})}
+                    )
+                    for advice in a["result"].advice
+                ]
+            }
+        )
+        with pytest.raises(ValueError, match="new experiment"):
+            ledger.register(changed, published_at=a["now"], now=a["now"])
+        assert scoped_summary(ledger, a, now=a["now"]).registered_horizon_observations == 2
+
+
+def test_forward_summary_never_mixes_experiments_or_cost_versions(artifacts):
+    from quant_lab.decision.contracts_v2 import STRATEGY_VERSION
+
+    a = artifacts
+    with Ledger(a["root"] / "scopes.duckdb") as ledger:
+        assert ledger.register(a["result"], published_at=a["now"], now=a["now"]) == 2
+        ledger.con.execute(
+            "UPDATE observations SET label_at=?,gross_bps=130,net_bps=100", [a["now"]]
+        )
+        ledger.con.execute(
+            "INSERT INTO observations SELECT opportunity,horizon,'opposite-experiment',advice_id,"
+            "symbol,action,published_at,entry_at,exit_at,cost,advice_json,label_at,-970,-1000,"
+            "label_evidence_json,strategy_version,cost_version FROM observations"
+        )
+        positive = scoped_summary(ledger, a, now=a["now"])
+        assert (
+            positive.registered_opportunities == 1 and positive.registered_horizon_observations == 2
+        )
+        assert positive.non_overlapping_opportunities == 1 and positive.actual_trades is None
+        assert all(group.net_mean_bps == 100 for group in positive.by_group)
+        negative = ledger.summary(
+            now=a["now"],
+            experiment="opposite-experiment",
+            strategy_version=STRATEGY_VERSION,
+            cost_versions=[a["input"].costs[0].version],
+            published_from=a["now"] - timedelta(days=180),
+            published_until=a["now"],
+        )
+        assert all(group.net_mean_bps == -1000 for group in negative.by_group)
+        other_cost = ledger.summary(
+            now=a["now"],
+            experiment=positive.experiment,
+            strategy_version=STRATEGY_VERSION,
+            cost_versions=["unseen-version"],
+            published_from=positive.published_from,
+            published_until=a["now"],
+        )
+        assert other_cost.registered_horizon_observations == 0

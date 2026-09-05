@@ -9,13 +9,13 @@ from typing import Any
 
 from quant_lab.contracts.models import require_utc
 from quant_lab.decision.contracts import (
-    EXPERIMENT_VERSION,
     Advice,
     CostObservation,
     Distribution,
     HourBar,
     InputSnapshot,
 )
+from quant_lab.decision.contracts_v2 import EXPERIMENT_VERSION, AdviceV2, ResearchEligibility
 from quant_lab.decision.current_cost_contracts import CurrentCostObservation
 
 HOUR = timedelta(hours=1)
@@ -219,12 +219,12 @@ def build_advice(
                 "研究参考为等待新窗口。历史统计尚未证明实际交易增益。"
             )
         elif mean > 0 and tail_mean > 0 and (distribution.double_cost_mean_bps or 0) > 0:
-            if cost.trusted_for_paper:
+            if cost.trusted_for_paper or isinstance(cost, CurrentCostObservation):
                 action = "REVIEW_ENTRY"
                 reasons.append("POSITIVE_HISTORICAL_REFERENCE")
                 explanation = (
                     "相似行情在当前及双倍成本假设下存在正向历史参考，"
-                    "可交由 V5 原规则复核候选；这不是已验证的入场信号。"
+                    "仅进入独立 paper 对照；成本可能仍是估算，不改变 V5 实盘决策。"
                 )
             else:
                 action = "KEEP_BASELINE"
@@ -254,7 +254,14 @@ def build_advice(
     expiry = entry_at if entry_at and now < entry_at else now
     if current_cost_expiry is not None:
         expiry = max(now, min(expiry, current_cost_expiry))
-    advice = Advice(
+    advice = AdviceV2(
+        eligibility=ResearchEligibility(
+            research_evaluable=not missing
+            and (cost.trusted_for_paper or isinstance(cost, CurrentCostObservation)),
+            cost_calibrated=not isinstance(cost, CurrentCostObservation)
+            and cost.quality == "calibrated"
+            and cost.actual_sample_count > 0,
+        ),
         advice_id="advice-" + identity,
         opportunity_id="opportunity-" + opportunity,
         symbol=symbol,

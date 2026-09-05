@@ -307,8 +307,12 @@ def test_current_cost_expiry_caps_advice_and_no_calibration_is_invented():
     now = bars[-1].ingest_ts + timedelta(minutes=5)
     inp = inputs(bars, now).model_copy(update={"costs": [estimate(now)]})
     advice = build_advice(bars, inputs=inp, symbol="BTCUSDT", horizon=4, now=now)
-    assert advice.action == "KEEP_BASELINE"
-    assert "COST_REQUIRES_CALIBRATION" in advice.reason_codes
+    assert advice.action == "REVIEW_ENTRY"
+    assert advice.eligibility.research_evaluable
+    assert not advice.eligibility.cost_calibrated
+    assert not advice.eligibility.live_execution_eligible
+    assert not advice.cost.trusted_for_paper and advice.cost.actual_sample_count == 0
+    assert "CURRENT_COST_IS_ESTIMATE" in advice.reason_codes
     assert advice.expires_at == now + BOOK_LIFETIME
     expired = build_advice(bars, inputs=inp, symbol="BTCUSDT", horizon=4, now=now + BOOK_LIFETIME)
     assert expired.action == "NO_VIEW"

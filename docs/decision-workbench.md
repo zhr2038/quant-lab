@@ -1,5 +1,17 @@
 # 新中台首版部署约定
 
+## 2026-09-06 复审版本
+
+新结果采用 `qlab.decision.result.v2`，实验 `trend-reference-1h-v2`，策略 `context-trend-24h-v1`。`research_evaluable`、`cost_calibrated` 和恒为 false 的 `live_execution_eligible` 分开。当前费用/报价/数量检查完整、时效有效且历史/尾部/双倍成本条件通过时，可以产生独立 paper 的 REVIEW_ENTRY；估算类型仍保留 `trusted_for_paper=false`、实际样本数0。缺报价、费用或过期继续 NO_VIEW，不能以研究准入替代资金授权。
+
+原始 `CostObservation`、`CurrentCostObservation`、v1 Advice/Result 不改默认值与签名内容；读取时按 schema 分派，新测试用冻结 v1 签名样本验证原样读回。NAS账本仅增加策略/成本版本列并回填来自原 advice_json 的来源；汇总必须显式提供实验、策略、成本版本和时间范围。已有机会改变版本必须另开实验；4h/24h价格标签、非重叠机会和实际交易分开展示，价格标签不能计作账户盈利。
+
+中台保留现有时间隔离和非重叠历史采样。对 V5 的新增固定问题是“同一个24小时候选只增加中台参考后，是否提高同资金净组合收益”。V5 独立账本比较候选不读取参考与只用此前已收到、有效24h DEFER 阻止新入场；退出不受影响。30日、100个独立机会、10个入场日、成本压力、去最大盈利和置信区间是预先约定的复核门槛；中台自身历史标的分布不改名为 V5 净收益预测。前瞻完成前不自动提高真实仓位。
+
+API 与 NAS 分析代码发布必须同步 `QUANT_LAB_CODE_REVISION` 和镜像标签。`deploy/locks/api-production.txt` 与 `nas-worker.txt` 分别记录当前两个运行环境，镜像固定基础 digest 和 Python 依赖；保存最终镜像 ID/包清单/发布文件哈希。换版前备份 forward.duckdb，迁移校验旧行数、原 advice_json 内容和旧签名，停止 worker 时演练回滚代码。回滚不得用旧数据库覆盖已写入的新前瞻数据。V5 只落盘的新参考消费器不会恢复旧接口权限，旧接口继续带退役标记。
+
+本节描述实现和发布要求；最终测试、线上 manifest、NAS 接收回执、浏览器与回滚结果以实际交付记录为准。没有这些结果不能声称本版已上线。前瞻收益与静态/动态权重对照仍需有效的新样本；当前不能宣称策略净收益改善。
+
 起点为清理完成后的 `ed576ff7bb9557df6b2bbd66eaf988bdcd531379`。先完成 NAS 完整归档和云端冷数据回收，再部署本版本。旧 Web 和旧业务生产者不恢复。
 
 ## 本版交付

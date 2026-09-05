@@ -6,7 +6,13 @@ import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from quant_lab.decision.contracts import HORIZONS, SYMBOLS, AnalysisResult, ForwardSummary
+from quant_lab.decision.contracts import HORIZONS, SYMBOLS
+from quant_lab.decision.contracts_v2 import (
+    EXPERIMENT_VERSION,
+    STRATEGY_VERSION,
+    AnalysisResultV2,
+    ScopedForwardSummary,
+)
 from quant_lab.decision.engine import build_advice
 from quant_lab.decision.pipeline import accept_results, read_hour_bars
 from quant_lab.decision.storage import (
@@ -54,7 +60,7 @@ def artifacts(tmp_path):
     snapshot = snapshot.model_copy(update={"snapshot_id": input_identity(snapshot)})
     snapshot = snapshot.model_copy(update={"signature": sign_payload(snapshot, producer)})
     atomic_json(tmp_path / "inputs" / (snapshot.snapshot_id + ".json"), snapshot)
-    result = AnalysisResult(
+    result = AnalysisResultV2(
         result_id="result-" + "0" * 64,
         generated_at=now,
         input_snapshot_id=snapshot.snapshot_id,
@@ -64,7 +70,15 @@ def artifacts(tmp_path):
             for symbol in SYMBOLS
             for horizon in HORIZONS
         ],
-        forward=ForwardSummary(),
+        forward=ScopedForwardSummary(
+            experiment=EXPERIMENT_VERSION,
+            strategy_version=STRATEGY_VERSION,
+            cost_versions=[snapshot.costs[0].version],
+            published_from=now - timedelta(days=180),
+            published_until=now,
+            non_overlapping_opportunities=0,
+            overlapping_price_observations=0,
+        ),
         history_rows=len(bars),
         runtime_seconds=0.1,
         peak_rss_mib=10,
@@ -166,3 +180,16 @@ def test_reader_uses_closed_okx_spot_hour_bars_only(tmp_path):
     selected = read_hour_bars(tmp_path, now=bars[-1].ts + timedelta(minutes=30), days=8)
     assert len(selected) == 49
     assert selected[-1].ts == bars[-2].ts
+
+
+def test_frozen_v1_signature_and_identity_still_load():
+    from pathlib import Path
+
+    from quant_lab.export_plane.signatures import load_public_key
+
+    fixture = Path(__file__).parent / "fixtures" / "decision_v1"
+    raw = read_json(fixture / "signed-result.json", max_bytes=512 * 1024)
+    loaded = load_result(fixture / "signed-result.json", load_public_key(fixture / "worker.pub"))
+    assert loaded.schema_version == "qlab.decision.result.v1"
+    assert loaded.model_dump(mode="json") == raw
+    assert all("eligibility" not in a for a in raw["advice"])

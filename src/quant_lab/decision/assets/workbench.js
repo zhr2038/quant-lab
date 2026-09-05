@@ -136,6 +136,7 @@ function renderReference() {
     <p class="explanation">${esc(row.explanation)}</p>
     <dl class="metrics">${metric("24h 趋势", bps(row.trend_24h_bps))}${metric("24h 实现波动", bps(row.volatility_24h_bps))}${metric("往返成本假设", bps(row.cost.roundtrip_bps))}${metric("参考金额", `${num(row.cost.notional_usdt, 0)} USDT`)}</dl>
     ${renderCost(row.cost)}
+    <p class="flat-note">研究可评估：${row.eligibility?.research_evaluable ? "是，仅独立 paper 对照" : "否或旧版未声明"} · 成本已校准：${row.eligibility?.cost_calibrated ? "是" : "否"} · 实盘授权：关闭</p>
     <div class="distribution"><p>相似行情 · 当前成本下的历史分布</p>${plot(row.distribution)}</div>
     <div class="detail-list"><p><strong>行情截至</strong>　${time(row.market_asof, true)}</p><p><strong>历史范围</strong>　${time(row.distribution.first_signal_at, true)} — ${time(row.distribution.last_signal_at, true)}</p><p><strong>成本前历史均值</strong>　${bps(row.distribution.gross_mean_bps)}</p><p><strong>近期窗口净均值</strong>　${bps(row.distribution.chronological_tail_net_mean_bps)}</p><p><strong>双倍成本净均值</strong>　${bps(row.distribution.double_cost_mean_bps)}</p><p><strong>成本观测时间</strong>　${time(row.cost.as_of, true)}</p><p><strong>依据与限制</strong><br>${reasons.map(r => esc(REASONS[r] || r)).join(" · ")}</p><p><strong>失效条件</strong><br>${row.invalidation_conditions.map(esc).join(" · ")}</p></div>
     <details><summary>查看证据标识</summary><p>建议：<code>${esc(row.advice_id)}</code></p><p>输入：<code>${esc(row.input_snapshot_id)}</code></p><p>数据：<code>${esc(row.data_snapshot_hash)}</code></p></details>`;
@@ -159,6 +160,7 @@ function renderForward() {
   const f = state.data?.forward;
   const items = [["已登记机会", f?.registered_opportunities], ["观察维度", f?.registered_horizon_observations], ["已成熟窗口", f?.matured_observations], ["等待观察", f?.waiting_observations]];
   $("forward-summary").innerHTML = `<dl class="summary-strip">${items.map(([k,v]) => `<div class="summary-item"><dt>${esc(k)}</dt><dd class="number">${num(v, 0)}</dd></div>`).join("")}</dl>
+    <p class="flat-note">实验：${esc(f?.experiment || "旧版汇总，范围未绑定")} · 策略：${esc(f?.strategy_version || "未声明")} · 成本版本：${(f?.cost_versions || []).map(esc).join(" / ") || "未声明"}。<br>统计区间：${time(f?.published_from, true)} — ${time(f?.published_until, true)}。非重叠机会 ${num(f?.non_overlapping_opportunities, 0)}，重叠价格观察 ${num(f?.overlapping_price_observations, 0)}。</p>
     <p class="flat-note">前向起点：${time(f?.started_at, true)}。同一机会的 4h 与 24h 是两个观察维度，不是两次独立交易。到期但缺行情的窗口：${num(f?.missing_label_observations, 0)}。<br>V5 消费回执：尚未接入。V5 账户增量收益：尚无同资金对照证据。</p>`;
   const groups = f?.by_group || [];
   $("forward-groups").innerHTML = groups.length ? `<div class="table-scroll"><table class="simple-table"><thead><tr><th>时域</th><th>参考动作</th><th>已成熟</th><th>成本场景净均值</th></tr></thead><tbody>${groups.map(g => `<tr><td>${esc(g.horizon_hours)}h</td><td>${esc(LABELS[g.action] || g.action)}</td><td>${num(g.observations,0)}</td><td>${bps(g.net_mean_bps)}</td></tr>`).join("")}</tbody></table></div>` : `<div class="empty"><strong>尚无成熟的前向观察</strong>参考必须先发布，再经历固定的观察窗口；不会用旧历史结果填充这里。</div>`;

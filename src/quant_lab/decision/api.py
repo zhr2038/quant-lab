@@ -9,7 +9,7 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, JSONResponse
 
-from quant_lab.decision.contracts import Advice, AnalysisResult
+from quant_lab.decision.contracts_v2 import parse_advice, parse_result
 from quant_lab.decision.engine import advice_identity
 from quant_lab.decision.server_status import server_status
 from quant_lab.decision.storage import (
@@ -75,7 +75,7 @@ def install_routes(app: FastAPI, lake_root: Callable[[], Path]) -> None:
                 )
             )
             verify_payload(raw, raw["signature"], key)
-            result = AnalysisResult.model_validate(raw)
+            result = parse_result(raw)
             if result.result_id != result_identity(result) or any(
                 a.advice_id != advice_identity(a) for a in result.advice
             ):
@@ -106,7 +106,7 @@ def install_routes(app: FastAPI, lake_root: Callable[[], Path]) -> None:
             raise HTTPException(404, "Reference not in hot storage; consult NAS archive")
         try:
             raw = read_json(path, max_bytes=64 * 1024)
-            advice = Advice.model_validate(raw["advice"])
+            advice = parse_advice(raw["advice"])
             if advice.advice_id != advice_id or advice_identity(advice) != advice_id:
                 raise ValueError("detail identity mismatch")
             value = advice.model_dump(mode="json")

@@ -11,6 +11,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from pydantic import BaseModel
 
 from quant_lab.decision.contracts import AnalysisResult, InputSnapshot
+from quant_lab.decision.contracts_v2 import parse_result
 from quant_lab.decision.engine import advice_identity, content_hash
 from quant_lab.export_plane.signatures import verify_payload
 
@@ -82,7 +83,7 @@ def load_result(path: Path, key: Ed25519PublicKey) -> AnalysisResult:
 
 def validate_result(value: dict[str, Any], key: Ed25519PublicKey) -> AnalysisResult:
     verify_payload(value, str(value.get("signature", "")), key)
-    result = AnalysisResult.model_validate(value)
+    result = parse_result(value)
     if result.result_id != result_identity(result):
         raise ValueError("result content identity mismatch")
     if any(advice.advice_id != advice_identity(advice) for advice in result.advice):

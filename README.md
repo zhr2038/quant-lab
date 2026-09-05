@@ -22,7 +22,7 @@
 - `/` 为新交易参考 Web；`GET /v1/trade-advice/latest` 和按 `advice_id` 查询的详情复用现有鉴权。在线请求只读 Gold 紧凑发布结果。旧 `/web-v2` 页面和专家包操作仍返回 HTTP 410。
 - 遥测仅沉淀事实和运行健康。显式请求旧 candidate Gold 生成会在写入前报错。
 
-新参考有 4h / 24h 两个观察时域；动作为等待、复核入场、保持原规则或暂无观点。全部为 `research_only`、`live_order_effect=none`。历史净均值扣除当前 20 USDT 名义金额的往返成本假设，不是预测胜率或账户收益。V5 自动采纳与同资金对照尚未接入，页面明确展示此状态。设计、部署及回滚见 [decision-workbench.md](docs/decision-workbench.md)。
+新参考有 4h / 24h 两个观察时域；动作为等待、复核入场、保持原规则或暂无观点。全部为 `research_only`、`live_order_effect=none`。历史净均值扣除当前 20 USDT 名义金额的往返成本假设，不是预测胜率或账户收益。2026-09-06 的 v2 契约区分研究可评估、成本已校准、真实执行资格；完整且有效的估算成本可支持独立研究候选，仍不冒充实盘成交样本。V5 新消费器只落盘，自己的同资金对照独立记账；中台未接入 V5 回执上传和账户收益，页面不能显示已自动采纳。设计、部署及回滚见 [decision-workbench.md](docs/decision-workbench.md)。
 
 ## 数据与恢复
 

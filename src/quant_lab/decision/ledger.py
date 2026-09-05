@@ -18,6 +18,7 @@ from quant_lab.decision.contracts_v2 import STRATEGY_VERSION, ScopedForwardSumma
 
 class Ledger:
     def __init__(self, path: Path):
+        self.legacy_replay_preserved = 0
         path.parent.mkdir(parents=True, exist_ok=True)
         self.con = duckdb.connect(str(path), config={"memory_limit": "256MB", "threads": "1"})
         self.con.execute("SET TimeZone='UTC'")
@@ -64,7 +65,18 @@ class Ledger:
     def __exit__(self, *_):
         self.con.close()
 
-    def register(self, result: AnalysisResult, *, published_at: datetime, now: datetime) -> int:
+    def register(
+        self,
+        result: AnalysisResult,
+        *,
+        published_at: datetime,
+        now: datetime,
+        allow_legacy_v1_replay: bool = False,
+    ) -> int:
+        # Only the signed archive reader may request first-observation compatibility.
+        # New v2 experiments retain strict version admission even with this flag.
+        if allow_legacy_v1_replay and result.schema_version != "qlab.decision.result.v1":
+            raise ValueError("legacy replay compatibility requires an archived v1 result")
         if published_at < result.generated_at or published_at > now:
             raise ValueError("publication time is inconsistent with result availability")
         for advice in result.advice:
@@ -75,6 +87,12 @@ class Ledger:
             ).fetchone()
             bound = (getattr(advice, "strategy_version", STRATEGY_VERSION), advice.cost.version)
             if existing is not None and existing != bound:
+                if allow_legacy_v1_replay and existing[0] == bound[0]:
+                    # Retired v1 producers refreshed costs inside an opportunity. The
+                    # old ledger sealed its first publication; never overwrite it or
+                    # reinterpret the later receipt as a new observation.
+                    self.legacy_replay_preserved += 1
+                    continue
                 raise ValueError("opportunity version changed; register a new experiment")
         inserted = 0
         for advice in result.advice:

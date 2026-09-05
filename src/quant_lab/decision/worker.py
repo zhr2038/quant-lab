@@ -255,8 +255,16 @@ def run_worker(
                 archive / "results" / (result_id + ".json"), signing_key.public_key()
             )
             ledger.register(
-                saved, published_at=datetime.fromisoformat(receipt["published_at"]), now=current
+                saved,
+                published_at=datetime.fromisoformat(receipt["published_at"]),
+                now=current,
+                allow_legacy_v1_replay=saved.schema_version == "qlab.decision.result.v1",
             )
+        compatibility_warnings = (
+            [f"LEGACY_V1_REPLAY_PRESERVED_FIRST_OBSERVATION:{ledger.legacy_replay_preserved}"]
+            if ledger.legacy_replay_preserved
+            else []
+        )
         ledger.mature(history, now=current)
         forward = ledger.summary(
             now=current,
@@ -316,7 +324,9 @@ def run_worker(
         history_rows=len(history),
         runtime_seconds=time.perf_counter() - started,
         peak_rss_mib=peak_rss_mib(),
-        warnings=inputs.warnings + (["NO_HISTORY_AVAILABLE"] if not history else []),
+        warnings=inputs.warnings
+        + compatibility_warnings
+        + (["NO_HISTORY_AVAILABLE"] if not history else []),
         signature="pending",
     )
     result = result.model_copy(update={"result_id": result_identity(result)})

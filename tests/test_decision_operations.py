@@ -305,7 +305,42 @@ def test_registered_opportunity_cannot_silently_change_versions(artifacts):
         )
         with pytest.raises(ValueError, match="new experiment"):
             ledger.register(changed, published_at=a["now"], now=a["now"])
+        with pytest.raises(ValueError, match="archived v1"):
+            ledger.register(
+                changed, published_at=a["now"], now=a["now"], allow_legacy_v1_replay=True
+            )
         assert scoped_summary(ledger, a, now=a["now"]).registered_horizon_observations == 2
+
+
+def test_archived_v1_cost_refresh_replay_keeps_first_observation(tmp_path):
+    from pathlib import Path
+
+    from quant_lab.decision.storage import load_result
+    from quant_lab.export_plane.signatures import load_public_key
+
+    fixture = Path(__file__).parent / "fixtures/decision_v1"
+    original = load_result(fixture / "signed-result.json", load_public_key(fixture / "worker.pub"))
+    current = original.generated_at
+    changed = original.model_copy(
+        update={
+            "advice": [
+                a.model_copy(update={"cost": a.cost.model_copy(update={"version": "refreshed"})})
+                for a in original.advice
+            ]
+        }
+    )
+    with Ledger(tmp_path / "archive.duckdb") as ledger:
+        inserted = ledger.register(original, published_at=current, now=current)
+        assert inserted > 0
+        query = "SELECT * FROM observations ORDER BY opportunity,horizon"
+        before = ledger.con.execute(query).fetchall()
+        with pytest.raises(ValueError, match="new experiment"):
+            ledger.register(changed, published_at=current, now=current)
+        assert ledger.register(
+            changed, published_at=current, now=current, allow_legacy_v1_replay=True
+        ) == 0
+        assert ledger.legacy_replay_preserved == inserted
+        assert ledger.con.execute(query).fetchall() == before
 
 
 def test_forward_summary_never_mixes_experiments_or_cost_versions(artifacts):

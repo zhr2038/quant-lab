@@ -312,35 +312,6 @@ def test_analyze_flags_missing_recent_bundle(tmp_path):
     assert "latest bundle is older than 24 hours" in result.warnings
 
 
-def test_analyze_can_skip_candidate_gold_refresh(tmp_path, monkeypatch):
-    lake = tmp_path / "lake"
-    _write_manifest(lake)
-    called: list[str] = []
-
-    monkeypatch.setattr(
-        analyze_module,
-        "_build_candidate_labels_safely",
-        lambda *_args, **_kwargs: called.append("labels"),
-    )
-    monkeypatch.setattr(
-        analyze_module,
-        "_build_alpha_discovery_board_safely",
-        lambda *_args, **_kwargs: called.append("board"),
-    )
-    monkeypatch.setattr(
-        analyze_module,
-        "_build_strategy_evidence_safely",
-        lambda *_args, **_kwargs: called.append("evidence"),
-    )
-
-    result = analyze_v5_telemetry(
-        lake,
-        date="2026-05-10",
-        refresh_candidate_gold=False,
-    )
-
-    assert result.strategy == "v5"
-    assert called == []
 
 
 def test_analyze_detects_high_score_blocked_issue(tmp_path):
@@ -816,18 +787,6 @@ def test_analysis_writes_gold(tmp_path):
     assert health.height == 1
 
 
-def test_analysis_publishes_strategy_evidence_summary(tmp_path):
-    lake = tmp_path / "lake"
-    _write_manifest(lake)
-    _write_candidate_label(lake)
-
-    analyze_v5_telemetry(lake, date="2026-05-10")
-
-    evidence = read_parquet_dataset(lake / "gold/strategy_evidence")
-    assert evidence.height > 0
-    assert {"strategy_candidate", "symbol", "regime_state", "horizon_hours"}.issubset(
-        evidence.columns
-    )
 
 
 def test_analyze_warns_on_consecutive_expired_remote_permissions(tmp_path):

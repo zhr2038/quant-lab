@@ -290,9 +290,11 @@ def ingest_v5_bundle(
     strategy: str = "v5",
     limits: BundleLimits | None = None,
     run_analysis: bool = True,
-    refresh_candidate_gold: bool = True,
+    refresh_candidate_gold: bool = False,
     include_historical_outcomes: bool = True,
 ) -> V5BundleIngestResult:
+    if refresh_candidate_gold:
+        raise ValueError("Candidate research producers retired on 2026-09-05; ingest facts only")
     effective_limits = limits or BundleLimits()
     validation = validate_v5_bundle(bundle_path, effective_limits)
     if validation.rejected or validation.sha256 is None:
@@ -406,9 +408,7 @@ def ingest_v5_bundle(
             include_historical_outcomes=include_historical_outcomes,
         )
         warnings = prune_warnings + warnings
-        candidate_gold_rows = (
-            _write_candidate_gold(lake_root, bundle_day) if refresh_candidate_gold else {}
-        )
+        candidate_gold_rows = {}
 
     analysis = None
     if run_analysis:
@@ -449,9 +449,11 @@ def ingest_v5_inbox(
     newest_first: bool = False,
     max_skipped_files_reported: int | None = None,
     run_analysis: bool = True,
-    refresh_candidate_gold: bool = True,
+    refresh_candidate_gold: bool = False,
     include_historical_outcomes: bool = True,
 ) -> V5InboxIngestResult:
+    if refresh_candidate_gold:
+        raise ValueError("Candidate research producers retired on 2026-09-05; ingest facts only")
     processed: list[V5BundleIngestResult] = []
     skipped: list[str] = []
     warnings: list[str] = []
@@ -841,20 +843,6 @@ def _prune_historical_outcome_files(extracted_dir: Path) -> list[str]:
     return pruned
 
 
-def _write_candidate_gold(lake_root: Path, bundle_day: str) -> dict[str, int]:
-    from quant_lab.research.alpha_discovery import build_and_publish_alpha_discovery_board
-    from quant_lab.research.candidate_labels import build_and_publish_candidate_labels
-
-    result = build_and_publish_candidate_labels(lake_root, as_of_date=bundle_day)
-    board = build_and_publish_alpha_discovery_board(lake_root, as_of_date=bundle_day)
-    return {
-        "v5_candidate_label": result.candidate_label_rows,
-        "v5_candidate_quality_daily": result.candidate_quality_rows,
-        "v5_candidate_outcome_summary": result.candidate_outcome_summary_rows,
-        "alpha_discovery_board": board.alpha_discovery_board_rows,
-    }
-
-
 def _append_file_rows(
     rows: dict[str, list[dict[str, Any]]],
     file_path: Path,
@@ -1004,9 +992,7 @@ def _append_file_rows(
                 ),
                 "open_paper_position_count": int(payload.get("open_paper_position_count") or 0),
                 "proposal_snapshot_id": str(payload.get("proposal_snapshot_id") or ""),
-                "proposal_snapshot_sha256": str(
-                    payload.get("proposal_snapshot_sha256") or ""
-                ),
+                "proposal_snapshot_sha256": str(payload.get("proposal_snapshot_sha256") or ""),
                 "proposal_content_snapshot_id": str(
                     payload.get("proposal_content_snapshot_id") or ""
                 ),
@@ -1019,14 +1005,10 @@ def _append_file_rows(
                     or ""
                 ),
                 "proposal_snapshot_fetched_at": str(
-                    payload.get("proposal_snapshot_fetched_at")
-                    or payload.get("fetched_at")
-                    or ""
+                    payload.get("proposal_snapshot_fetched_at") or payload.get("fetched_at") or ""
                 ),
                 "proposal_snapshot_count": int(
-                    payload.get("proposal_snapshot_count")
-                    or payload.get("proposal_count")
-                    or 0
+                    payload.get("proposal_snapshot_count") or payload.get("proposal_count") or 0
                 ),
                 "quant_lab_contract_version": str(
                     payload.get("quant_lab_contract_version")
@@ -1034,9 +1016,7 @@ def _append_file_rows(
                     or ""
                 ),
                 "last_evaluated_at": str(payload.get("last_evaluated_at") or ""),
-                "last_consumed_by_v5_at": str(
-                    payload.get("last_consumed_by_v5_at") or ""
-                ),
+                "last_consumed_by_v5_at": str(payload.get("last_consumed_by_v5_at") or ""),
                 "cohort_id": str(payload.get("cohort_id") or ""),
                 "cohort_version": int(payload.get("cohort_version") or 0),
                 "cohort_observation_start_at": str(
@@ -1046,9 +1026,7 @@ def _append_file_rows(
                 "cohort_proposal_content_snapshot_sha256": str(
                     payload.get("cohort_proposal_content_snapshot_sha256") or ""
                 ),
-                "cohort_last_evaluated_at": str(
-                    payload.get("cohort_last_evaluated_at") or ""
-                ),
+                "cohort_last_evaluated_at": str(payload.get("cohort_last_evaluated_at") or ""),
                 "real_order_calls": int(payload.get("real_order_calls") or 0),
                 "real_position_mutations": int(payload.get("real_position_mutations") or 0),
                 "generated_at": str(payload.get("generated_at") or ""),

@@ -1,11 +1,9 @@
 import json
 from datetime import UTC, datetime
-from types import SimpleNamespace
 
 import polars as pl
 from typer.testing import CliRunner
 
-import quant_lab.cli as cli_module
 from quant_lab.cli import app
 from quant_lab.data.lake import write_parquet_dataset
 
@@ -54,37 +52,6 @@ def test_data_quality_command_outputs_full_json(tmp_path):
     assert any(check["rule"] == "cost_negative_bps" for check in payload["checks"])
 
 
-def test_export_daily_cli_does_not_refresh_risk_permission_by_default(monkeypatch, tmp_path):
-    captured = {}
-
-    def fake_run_with_job_metrics(*, lake_root, job_name, func):
-        captured["job_name"] = job_name
-        captured["lake_root"] = lake_root
-        return func()
-
-    def fake_export_daily_pack(**kwargs):
-        captured.update(kwargs)
-        return SimpleNamespace(model_dump_json=lambda indent=None: json.dumps({"ok": True}))
-
-    monkeypatch.setattr("quant_lab.cli.run_with_job_metrics", fake_run_with_job_metrics)
-    monkeypatch.setattr("quant_lab.cli.export_daily_pack", fake_export_daily_pack)
-
-    result = runner.invoke(
-        app,
-        [
-            "export-daily",
-            "--date",
-            "2026-06-03",
-            "--lake-root",
-            str(tmp_path / "lake"),
-            "--out-dir",
-            str(tmp_path / "exports"),
-        ],
-    )
-
-    assert result.exit_code == 0
-    assert captured["job_name"] == "export-daily"
-    assert captured["refresh_risk_permission"] is False
 
 
 def test_data_quality_command_dataset_filter_runs_only_requested_dataset(tmp_path):
@@ -193,40 +160,3 @@ def test_lake_health_include_quality_compact_outputs_quality_summary(tmp_path):
     assert "data_quality" in payload
     assert payload["data_quality"]["dataset_count"] == 1
     assert "checks" not in payload["data_quality"]
-
-
-def test_lake_health_persists_health_before_refreshing_web_index(tmp_path, monkeypatch):
-    events: list[str] = []
-
-    def write_health(_lake_root):
-        events.append("health")
-        return {
-            "dataset_count": 0,
-            "total_parquet_files": 0,
-            "warning_count": 0,
-            "rows": [],
-        }
-
-    def refresh_index(_lake_root):
-        events.append("index")
-        return {
-            "dataset_count": 0,
-            "indexed_rows": 0,
-            "metadata_only_dataset_count": 0,
-        }
-
-    monkeypatch.setattr(cli_module, "write_lake_file_health_daily", write_health)
-    monkeypatch.setattr(cli_module, "_refresh_web_file_index", refresh_index)
-
-    result = runner.invoke(
-        app,
-        [
-            "lake-health",
-            "--lake-root",
-            str(tmp_path / "lake"),
-            "--compact-output",
-        ],
-    )
-
-    assert result.exit_code == 0
-    assert events == ["health", "index"]

@@ -4,21 +4,18 @@ set -euo pipefail
 CLOUD_HOST="${QUANT_ARCHIVE_CLOUD_HOST:-qyun2.hrhome.top}"
 CLOUD_PORT="${QUANT_ARCHIVE_CLOUD_PORT:-22}"
 CLOUD_USER="${QUANT_ARCHIVE_CLOUD_USER:-quant-research}"
-SSH_KEY="${QUANT_ARCHIVE_SSH_KEY:-/volume1/docker/quant-research/secrets/id_ed25519}"
-KNOWN_HOSTS="${QUANT_ARCHIVE_KNOWN_HOSTS:-/volume1/docker/quant-research/secrets/known_hosts}"
+SSH_KEY="${QUANT_ARCHIVE_SSH_KEY:-/volume2/quant-lab/ops/private/id_ed25519}"
+KNOWN_HOSTS="${QUANT_ARCHIVE_KNOWN_HOSTS:-/volume2/quant-lab/ops/private/known_hosts}"
 SOURCE_ROOT="${QUANT_ARCHIVE_SOURCE_ROOT:-/var/lib/quant-lab/archive/v5/bundles}"
-DEST_ROOT="${QUANT_ARCHIVE_DEST_ROOT:-/volume1/docker/quant-archive/qyun2/redacted-v5}"
-AUDIT_ROOT="${QUANT_ARCHIVE_AUDIT_ROOT:-/volume1/docker/quant-archive/qyun2/audit}"
-RETENTION_DAYS="${QUANT_ARCHIVE_RETENTION_DAYS:-45}"
+DEST_ROOT="${QUANT_ARCHIVE_DEST_ROOT:-/volume2/quant-lab/archive/current/qyun2/redacted-v5}"
+AUDIT_ROOT="${QUANT_ARCHIVE_AUDIT_ROOT:-/volume2/quant-lab/archive/current/qyun2/audit}"
 TRANSFER_TIMEOUT_SECONDS="${QUANT_ARCHIVE_TRANSFER_TIMEOUT_SECONDS:-10800}"
 
 case "$DEST_ROOT" in
-  /volume1/docker/quant-archive/qyun2/*) ;;
+  /volume2/quant-lab/archive/current/qyun2/*) ;;
   *) echo "unsafe destination root: $DEST_ROOT" >&2; exit 2 ;;
 esac
-case "$RETENTION_DAYS" in
-  ''|*[!0-9]*) echo "invalid retention days" >&2; exit 2 ;;
-esac
+
 
 mkdir -p "$DEST_ROOT" "$AUDIT_ROOT"
 exec 9>"$AUDIT_ROOT/redacted-v5.lock"
@@ -96,20 +93,5 @@ for day in "${source_days[@]}"; do
   trap - EXIT
 done
 
-cutoff="$(python3 - "$RETENTION_DAYS" <<'PY'
-from datetime import UTC, datetime, timedelta
-import sys
-
-print((datetime.now(UTC) - timedelta(days=int(sys.argv[1]))).date().isoformat())
-PY
-)"
-for archived in "$DEST_ROOT"/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]; do
-  [[ -d "$archived" ]] || continue
-  day="${archived##*/}"
-  [[ "$day" < "$cutoff" ]] || continue
-  removed_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  removed_bytes="$(du -sb "$archived" | awk '{print $1}')"
-  rm -rf -- "$archived"
-  printf '{"event":"retention_removed","day":"%s","byte_count":%s,"removed_at":"%s"}\n' \
-    "$day" "$removed_bytes" "$removed_at" >>"$AUDIT_LOG"
-done
+# Historical records are retained permanently; capacity review is explicit.
+echo "ARCHIVE_COMPLETE_HISTORY_RETAINED"

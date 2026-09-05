@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from datetime import UTC, datetime, timedelta
 
 from quant_lab.data.lake import read_parquet_dataset, write_market_bars
@@ -8,7 +7,7 @@ from quant_lab.strategy_telemetry.ingest import ingest_v5_bundle
 from tests.v5_bundle_fixture import make_tar
 
 
-def test_ingest_candidate_snapshot_writes_silver_events_and_gold_labels(tmp_path):
+def test_ingest_candidate_snapshot_preserves_facts_without_restarting_research(tmp_path):
     bundle = make_tar(
         tmp_path / "v5_live_followup_bundle_20260510T140249Z.tar.gz",
         {
@@ -56,18 +55,11 @@ def test_ingest_candidate_snapshot_writes_silver_events_and_gold_labels(tmp_path
     assert result.validation.valid is True
     events = read_parquet_dataset(lake / "silver/v5_candidate_event")
     labels = read_parquet_dataset(lake / "gold/v5_candidate_label")
-    quality = read_parquet_dataset(lake / "gold/v5_candidate_quality_daily")
+    assert labels.is_empty()
+    assert not (lake / "gold/v5_candidate_quality_daily").exists()
     assert events.height == 1
     assert events["candidate_id"][0] == "cand_bnb_001"
     assert events["symbol"][0] == "BNB-USDT"
-    assert set(labels["horizon_hours"].to_list()) == {4, 8, 12, 24, 48, 72, 120}
-    assert labels.filter(labels["horizon_hours"] == 4)["gross_bps"][0] > 0
-    assert labels.filter(labels["horizon_hours"] == 4)["net_bps_after_cost"][0] > 0
-    assert quality["candidate_event_rows"][0] == 1
-    assert quality["feature_completeness"][0] == 1.0
-    assert quality["required_feature_completeness"][0] == 1.0
-    assert quality["label_completeness"][0] == 1.0
-    assert quality["cost_source_coverage"][0] == 1.0
     assert events["cost_source"][0] == "public_spread_proxy"
     assert events["cost_bps"][0] == "5"
 
@@ -109,7 +101,6 @@ def test_ingest_candidate_snapshot_preserves_many_cost_sources_and_candidates(tm
     result = ingest_v5_bundle(bundle, lake, tmp_path / "restricted", tmp_path / "redacted")
 
     events = read_parquet_dataset(lake / "silver/v5_candidate_event")
-    quality = read_parquet_dataset(lake / "gold/v5_candidate_quality_daily").to_dicts()[0]
     assert result.silver_rows["v5_candidate_event"] == 112
     assert events.height == 112
     assert events["candidate_id"].n_unique() == 112
@@ -122,8 +113,3 @@ def test_ingest_candidate_snapshot_preserves_many_cost_sources_and_candidates(tm
     assert "cost_model_version" in events.columns
     assert "cost_gate_verified" in events.columns
     assert "would_block_by_cost" in events.columns
-    assert quality["candidate_event_rows"] == 112
-    assert quality["cost_source_coverage"] > 0.8
-    quality_counts = json.loads(quality["cost_source_quality_counts"])
-    assert quality_counts["covered"] == 112
-    assert quality_counts["missing"] == 0

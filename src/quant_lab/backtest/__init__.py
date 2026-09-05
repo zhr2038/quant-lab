@@ -1,5 +1,5 @@
-"""Read-only research backtest helpers for quant-lab exports."""
+"""Reusable deterministic backtest kernel; legacy report products retired."""
 
-from quant_lab.backtest.reports import BacktestReportBundle, build_backtest_report_bundle
+from quant_lab.backtest.engine import BacktestEngine
 
-__all__ = ["BacktestReportBundle", "build_backtest_report_bundle"]
+__all__ = ["BacktestEngine"]

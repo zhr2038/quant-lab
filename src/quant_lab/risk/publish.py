@@ -22,8 +22,8 @@ from quant_lab.risk.advisory import (
     json_list,
     required_gate_decisions,
 )
+from quant_lab.risk.legacy_trade_summary import trade_level_risk_summary
 from quant_lab.risk.permissions import evaluate_live_permission
-from quant_lab.trade_level.judgment import trade_level_risk_summary
 
 GATE_DECISION_DATASET = Path("gold") / "gate_decision"
 RISK_PERMISSION_DATASET = Path("gold") / "risk_permission"

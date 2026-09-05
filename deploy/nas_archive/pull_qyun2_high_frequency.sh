@@ -4,15 +4,15 @@ set -euo pipefail
 CLOUD_HOST="${QUANT_ARCHIVE_CLOUD_HOST:-qyun2.hrhome.top}"
 CLOUD_PORT="${QUANT_ARCHIVE_CLOUD_PORT:-22}"
 CLOUD_USER="${QUANT_ARCHIVE_CLOUD_USER:-quant-research}"
-SSH_KEY="${QUANT_ARCHIVE_SSH_KEY:-/volume1/docker/quant-research/secrets/id_ed25519}"
-KNOWN_HOSTS="${QUANT_ARCHIVE_KNOWN_HOSTS:-/volume1/docker/quant-research/secrets/known_hosts}"
+SSH_KEY="${QUANT_ARCHIVE_SSH_KEY:-/volume2/quant-lab/ops/private/id_ed25519}"
+KNOWN_HOSTS="${QUANT_ARCHIVE_KNOWN_HOSTS:-/volume2/quant-lab/ops/private/known_hosts}"
 SOURCE_ROOT="${QUANT_ARCHIVE_SOURCE_ROOT:-/var/lib/quant-lab/lake/archive/high_frequency}"
-DEST_ROOT="${QUANT_ARCHIVE_DEST_ROOT:-/volume1/docker/quant-archive/qyun2/high-frequency}"
-AUDIT_ROOT="${QUANT_ARCHIVE_AUDIT_ROOT:-/volume1/docker/quant-archive/qyun2/audit}"
+DEST_ROOT="${QUANT_ARCHIVE_DEST_ROOT:-/volume2/quant-lab/archive/current/qyun2/high-frequency}"
+AUDIT_ROOT="${QUANT_ARCHIVE_AUDIT_ROOT:-/volume2/quant-lab/archive/current/qyun2/audit}"
 REMOTE_PRUNE_SCRIPT="${QUANT_ARCHIVE_REMOTE_PRUNE_SCRIPT:-/opt/quant-lab/deploy/nas_archive/prune_verified_high_frequency_archive.py}"
 TRANSFER_ATTEMPT_TIMEOUT_SECONDS="${QUANT_ARCHIVE_TRANSFER_ATTEMPT_TIMEOUT_SECONDS:-180}"
 TRANSFER_MAX_ATTEMPTS="${QUANT_ARCHIVE_TRANSFER_MAX_ATTEMPTS:-20}"
-TRANSFER_STREAMS="${QUANT_ARCHIVE_TRANSFER_STREAMS:-12}"
+TRANSFER_STREAMS="${QUANT_ARCHIVE_TRANSFER_STREAMS:-2}"
 DATASETS=(
   "bronze/okx_public_ws"
   "silver/orderbook_snapshot"
@@ -20,7 +20,7 @@ DATASETS=(
 )
 
 case "$DEST_ROOT" in
-  /volume1/docker/quant-archive/qyun2/*) ;;
+  /volume2/quant-lab/archive/current/qyun2/*) ;;
   *) echo "unsafe destination root: $DEST_ROOT" >&2; exit 2 ;;
 esac
 case "$TRANSFER_ATTEMPT_TIMEOUT_SECONDS" in

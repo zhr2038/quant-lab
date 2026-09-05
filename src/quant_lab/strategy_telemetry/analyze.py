@@ -129,9 +129,7 @@ def _filter_analysis_window(
         day = datetime.fromisoformat(str(analysis_date)[:10]).date()
     except ValueError:
         return lazy
-    start = datetime.combine(day, datetime.min.time(), tzinfo=UTC) - timedelta(
-        days=lookback_days
-    )
+    start = datetime.combine(day, datetime.min.time(), tzinfo=UTC) - timedelta(days=lookback_days)
     end = datetime.combine(day + timedelta(days=1), datetime.min.time(), tzinfo=UTC)
     return lazy.with_columns(time_expr.alias("_analysis_ts")).filter(
         (pl.col("_analysis_ts") >= start) & (pl.col("_analysis_ts") < end)
@@ -164,8 +162,10 @@ def analyze_v5_telemetry(
     lake_root: Path,
     date: str | None = None,
     *,
-    refresh_candidate_gold: bool = True,
+    refresh_candidate_gold: bool = False,
 ) -> V5TelemetryAnalysisResult:
+    if refresh_candidate_gold:
+        raise ValueError("Candidate research producers retired on 2026-09-05; ingest facts only")
     root = Path(lake_root)
     analysis_date = date or datetime.now(UTC).date().isoformat()
     lookback_days = _analysis_lookback_days()
@@ -644,9 +644,7 @@ def analyze_v5_telemetry(
         duplicate_event_rows=int(quant_lab_summary["duplicate_event_rows"]),
         duplicate_rate=float(quant_lab_summary["duplicate_rate"]),
         exact_duplicate_event_rows=int(quant_lab_summary["exact_duplicate_event_rows"]),
-        conflicting_duplicate_event_rows=int(
-            quant_lab_summary["conflicting_duplicate_event_rows"]
-        ),
+        conflicting_duplicate_event_rows=int(quant_lab_summary["conflicting_duplicate_event_rows"]),
         conflicting_duplicate_event_key_count=int(
             quant_lab_summary["conflicting_duplicate_event_key_count"]
         ),
@@ -656,9 +654,7 @@ def analyze_v5_telemetry(
         latest_permission_status=quant_lab_summary["latest_permission_status"],
         stale_permission_consecutive_count=stale_permission_count,
         quant_lab_actual_violation_count=len(quant_lab_summary["actual_violations"]),
-        quant_lab_hypothetical_violation_count=len(
-            quant_lab_summary["hypothetical_violations"]
-        ),
+        quant_lab_hypothetical_violation_count=len(quant_lab_summary["hypothetical_violations"]),
         warnings=warnings,
         critical_reasons=critical,
         next_actions=sorted(set(next_actions)),
@@ -675,11 +671,6 @@ def analyze_v5_telemetry(
         analysis_date=analysis_date,
         lookback_days=lookback_days,
     )
-    if refresh_candidate_gold:
-        _build_candidate_labels_safely(root, analysis_date)
-        _build_alpha_discovery_board_safely(root, analysis_date)
-        _build_strategy_evidence_safely(root, analysis_date)
-        _build_entry_quality_safely(root, analysis_date)
     return result
 
 
@@ -749,16 +740,20 @@ def _repair_gold_mirror_if_needed(
     gold_rows = _dataset_row_count(gold_path)
     silver_latest = _latest_dataset_time(silver_path)
     gold_latest = _latest_dataset_time(gold_path)
-    inconsistent = gold_rows > silver_rows or (
-        gold_rows == silver_rows
-        and silver_latest is not None
-        and gold_latest is not None
-        and silver_latest != gold_latest
-    ) or (
-        0 < gold_rows < silver_rows
-        and silver_latest is not None
-        and gold_latest is not None
-        and silver_latest == gold_latest
+    inconsistent = (
+        gold_rows > silver_rows
+        or (
+            gold_rows == silver_rows
+            and silver_latest is not None
+            and gold_latest is not None
+            and silver_latest != gold_latest
+        )
+        or (
+            0 < gold_rows < silver_rows
+            and silver_latest is not None
+            and gold_latest is not None
+            and silver_latest == gold_latest
+        )
     )
     if not inconsistent:
         return False
@@ -854,16 +849,11 @@ def _write_gold_snapshot_meta(path: Path, dataset_name: str) -> None:
         candidate
         for candidate in path.rglob("*.parquet")
         if candidate.is_file()
-        and all(
-            not part.startswith((".", "__"))
-            for part in candidate.relative_to(path).parts
-        )
+        and all(not part.startswith((".", "__")) for part in candidate.relative_to(path).parts)
     )
     latest = _latest_dataset_time(path)
     generated_at = (
-        latest.astimezone(UTC).isoformat().replace("+00:00", "Z")
-        if latest is not None
-        else ""
+        latest.astimezone(UTC).isoformat().replace("+00:00", "Z") if latest is not None else ""
     )
     row_count = _dataset_row_count(path)
     digest = hashlib.sha256()
@@ -904,9 +894,7 @@ def _with_bundle_day(frame: pl.DataFrame, analysis_date: str) -> pl.DataFrame:
     if not candidates:
         return frame.with_columns(pl.lit(str(analysis_date)[:10]).alias("bundle_day"))
     expressions = [
-        pl.col(column)
-        .cast(pl.Utf8, strict=False)
-        .str.to_datetime(time_zone="UTC", strict=False)
+        pl.col(column).cast(pl.Utf8, strict=False).str.to_datetime(time_zone="UTC", strict=False)
         for column in candidates
     ]
     return frame.with_columns(
@@ -927,9 +915,7 @@ def _with_bundle_day_lazy(frame: pl.LazyFrame, analysis_date: str) -> pl.LazyFra
     if not candidates:
         return frame.with_columns(pl.lit(str(analysis_date)[:10]).alias("bundle_day"))
     expressions = [
-        pl.col(column)
-        .cast(pl.Utf8, strict=False)
-        .str.to_datetime(time_zone="UTC", strict=False)
+        pl.col(column).cast(pl.Utf8, strict=False).str.to_datetime(time_zone="UTC", strict=False)
         for column in candidates
     ]
     return frame.with_columns(
@@ -974,49 +960,6 @@ def _latest_bnb_paper_strategy_daily(frame: pl.DataFrame) -> pl.DataFrame:
         .group_by(key_columns, maintain_order=True)
         .tail(1)
     )
-
-
-def _build_candidate_labels_safely(lake_root: Path, analysis_date: str) -> None:
-    try:
-        from quant_lab.research.candidate_labels import build_and_publish_candidate_labels
-
-        build_and_publish_candidate_labels(lake_root, as_of_date=analysis_date)
-    except Exception:
-        # V5 telemetry health must remain available even if candidate snapshots
-        # or forward market bars are incomplete.
-        return
-
-
-def _build_alpha_discovery_board_safely(lake_root: Path, analysis_date: str) -> None:
-    try:
-        from quant_lab.research.alpha_discovery import build_and_publish_alpha_discovery_board
-
-        build_and_publish_alpha_discovery_board(lake_root, as_of_date=analysis_date)
-    except Exception:
-        # Strategy telemetry analysis should not fail if the candidate research
-        # board is waiting on forward labels or cost context.
-        return
-
-
-def _build_strategy_evidence_safely(lake_root: Path, analysis_date: str) -> None:
-    try:
-        from quant_lab.research.strategy_evidence import build_and_publish_strategy_evidence
-
-        build_and_publish_strategy_evidence(lake_root, as_of_date=analysis_date)
-    except Exception:
-        # V5 telemetry health must remain available even if research evidence inputs
-        # are incomplete or a future bundle adds an unexpected telemetry shape.
-        return
-
-
-def _build_entry_quality_safely(lake_root: Path, analysis_date: str) -> None:
-    try:
-        from quant_lab.research.entry_quality import build_and_publish_entry_quality
-
-        build_and_publish_entry_quality(lake_root, as_of_date=analysis_date)
-    except Exception:
-        # Entry quality is advisory-only and must not break telemetry health.
-        return
 
 
 def _write_gold(
@@ -1065,9 +1008,7 @@ def _write_gold(
                 "unique_request_count": quant_lab_summary["unique_request_count"],
                 "unique_success_count": quant_lab_summary["unique_success_count"],
                 "unique_error_count": quant_lab_summary["unique_error_count"],
-                "unique_actual_fallback_count": quant_lab_summary[
-                    "unique_actual_fallback_count"
-                ],
+                "unique_actual_fallback_count": quant_lab_summary["unique_actual_fallback_count"],
                 "request_success_count": quant_lab_summary["request_success_count"],
                 "request_error_count": quant_lab_summary["request_error_count"],
                 "actual_fallback_count": quant_lab_summary["actual_fallback_count"],
@@ -1103,9 +1044,7 @@ def _write_gold(
                 "permission_gate_enforced": quant_lab_summary["permission_gate_enforced"],
                 "cost_gate_enforced": quant_lab_summary["cost_gate_enforced"],
                 "actual_violation_count": len(quant_lab_summary["actual_violations"]),
-                "hypothetical_violation_count": len(
-                    quant_lab_summary["hypothetical_violations"]
-                ),
+                "hypothetical_violation_count": len(quant_lab_summary["hypothetical_violations"]),
                 "actual_violations_json": json.dumps(
                     quant_lab_summary["actual_violations"],
                     sort_keys=True,
@@ -1207,7 +1146,9 @@ def _window_summary_payload(df: pl.DataFrame) -> dict[str, Any]:
     candidates = df
     if "source_path_inside_bundle" in df.columns:
         candidates = df.filter(
-            pl.col("source_path_inside_bundle").cast(pl.Utf8).str.contains(
+            pl.col("source_path_inside_bundle")
+            .cast(pl.Utf8)
+            .str.contains(
                 "summaries/window_summary.json",
                 literal=True,
             )
@@ -1249,7 +1190,9 @@ def _count_recent_rows(
     filtered = df
     if exclude_source_path and "source_path_inside_bundle" in filtered.columns:
         filtered = filtered.filter(
-            ~pl.col("source_path_inside_bundle").cast(pl.Utf8).str.contains(
+            ~pl.col("source_path_inside_bundle")
+            .cast(pl.Utf8)
+            .str.contains(
                 exclude_source_path,
                 literal=True,
             )
@@ -1381,12 +1324,7 @@ def _config_not_consumed_expr(df: pl.DataFrame) -> pl.Expr:
 
 
 def _non_empty_utf8_expr(column: str) -> pl.Expr:
-    return (
-        pl.col(column)
-        .cast(pl.Utf8, strict=False)
-        .str.strip_chars()
-        .replace("", None)
-    )
+    return pl.col(column).cast(pl.Utf8, strict=False).str.strip_chars().replace("", None)
 
 
 def _first_text(
@@ -1498,9 +1436,7 @@ def _quant_lab_mode_summary(
         "cost_usage_count": cost_usage.height,
         "fallback_count": request_health["actual_fallback_count"],
         "latest_permission_status": request_health["latest_permission_status"],
-        "stale_permission_consecutive_count": request_health[
-            "stale_permission_consecutive_count"
-        ],
+        "stale_permission_consecutive_count": request_health["stale_permission_consecutive_count"],
         "actual_violations": sorted(set(actual)),
         "hypothetical_violations": sorted(set(hypothetical)),
     }
@@ -1547,10 +1483,7 @@ def _quant_lab_request_health(
     raw_imported_rows = _raw_event_row_count_from_rows(
         request_rows
     ) + _raw_event_row_count_from_rows(fallback_rows)
-    unique_event_keys = {
-        _event_key(row)
-        for row in [*request_rows, *fallback_rows]
-    }
+    unique_event_keys = {_event_key(row) for row in [*request_rows, *fallback_rows]}
     unique_event_rows = len(unique_event_keys)
     duplicate_event_rows = max(raw_imported_rows - unique_event_rows, 0)
     duplicate_rate = duplicate_event_rows / raw_imported_rows if raw_imported_rows else 0.0
@@ -1558,9 +1491,7 @@ def _quant_lab_request_health(
         [*request_rows, *fallback_rows],
         duplicate_event_rows=duplicate_event_rows,
     )
-    first_seen, last_seen = _event_seen_range(
-        [*request_rows, *fallback_rows]
-    )
+    first_seen, last_seen = _event_seen_range([*request_rows, *fallback_rows])
     if actual_fallback_count:
         degraded_reason = "actual_fallback_present"
     elif error_count:
@@ -1586,9 +1517,7 @@ def _quant_lab_request_health(
         "duplicate_event_rows": duplicate_event_rows,
         "duplicate_rate": duplicate_rate,
         "exact_duplicate_event_rows": duplicate_breakdown["exact_duplicate_event_rows"],
-        "conflicting_duplicate_event_rows": duplicate_breakdown[
-            "conflicting_duplicate_event_rows"
-        ],
+        "conflicting_duplicate_event_rows": duplicate_breakdown["conflicting_duplicate_event_rows"],
         "conflicting_duplicate_event_key_count": duplicate_breakdown[
             "conflicting_duplicate_event_key_count"
         ],
@@ -1612,11 +1541,7 @@ def _analysis_day_event_rows(
         return list(rows)
     start = datetime.combine(day, datetime.min.time(), tzinfo=UTC)
     end = start + timedelta(days=1)
-    return [
-        row
-        for row in rows
-        if start <= _request_event_time(row) < end
-    ]
+    return [row for row in rows if start <= _request_event_time(row) < end]
 
 
 def _duplicate_event_breakdown(
@@ -1628,9 +1553,8 @@ def _duplicate_event_breakdown(
     conflicting_keys = 0
     for row in rows:
         current_source_count = _row_current_source_count(row)
-        if (
-            current_source_count > 1
-            and (_boolish(row.get("conflicting_duplicate")) or _payload_hash_count(row) > 1)
+        if current_source_count > 1 and (
+            _boolish(row.get("conflicting_duplicate")) or _payload_hash_count(row) > 1
         ):
             conflicting_keys += 1
             conflicting_rows += max(current_source_count - 1, 0)
@@ -1765,11 +1689,7 @@ def _event_key(row: dict[str, Any]) -> str:
             "strategy_id": str(fields.get("strategy_id") or "").strip(),
             "event_id": event_id,
         }
-    elif (
-        fields.get("endpoint_path")
-        and fields.get("ts_utc")
-        and fields.get("error_type")
-    ):
+    elif fields.get("endpoint_path") and fields.get("ts_utc") and fields.get("error_type"):
         fields.pop("run_id", None)
         fields.pop("fallback_used", None)
     fields.pop("raw_payload_hash", None)
@@ -1787,8 +1707,7 @@ def _event_key_fields(row: dict[str, Any], payload: dict[str, Any]) -> dict[str,
         )
     )
     strategy_id = _event_clean_text(
-        _first_value(row, payload, ["strategy_id", "strategyId", "strategy"])
-        or row.get("strategy")
+        _first_value(row, payload, ["strategy_id", "strategyId", "strategy"]) or row.get("strategy")
     )
     event_id = _event_clean_text(
         _first_value(row, payload, ["event_id", "eventId", "source_event_id"])
@@ -1825,8 +1744,7 @@ def _event_key_fields(row: dict[str, Any], payload: dict[str, Any]) -> dict[str,
         ),
         "status_code": "" if status_code is None else str(status_code),
         "error_type": str(
-            _first_value(row, payload, ["error_type", "exception_type", "error", "exception"])
-            or ""
+            _first_value(row, payload, ["error_type", "exception_type", "error", "exception"]) or ""
         ).strip(),
         "request_id": str(
             _first_value(row, payload, ["request_id", "trace_id", "id", "uuid"]) or ""
@@ -2119,11 +2037,14 @@ def _request_is_actual_fallback(row: dict[str, Any], payload: dict[str, Any]) ->
 
 
 def _request_fallback_used(row: dict[str, Any], payload: dict[str, Any]) -> bool:
-    return _first_bool(
-        row,
-        payload,
-        ["fallback_used", "used_fallback", "local_fallback"],
-    ) is True
+    return (
+        _first_bool(
+            row,
+            payload,
+            ["fallback_used", "used_fallback", "local_fallback"],
+        )
+        is True
+    )
 
 
 def _request_status_code(row: dict[str, Any], payload: dict[str, Any]) -> int | None:
@@ -2189,9 +2110,7 @@ def _actual_error_text(row: dict[str, Any], payload: dict[str, Any]) -> bool:
 def _non_request_fallback_count(fallback: pl.DataFrame, *, skip_request_sources: bool) -> int:
     if fallback.is_empty() or "source_path_inside_bundle" not in fallback.columns:
         return sum(
-            1
-            for row in fallback.to_dicts()
-            if _fallback_table_row_is_actual(row, _payload(row))
+            1 for row in fallback.to_dicts() if _fallback_table_row_is_actual(row, _payload(row))
         )
     count = 0
     for row in fallback.to_dicts():
@@ -2326,10 +2245,7 @@ def _coalesced_text_series(frame: pl.DataFrame, columns: list[str]) -> pl.Series
     existing = [column for column in columns if column in frame.columns]
     if not existing:
         return None
-    exprs = [
-        pl.col(column).cast(pl.Utf8, strict=False).str.strip_chars()
-        for column in existing
-    ]
+    exprs = [pl.col(column).cast(pl.Utf8, strict=False).str.strip_chars() for column in existing]
     return frame.select(pl.coalesce(exprs).fill_null("").alias("__text"))["__text"]
 
 
@@ -2388,11 +2304,7 @@ def _gate_enforced(
     is_cost_gate = "cost_gate_enforced" in field_names or "apply_cost_gate" in field_names
     if mode in {"shadow", "local_only"} or (mode == "cost_only" and not is_cost_gate):
         return False
-    expanded_fields = [
-        field
-        for name in field_names
-        for field in [name, f"quant_lab.{name}"]
-    ]
+    expanded_fields = [field for name in field_names for field in [name, f"quant_lab.{name}"]]
     for frame in frames:
         if frame.is_empty():
             continue
@@ -2615,12 +2527,7 @@ def _marker_text_row_count(df: pl.DataFrame, markers: list[str]) -> int:
         return 0
     marker_expr = pl.lit(False)
     for column in text_columns:
-        text = (
-            pl.col(column)
-            .cast(pl.Utf8, strict=False)
-            .fill_null("")
-            .str.to_lowercase()
-        )
+        text = pl.col(column).cast(pl.Utf8, strict=False).fill_null("").str.to_lowercase()
         for marker in markers:
             marker_expr = marker_expr | text.str.contains(marker, literal=True)
     return int(df.select(marker_expr.sum()).item() or 0)

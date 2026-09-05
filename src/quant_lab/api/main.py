@@ -8,23 +8,22 @@ import hashlib
 import hmac
 import io
 import json
+import logging
 import os
-import re
 import subprocess
 import threading
 import time
 import zipfile
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
 import polars as pl
 from fastapi import FastAPI, HTTPException, Query, Request, status
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import JSONResponse, RedirectResponse, Response
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.middleware.gzip import GZipMiddleware
 
@@ -34,6 +33,13 @@ from quant_lab.api.cache import (
     ExactKeyCache,
     StrategyOpportunityAdvisoryCache,
     StrategyOpportunityAdvisoryResponseCache,
+)
+from quant_lab.api.legacy_advisory import (
+    ALPHA_FACTORY_CANDIDATES,
+    BOOTSTRAP_GATE_VERSION,
+    portfolio_overridden_decision_mode,
+    portfolio_override_for_row,
+    portfolio_status_overrides_by_identifier,
 )
 from quant_lab.contracts.models import (
     CostEstimate,
@@ -74,13 +80,6 @@ from quant_lab.paper.service import (
     record_ack,
     status_rows,
 )
-from quant_lab.research.advisory_overrides import (
-    portfolio_overridden_decision_mode,
-    portfolio_override_for_row,
-    portfolio_status_overrides_by_identifier,
-)
-from quant_lab.research.alpha_factory import ALPHA_FACTORY_CANDIDATES
-from quant_lab.research.bootstrap_gold import BOOTSTRAP_GATE_VERSION
 from quant_lab.risk.advisory import (
     apply_risk_advisory_context,
     build_risk_advisory_context,
@@ -248,30 +247,13 @@ class StrategyOpportunityAdvisoryRow(BaseModel):
 KNOWN_DATASETS = dataset_names()
 
 
-def _warm_strategy_opportunity_advisory_cache() -> None:
+@asynccontextmanager
+async def _api_lifespan(_: FastAPI) -> AsyncIterator[None]:
+    # Base startup deliberately avoids historical data scans and old Web aggregation.
     try:
         _ensure_risk_permission_dependency_meta(_lake_root())
     except Exception:
-        pass
-    try:
-        _strategy_opportunity_advisory_snapshot(_lake_root())
-    except Exception:
-        pass
-    try:
-        _cost_bucket_snapshot(_lake_root())
-    except Exception:
-        pass
-    try:
-        from quant_lab.web.bigscreen import bigscreen_snapshot
-
-        bigscreen_snapshot(_lake_root())
-    except Exception:
-        pass
-
-
-@asynccontextmanager
-async def _api_lifespan(_: FastAPI) -> AsyncIterator[None]:
-    _warm_strategy_opportunity_advisory_cache()
+        logging.getLogger(__name__).exception("Risk dependency metadata unavailable at startup")
     yield
 
 
@@ -357,9 +339,7 @@ def _set_api_metrics_response_headers(
     cache_ttl_seconds: float,
 ) -> None:
     response.headers["X-Quant-Lab-Api-Cache-Hit"] = "true" if cache_hit else "false"
-    response.headers["X-Quant-Lab-Response-Cache-Hit"] = (
-        "true" if cache_hit else "false"
-    )
+    response.headers["X-Quant-Lab-Response-Cache-Hit"] = "true" if cache_hit else "false"
     response.headers["X-Quant-Lab-Api-Metrics-Compute-Ms"] = f"{float(compute_ms):.3f}"
     response.headers["X-Quant-Lab-Api-Metrics-Cache-TTL-Seconds"] = (
         f"{float(cache_ttl_seconds):.3f}"
@@ -378,7 +358,6 @@ def create_app() -> FastAPI:
         lifespan=_api_lifespan,
     )
     app.add_middleware(GZipMiddleware, minimum_size=1024)
-    _mount_bigscreen_static(app)
 
     @app.middleware("http")
     async def require_bearer_token_and_record_metrics(request: Request, call_next: Any) -> Any:
@@ -406,6 +385,12 @@ def create_app() -> FastAPI:
         try:
             response = await call_next(request)
             status_code = response.status_code
+            response.headers["X-Quant-Lab-Lifecycle"] = "base-with-legacy-read-compat"
+            if any(
+                part in request.url.path
+                for part in ("advisory", "paper-strategy", "promotion", "canary-readiness")
+            ):
+                response.headers["X-Quant-Lab-Legacy-Producer"] = "retired-2026-09-05"
             return response
         except Exception as exc:
             error_type = type(exc).__name__
@@ -453,71 +438,20 @@ def create_app() -> FastAPI:
             "warnings": warnings,
         }
 
-    @app.get("/v1/web/bigscreen-snapshot")
-    def web_bigscreen_snapshot() -> JSONResponse:
-        from quant_lab.web.bigscreen import bigscreen_snapshot_with_meta
-
-        payload, cache_meta = bigscreen_snapshot_with_meta(_lake_root())
-        return _bigscreen_snapshot_response(payload, cache_meta)
-
-    @app.get("/favicon.ico", include_in_schema=False)
-    def favicon() -> Response:
-        return Response(status_code=204)
-
-    @app.get("/web-v2/snapshot")
-    def web_bigscreen_snapshot_for_static_page() -> JSONResponse:
-        from quant_lab.web.bigscreen import bigscreen_snapshot_with_meta
-
-        payload, cache_meta = bigscreen_snapshot_with_meta(_lake_root())
-        return _bigscreen_snapshot_response(payload, cache_meta)
-
-    @app.post("/web-v2/expert-pack/generate")
-    def web_v2_generate_expert_pack(response: Response) -> dict[str, Any]:
-        status_payload = _start_web_v2_expert_pack_job()
-        _mark_no_store(response)
-        response.headers["X-Quant-Lab-Mode"] = "read-only-export"
-        return status_payload
-
-    @app.get("/web-v2/expert-pack/status")
-    def web_v2_expert_pack_status(
-        response: Response,
-        export_date: str | None = None,
-    ) -> dict[str, Any]:
-        status_payload = _web_v2_expert_pack_status(export_date=export_date)
-        _mark_no_store(response)
-        response.headers["X-Quant-Lab-Mode"] = "read-only-export"
-        return status_payload
-
-    @app.get("/web-v2/expert-pack/download/{file_name}")
-    def web_v2_download_expert_pack(file_name: str) -> Response:
-        if _nas_export_enabled():
-            return JSONResponse(
-                status_code=status.HTTP_410_GONE,
-                content={
-                    "detail": "Expert Pack bytes are stored on NAS and are not proxied by qyun2",
-                    "storage_location": "nas_only",
-                },
-            )
-        exports_root = _web_v2_exports_root()
-        pack_path = _safe_web_v2_export_pack_path(exports_root, file_name)
-        return FileResponse(
-            pack_path,
-            media_type="application/zip",
-            filename=pack_path.name,
+    @app.api_route("/", methods=["GET"], include_in_schema=False)
+    @app.api_route("/web-v2", methods=["GET", "POST"], include_in_schema=False)
+    @app.api_route("/web-v2/{path:path}", methods=["GET", "POST"], include_in_schema=False)
+    @app.get("/v1/web/bigscreen-snapshot", include_in_schema=False)
+    def retired_web(path: str = "") -> JSONResponse:
+        return JSONResponse(
+            status_code=410,
+            content={
+                "status": "retired",
+                "module": "legacy-web",
+                "message": "旧 Web 已退役。数据底座与 V5 兼容接口继续运行。",
+            },
+            headers={"Cache-Control": "no-store"},
         )
-
-    @app.get("/web-v2")
-    @app.get("/web-v2/")
-    def web_bigscreen_page() -> Response:
-        return _bigscreen_index_response()
-
-    @app.get("/web-v2/legacy")
-    def web_legacy_streamlit_page(request: Request) -> RedirectResponse:
-        return RedirectResponse(url=_legacy_streamlit_url(request), status_code=307)
-
-    @app.get("/web-v2/{_path:path}")
-    def web_bigscreen_spa_fallback(_path: str) -> Response:
-        return _bigscreen_index_response()
 
     @app.get("/v1/catalog/datasets", response_model=CatalogDatasetsResponse)
     def catalog_datasets() -> CatalogDatasetsResponse:
@@ -613,9 +547,7 @@ def create_app() -> FastAPI:
             notional_bucket=notional_bucket,
         )
         response.headers["X-Cost-Cache-Hit"] = "true" if request_cache_hit else "false"
-        response.headers["X-Cost-Bucket-Cache-Hit"] = (
-            "true" if bucket_cache_hit else "false"
-        )
+        response.headers["X-Cost-Bucket-Cache-Hit"] = "true" if bucket_cache_hit else "false"
         response.headers["X-Cost-Compute-Ms"] = f"{compute_ms:.3f}"
         response.headers["X-Quant-Lab-Api-Cache-Hit"] = (
             "true" if request_cache_hit or bucket_cache_hit else "false"
@@ -1278,418 +1210,9 @@ def _utf8_json_response(content: Any, *, headers: dict[str, str] | None = None) 
     )
 
 
-def _bigscreen_snapshot_response(
-    payload: dict[str, Any],
-    cache_meta: dict[str, Any],
-) -> JSONResponse:
-    cache_hit = bool(cache_meta.get("cache_hit"))
-    response = _utf8_json_response(
-        payload,
-        headers={
-            "Cache-Control": "no-store, max-age=0",
-            "Pragma": "no-cache",
-            "X-Quant-Lab-Bigscreen-Mode": "read-only",
-            "X-Quant-Lab-Bigscreen-Cache-Hit": "true" if cache_hit else "false",
-            "X-Quant-Lab-Bigscreen-Cache-Age-Seconds": _header_float_text(
-                cache_meta.get("cache_age_seconds")
-            ),
-            "X-Quant-Lab-Bigscreen-Cache-TTL-Seconds": _header_float_text(
-                cache_meta.get("cache_ttl_seconds")
-            ),
-            "X-Quant-Lab-Bigscreen-Cache-Stale": (
-                "true" if cache_meta.get("cache_stale") else "false"
-            ),
-            "X-Quant-Lab-Bigscreen-Stale-Grace-Seconds": _header_float_text(
-                cache_meta.get("cache_stale_grace_seconds")
-            ),
-            "X-Quant-Lab-Api-Cache-Hit": "true" if cache_hit else "false",
-            "X-Quant-Lab-Response-Cache-Hit": "true" if cache_hit else "false",
-        },
-    )
-    response.headers["X-Quant-Lab-Response-Bytes"] = str(len(response.body or b""))
-    return response
-
-
 def _mark_no_store(response: Response) -> None:
     response.headers["Cache-Control"] = "no-store, max-age=0"
     response.headers["Pragma"] = "no-cache"
-
-
-def _header_float_text(value: Any) -> str:
-    try:
-        return f"{float(value):.3f}"
-    except (TypeError, ValueError):
-        return "0.000"
-
-
-def _bigscreen_static_root() -> Path:
-    return Path(__file__).resolve().parents[1] / "web" / "bigscreen_static"
-
-
-def _mount_bigscreen_static(app: FastAPI) -> None:
-    static_root = _bigscreen_static_root()
-    assets_root = static_root / "assets"
-    if assets_root.is_dir():
-        app.mount(
-            "/web-v2/assets",
-            StaticFiles(directory=str(assets_root)),
-            name="quant-lab-bigscreen-assets",
-        )
-
-
-def _bigscreen_index_response() -> Response:
-    index_path = _bigscreen_static_root() / "index.html"
-    if index_path.is_file():
-        response = FileResponse(index_path)
-        _mark_no_store(response)
-        return response
-    return JSONResponse(
-        status_code=503,
-        content={
-            "detail": "quant-lab bigscreen frontend is not built",
-            "expected_path": str(index_path),
-        },
-    )
-
-
-def _legacy_streamlit_url(request: Request) -> str:
-    port = os.environ.get("QUANT_LAB_LEGACY_WEB_PORT", "8501").strip() or "8501"
-    hostname = request.url.hostname or "qyun2.hrhome.top"
-    scheme = request.url.scheme or "http"
-    return f"{scheme}://{hostname}:{port}/"
-
-
-def _web_v2_exports_root() -> Path:
-    from quant_lab.web import readers
-
-    return readers.default_exports_root(_lake_root())
-
-
-def _web_v2_export_date(export_date: str | None = None) -> str:
-    if export_date:
-        return export_date
-    from quant_lab.time_display import beijing_today
-
-    return beijing_today().isoformat()
-
-
-def _start_web_v2_expert_pack_job() -> dict[str, Any]:
-    if _nas_export_enabled():
-        from quant_lab.export_plane.request import submit_export_request
-
-        config = _nas_export_configuration()
-        export_date = date.fromisoformat(_web_v2_export_date())
-        submit_export_request(
-            queue_root=config["queue_root"],
-            export_date=export_date,
-            export_mode="authoritative",
-            requested_by="web-v2",
-        )
-        return _web_v2_nas_expert_pack_status(export_date=export_date)
-    from quant_lab.web.pages.expert_exports import (
-        _start_export_job,
-        _web_background_export_enabled,
-        _web_on_demand_export_enabled,
-    )
-
-    export_date = _web_v2_export_date()
-    lake_root = _lake_root()
-    exports_root = _web_v2_exports_root()
-    if not _web_on_demand_export_enabled():
-        return _decorate_web_v2_expert_pack_status(
-            {
-                "state": "on_demand_disabled",
-                "export_date": export_date,
-                "message": "QUANT_LAB_WEB_ON_DEMAND_EXPORT is disabled",
-            },
-            export_date=export_date,
-            exports_root=exports_root,
-        )
-    if not _web_background_export_enabled():
-        return _decorate_web_v2_expert_pack_status(
-            {
-                "state": "background_disabled",
-                "export_date": export_date,
-                "message": "QUANT_LAB_WEB_EXPORT_BACKGROUND is disabled",
-            },
-            export_date=export_date,
-            exports_root=exports_root,
-        )
-    status_payload = _start_export_job(
-        export_date=export_date,
-        lake_root=lake_root,
-        exports_root=exports_root,
-    )
-    return _decorate_web_v2_expert_pack_status(
-        status_payload,
-        export_date=export_date,
-        exports_root=exports_root,
-    )
-
-
-def _web_v2_expert_pack_status(*, export_date: str | None = None) -> dict[str, Any]:
-    if _nas_export_enabled():
-        return _web_v2_nas_expert_pack_status(
-            export_date=date.fromisoformat(_web_v2_export_date(export_date))
-        )
-    from quant_lab.web.pages.expert_exports import _poll_export_job
-
-    day = _web_v2_export_date(export_date)
-    exports_root = _web_v2_exports_root()
-    status_payload = _poll_export_job(exports_root, day)
-    return _decorate_web_v2_expert_pack_status(
-        status_payload,
-        export_date=day,
-        exports_root=exports_root,
-    )
-
-
-def _nas_export_enabled() -> bool:
-    return _bool_env("QUANT_LAB_NAS_EXPORT_ENABLED", default=False)
-
-
-def _nas_export_configuration() -> dict[str, Any]:
-    queue_root = Path(
-        os.environ.get("QUANT_LAB_EXPORT_QUEUE_ROOT", "/var/lib/quant-lab/export_queue")
-    )
-    base_url = os.environ.get("QUANT_LAB_NAS_EXPORT_BASE_URL", "").strip()
-    secret_path = Path(
-        os.environ.get(
-            "QUANT_LAB_NAS_DOWNLOAD_SIGNING_SECRET_FILE",
-            "/etc/quant-lab/secrets/nas-download.key",
-        )
-    )
-    if not base_url:
-        raise HTTPException(status_code=503, detail="NAS export base URL is not configured")
-    try:
-        secret = secret_path.read_bytes().strip()
-    except OSError as exc:
-        raise HTTPException(status_code=503, detail="NAS download signer is unavailable") from exc
-    if len(secret) < 32:
-        raise HTTPException(status_code=503, detail="NAS download signer is invalid")
-    return {
-        "queue_root": queue_root,
-        "base_url": base_url,
-        "secret": secret,
-        "key_id": os.environ.get("QUANT_LAB_NAS_DOWNLOAD_KEY_ID", "nas-download-v1"),
-        "ttl": int(os.environ.get("QUANT_LAB_NAS_DOWNLOAD_TOKEN_TTL_SECONDS", "1800")),
-    }
-
-
-def _web_v2_nas_expert_pack_status(*, export_date: date) -> dict[str, Any]:
-    from quant_lab.export_plane.cloud_index import export_plane_status
-
-    config = _nas_export_configuration()
-    raw = export_plane_status(
-        config["queue_root"],
-        export_date=export_date,
-        nas_base_url=config["base_url"],
-        download_secret=config["secret"],
-        download_key_id=config["key_id"],
-        download_ttl_seconds=config["ttl"],
-    )
-    latest = raw.get("latest_pack") if isinstance(raw.get("latest_pack"), dict) else {}
-    requested = (
-        raw.get("requested_date_pack")
-        if isinstance(raw.get("requested_date_pack"), dict)
-        else {}
-    )
-    available = (
-        raw.get("available_pack") if isinstance(raw.get("available_pack"), dict) else latest
-    )
-    packs = [
-        {
-            **row,
-            "name": row.get("pack_name"),
-            "size_bytes": row.get("pack_size_bytes"),
-            "modified_at": row.get("accepted_at"),
-            "authoritative_snapshot": row.get("authoritative_input_snapshot"),
-        }
-        for row in raw.get("packs", [])
-        if isinstance(row, dict)
-    ]
-    active_status = raw.get("task") or raw.get("request") or {}
-    return {
-        **raw,
-        "mode": "read_only_nas_export",
-        "live_order_effect": "none",
-        "export_date": export_date.isoformat(),
-        "status": active_status,
-        "requested_date_pack": requested.get("pack_name"),
-        "requested_date_pack_name": requested.get("pack_name"),
-        "latest_pack": latest.get("pack_name"),
-        "latest_pack_name": latest.get("pack_name"),
-        "latest_download_url": latest.get("download_url"),
-        "latest_size_bytes": latest.get("pack_size_bytes"),
-        "latest_modified_at": latest.get("accepted_at"),
-        "available_pack": available.get("pack_name"),
-        "available_pack_name": available.get("pack_name"),
-        "available_download_url": available.get("download_url"),
-        "packs": packs,
-        "pack_count": len(packs),
-        "nas_center_url": config["base_url"],
-        "storage_location": "nas_only",
-        "cloud_zip_present": False,
-        "network_notice": "下载需要连接家庭网络或 VPN；文件流量不经过中台服务器。",
-        "authoritative_input_snapshot": raw.get("authoritative_input_snapshot", False),
-        "nas_artifact_validated": raw.get("nas_artifact_validated", False),
-        "control_plane_receipt_verified": raw.get(
-            "control_plane_receipt_verified",
-            False,
-        ),
-        "download_ready": raw.get("download_ready", False),
-        "available_download_ready": raw.get("available_download_ready", False),
-    }
-
-
-def _decorate_web_v2_expert_pack_status(
-    status_payload: dict[str, Any],
-    *,
-    export_date: str,
-    exports_root: Path,
-) -> dict[str, Any]:
-    from quant_lab.web import readers
-    from quant_lab.web.pages.expert_exports import (
-        _export_regenerate_cooldown_payload,
-        _latest_pack_for_export_date,
-    )
-
-    status = dict(status_payload)
-    requested_date_pack = _latest_pack_for_export_date(exports_root, export_date)
-    zip_path = _safe_existing_pack_from_status(exports_root, status.get("zip_path"))
-    packs = _expert_pack_rows_with_downloads(readers.expert_export_summary(exports_root))
-    latest_available_pack = _pack_path_from_row(packs[0]) if packs else None
-    state = status.get("state")
-    if not state:
-        state = (
-            "manual_missing"
-            if requested_date_pack is not None
-            else ("missing_requested_date" if latest_available_pack is not None else "missing")
-        )
-    is_running = str(state).lower() in {"starting", "running"}
-    manual_latest_pack = (
-        zip_path if (not is_running and str(state).lower() == "succeeded") else None
-    )
-    available_pack = requested_date_pack or latest_available_pack
-    latest_pack = None
-    latest_pack_source = None
-    if not is_running and manual_latest_pack is not None:
-        if requested_date_pack is not None:
-            latest_pack = requested_date_pack
-            latest_pack_source = (
-                "manual_web_request"
-                if _same_pack_path(manual_latest_pack, requested_date_pack)
-                else "requested_date_pack"
-            )
-        elif _pack_name_matches_export_date(
-            manual_latest_pack.name,
-            export_date,
-        ):
-            latest_pack = manual_latest_pack
-            latest_pack_source = "manual_web_request"
-    manual_status = dict(status)
-    effective_status = dict(status)
-    if not is_running and latest_pack is not None:
-        effective_status["zip_path"] = str(latest_pack)
-        effective_status["zip_name"] = latest_pack.name
-        effective_status["latest_pack_source"] = latest_pack_source
-        if latest_pack_source != "manual_web_request":
-            _sync_web_v2_effective_status_to_pack(effective_status, latest_pack)
-    payload = {
-        "mode": "read_only_export",
-        "live_order_effect": "none",
-        "export_date": export_date,
-        "exports_root": str(exports_root),
-        "state": state,
-        "status": effective_status,
-        "manual_status": manual_status,
-        "requested_date_pack": (
-            str(requested_date_pack) if requested_date_pack is not None else None
-        ),
-        "requested_date_pack_name": (
-            requested_date_pack.name if requested_date_pack is not None else None
-        ),
-        "previous_pack": str(requested_date_pack) if is_running and requested_date_pack else None,
-        "previous_pack_name": (
-            requested_date_pack.name if is_running and requested_date_pack else None
-        ),
-        "available_pack": str(available_pack) if available_pack is not None else None,
-        "available_pack_name": available_pack.name if available_pack is not None else None,
-        "available_download_url": (
-            _web_v2_export_download_url(available_pack.name)
-            if available_pack is not None
-            else None
-        ),
-        "manual_latest_pack": (
-            str(manual_latest_pack) if manual_latest_pack is not None else None
-        ),
-        "manual_latest_pack_name": (
-            manual_latest_pack.name if manual_latest_pack is not None else None
-        ),
-        "manual_latest_download_url": (
-            _web_v2_export_download_url(manual_latest_pack.name)
-            if manual_latest_pack is not None
-            else None
-        ),
-        "latest_pack": str(latest_pack) if latest_pack is not None else None,
-        "latest_pack_name": (
-            latest_pack.name if latest_pack is not None else None
-        ),
-        "latest_pack_is_requested_date": (
-            latest_pack is not None
-            and _pack_name_matches_export_date(latest_pack.name, export_date)
-        ),
-        "latest_pack_source": latest_pack_source,
-        "latest_download_url": (
-            _web_v2_export_download_url(latest_pack.name)
-            if latest_pack is not None
-            else None
-        ),
-        "packs": packs,
-        "pack_count": len(packs),
-    }
-    attachment_available_pack = (
-        available_pack
-        if (
-            available_pack is not None
-            and _pack_name_matches_export_date(available_pack.name, export_date)
-        )
-        else None
-    )
-    attachment_pack = latest_pack or attachment_available_pack
-    if latest_pack is not None:
-        try:
-            stat = latest_pack.stat()
-        except OSError:
-            stat = None
-        if stat is not None:
-            payload["latest_size_bytes"] = stat.st_size
-            payload["latest_modified_at"] = datetime.fromtimestamp(stat.st_mtime, UTC).isoformat()
-    if attachment_pack is not None:
-        payload.update(_expert_pack_v5_attachment_status(attachment_pack))
-    payload.update(
-        _export_regenerate_cooldown_payload(
-            effective_status,
-            exports_root=exports_root,
-            export_date=export_date,
-        )
-    )
-    return payload
-
-
-def _sync_web_v2_effective_status_to_pack(status: dict[str, Any], pack_path: Path) -> None:
-    try:
-        stat = pack_path.stat()
-    except OSError:
-        return
-    pack_mtime = datetime.fromtimestamp(stat.st_mtime, UTC).isoformat()
-    status["finished_at"] = pack_mtime
-    status["latest_pack_mtime"] = pack_mtime
-    status["status_time_source"] = "latest_pack_mtime"
-    started_at = _parse_api_datetime(status.get("started_at"))
-    finished_at = _parse_api_datetime(pack_mtime)
-    if started_at is None or (finished_at is not None and started_at > finished_at):
-        status["started_at"] = pack_mtime
 
 
 def _parse_api_datetime(value: Any) -> datetime | None:
@@ -1702,246 +1225,6 @@ def _parse_api_datetime(value: Any) -> datetime | None:
     except ValueError:
         return None
     return parsed.astimezone(UTC) if parsed.tzinfo else parsed.replace(tzinfo=UTC)
-
-
-def _expert_pack_v5_attachment_status(pack_path: Path) -> dict[str, Any]:
-    manifest = _read_expert_pack_manifest(pack_path)
-    pack_git_commit = str(manifest.get("git_commit") or "").strip()
-    current_git_commit = str(_git_commit() or "").strip()
-    pack_matches_current = _git_commits_match(pack_git_commit, current_git_commit)
-    bundle_name = str(
-        manifest.get("selected_v5_bundle_manifest_bundle_name")
-        or manifest.get("selected_v5_bundle_name")
-        or manifest.get("selected_v5_bundle")
-        or manifest.get("embedded_v5_bundle_original_name")
-        or ""
-    ).strip()
-    bundle_ts = (
-        manifest.get("selected_v5_bundle_manifest_bundle_ts")
-        or manifest.get("selected_v5_bundle_built_at")
-        or _v5_bundle_ts_from_name(bundle_name)
-    )
-    selected_sha = str(
-        manifest.get("selected_v5_bundle_sha256")
-        or manifest.get("selected_v5_bundle_manifest_bundle_sha256")
-        or manifest.get("embedded_v5_bundle_source_sha256")
-        or ""
-    ).strip()
-    embedded_present = bool(manifest.get("embedded_v5_bundle_present"))
-    embedded_member = manifest.get("embedded_v5_bundle_member_path")
-    embedded_sha = manifest.get("embedded_v5_bundle_sha256")
-    embedded_matches_selected = manifest.get("embedded_v5_bundle_matches_selected")
-    payload = {
-        "latest_pack_quant_lab_git_commit": pack_git_commit or None,
-        "current_quant_lab_git_commit": current_git_commit or None,
-        "latest_pack_matches_current_quant_lab_commit": pack_matches_current,
-        "latest_pack_code_lag_status": _pack_code_lag_status(pack_matches_current),
-        "latest_pack_v5_bundle_name": bundle_name or None,
-        "latest_pack_v5_bundle_ts": _api_json_value(bundle_ts),
-        "latest_pack_v5_bundle_sha256": selected_sha or None,
-        "latest_pack_embedded_v5_bundle_present": embedded_present,
-        "latest_pack_embedded_v5_bundle_member_path": (
-            str(embedded_member) if embedded_member else None
-        ),
-        "latest_pack_embedded_v5_bundle_sha256": (
-            str(embedded_sha).strip() if embedded_sha else None
-        ),
-        "latest_pack_embedded_v5_bundle_matches_selected": (
-            bool(embedded_matches_selected)
-            if embedded_matches_selected is not None
-            else None
-        ),
-    }
-    payload.update(_expert_pack_v5_lag_status(bundle_name, bundle_ts))
-    return payload
-
-
-def _expert_pack_v5_lag_status(bundle_name: str, bundle_ts: Any) -> dict[str, Any]:
-    pack_bundle_ts = _parse_api_datetime(bundle_ts) or _parse_api_datetime(
-        _v5_bundle_ts_from_name(bundle_name)
-    )
-    latest_live_ts = _latest_live_v5_bundle_ts(_lake_root())
-    if pack_bundle_ts is None or latest_live_ts is None:
-        return {}
-    lag_seconds = int((latest_live_ts - pack_bundle_ts).total_seconds())
-    if lag_seconds <= EXPERT_PACK_V5_LAG_WARNING_SECONDS:
-        return {
-            "latest_pack_v5_lag_status": "OK",
-            "latest_pack_v5_lag_seconds": max(0, lag_seconds),
-            "latest_pack_v5_lag_minutes": max(0, round(max(0, lag_seconds) / 60)),
-            "latest_live_v5_bundle_ts": _api_json_value(latest_live_ts),
-            "latest_pack_v5_lag_pack_bundle_ts": _api_json_value(pack_bundle_ts),
-        }
-    return {
-        "latest_pack_v5_lag_status": "WARNING",
-        "latest_pack_v5_lag_seconds": lag_seconds,
-        "latest_pack_v5_lag_minutes": max(1, round(lag_seconds / 60)),
-        "latest_live_v5_bundle_ts": _api_json_value(latest_live_ts),
-        "latest_pack_v5_lag_pack_bundle_ts": _api_json_value(pack_bundle_ts),
-    }
-
-
-def _latest_live_v5_bundle_ts(lake_root: Path) -> datetime | None:
-    row = _latest_lazy_row(
-        lake_root / "gold" / "strategy_health_daily",
-        filters={"strategy": "v5"},
-        sort_columns=["latest_bundle_ts", "created_at", "date"],
-    )
-    if row is None:
-        row = _latest_lazy_row(
-            lake_root / "gold" / "strategy_health_daily",
-            sort_columns=["latest_bundle_ts", "created_at", "date"],
-        )
-    if row is None:
-        return None
-    return _parse_api_datetime(row.get("latest_bundle_ts"))
-
-
-def _git_commits_match(pack_commit: str, current_commit: str) -> bool | None:
-    pack = str(pack_commit or "").strip()
-    current = str(current_commit or "").strip()
-    if not pack or not current:
-        return None
-    return pack.startswith(current) or current.startswith(pack)
-
-
-def _pack_code_lag_status(matches_current: bool | None) -> str:
-    if matches_current is True:
-        return "OK"
-    if matches_current is False:
-        return "WARNING"
-    return "UNKNOWN"
-
-
-def _read_expert_pack_manifest(pack_path: Path) -> dict[str, Any]:
-    try:
-        with zipfile.ZipFile(pack_path) as archive:
-            payload = json.loads(archive.read("manifest.json").decode("utf-8"))
-    except (OSError, KeyError, json.JSONDecodeError, zipfile.BadZipFile):
-        return {}
-    return payload if isinstance(payload, dict) else {}
-
-
-def _v5_bundle_ts_from_name(bundle_name: str) -> str | None:
-    prefix = "v5_live_followup_bundle_"
-    suffix = ".tar.gz"
-    if not bundle_name.startswith(prefix) or not bundle_name.endswith(suffix):
-        return None
-    stamp = bundle_name[len(prefix) : -len(suffix)]
-    try:
-        parsed = datetime.strptime(stamp, "%Y%m%dT%H%M%SZ").replace(tzinfo=UTC)
-    except ValueError:
-        return None
-    return parsed.isoformat().replace("+00:00", "Z")
-
-
-def _pack_path_from_row(row: dict[str, Any]) -> Path | None:
-    name = str(row.get("name") or Path(str(row.get("path") or "")).name)
-    if not _is_valid_export_pack_name(name):
-        return None
-    path_text = row.get("path")
-    if path_text:
-        path = Path(str(path_text))
-        if path.is_file():
-            return path
-    return None
-
-
-def _same_pack_path(left: Path | None, right: Path | None) -> bool:
-    if left is None or right is None:
-        return False
-    try:
-        return left.resolve() == right.resolve()
-    except OSError:
-        return left == right
-
-
-def _safe_existing_pack_from_status(exports_root: Path, value: Any) -> Path | None:
-    if not value:
-        return None
-    try:
-        path = Path(str(value)).resolve()
-        root = exports_root.resolve()
-    except OSError:
-        return None
-    try:
-        path.relative_to(root)
-    except ValueError:
-        return None
-    if path.is_file() and path.name.startswith("quant_lab_expert_pack_") and path.suffix == ".zip":
-        return path
-    return None
-
-
-def _expert_pack_rows_with_downloads(
-    summary: dict[str, Any],
-    *,
-    limit: int = 12,
-) -> list[dict[str, Any]]:
-    packs = summary.get("packs")
-    rows: list[dict[str, Any]] = []
-    if isinstance(packs, pl.DataFrame) and not packs.is_empty():
-        source_rows = packs.head(limit).to_dicts()
-    elif isinstance(packs, list):
-        source_rows = [row for row in packs[:limit] if isinstance(row, dict)]
-    else:
-        source_rows = []
-    for row in source_rows:
-        item = {str(key): _api_json_value(value) for key, value in row.items()}
-        name = str(item.get("name") or Path(str(item.get("path") or "")).name)
-        if _is_valid_export_pack_name(name):
-            item["name"] = name
-            item["download_url"] = _web_v2_export_download_url(name)
-        rows.append(item)
-    return rows
-
-
-def _safe_web_v2_export_pack_path(exports_root: Path, file_name: str) -> Path:
-    if not _is_valid_export_pack_name(file_name):
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="expert pack not found",
-        )
-    root = exports_root.resolve()
-    path = (root / file_name).resolve()
-    try:
-        path.relative_to(root)
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="expert pack not found",
-        ) from exc
-    if not path.is_file():
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="expert pack not found",
-        )
-    return path
-
-
-def _is_valid_export_pack_name(file_name: str) -> bool:
-    if not file_name or "/" in file_name or "\\" in file_name:
-        return False
-    if file_name != Path(file_name).name:
-        return False
-    return file_name.startswith("quant_lab_expert_pack_") and file_name.endswith(".zip")
-
-
-def _pack_name_matches_export_date(file_name: str, export_date: str) -> bool:
-    if file_name == f"quant_lab_expert_pack_{export_date}.zip" or file_name.startswith(
-        f"quant_lab_expert_pack_{export_date}_"
-    ):
-        return True
-    target_day = str(export_date or "").replace("-", "")
-    match = re.match(
-        r"^quant_lab_expert_pack_\d{4}-\d{2}-\d{2}_(\d{8})T\d{6}",
-        str(file_name or ""),
-    )
-    return bool(target_day and match and match.group(1) == target_day)
-
-
-def _web_v2_export_download_url(file_name: str) -> str:
-    return f"/web-v2/expert-pack/download/{file_name}"
 
 
 def _api_json_value(value: Any) -> Any:
@@ -2075,9 +1358,7 @@ def _record_api_request_metric(
                 _header_lookup(headers, "x-quant-lab-source-signature-ms")
             )
             or _float_or_none(_header_lookup(headers, "x-advisory-source-signature-ms")),
-            response_cache_hit=_truthy(
-                _header_lookup(headers, "x-quant-lab-response-cache-hit")
-            )
+            response_cache_hit=_truthy(_header_lookup(headers, "x-quant-lab-response-cache-hit"))
             or _truthy(_header_lookup(headers, "x-advisory-response-cache-hit")),
             dependency_meta_missing=dependency_meta_missing,
             error_type=effective_error_type,
@@ -2339,9 +1620,7 @@ def _strategy_opportunity_advisory_response(
 ) -> Response:
     request_now = datetime.now(UTC)
     snapshot, cache_hit, source_signature_ms = _strategy_opportunity_advisory_snapshot(lake_root)
-    _STRATEGY_OPPORTUNITY_ADVISORY_RESPONSE_CACHE.clear_except_source_sha(
-        snapshot.source_sha
-    )
+    _STRATEGY_OPPORTUNITY_ADVISORY_RESPONSE_CACHE.clear_except_source_sha(snapshot.source_sha)
     response_key = _strategy_opportunity_advisory_response_cache_key(
         source_sha=snapshot.source_sha,
         symbols=symbols,
@@ -2369,9 +1648,7 @@ def _strategy_opportunity_advisory_response(
             serialize_ms=0.0,
             etag=cached_response.etag,
         )
-        fallback = _signature_fallback_header(
-            _strategy_opportunity_signature_paths(lake_root)
-        )
+        fallback = _signature_fallback_header(_strategy_opportunity_signature_paths(lake_root))
         if fallback:
             headers["X-Quant-Lab-Signature-Fallback"] = fallback
         headers["X-Advisory-Response-Bytes"] = str(len(cached_response.payload))
@@ -2470,9 +1747,7 @@ def _strategy_opportunity_advisory_response_headers(
         "X-Quant-Lab-Advisory-Source-Sha": source_sha,
         "X-Quant-Lab-Lake-Root-Hash": lake_root_hash,
         "X-Quant-Lab-Api-Cache-Hit": "true" if api_cache_hit else "false",
-        "X-Quant-Lab-Advisory-Response-Cache-Hit": (
-            "true" if response_cache_hit else "false"
-        ),
+        "X-Quant-Lab-Advisory-Response-Cache-Hit": ("true" if response_cache_hit else "false"),
         "X-Quant-Lab-Source-Signature-Ms": f"{float(source_signature_ms):.3f}",
         "X-Quant-Lab-Lake-Scan-Ms": f"{float(lake_scan_ms):.3f}",
         "X-Quant-Lab-Serialize-Ms": f"{float(serialize_ms):.3f}",
@@ -2584,13 +1859,9 @@ def _filter_strategy_opportunity_advisory_rows(
         ]
     if families:
         wanted_families = {
-            str(family).strip().lower()
-            for family in families
-            if str(family).strip()
+            str(family).strip().lower() for family in families if str(family).strip()
         }
-        selected = [
-            row for row in selected if _advisory_row_matches_family(row, wanted_families)
-        ]
+        selected = [row for row in selected if _advisory_row_matches_family(row, wanted_families)]
     if fresh_only:
         reference = now or datetime.now(UTC)
         selected = [row for row in selected if row.expires_at >= reference]
@@ -2628,9 +1899,7 @@ def _fresh_only_response_valid_until(
 def _compact_strategy_opportunity_advisory_for_v5(
     rows: list[StrategyOpportunityAdvisoryRow],
 ) -> list[StrategyOpportunityAdvisoryRow]:
-    risk_on_latest: dict[
-        tuple[str, str, str, int | None], StrategyOpportunityAdvisoryRow
-    ] = {}
+    risk_on_latest: dict[tuple[str, str, str, int | None], StrategyOpportunityAdvisoryRow] = {}
     selected: list[StrategyOpportunityAdvisoryRow] = []
     for row in rows:
         if _advisory_row_matches_family(row, {"risk_on_multi_buy"}):
@@ -2725,9 +1994,7 @@ def _strategy_opportunity_advisory_rows_uncached(
 def _strategy_opportunity_advisory_source_signature(lake_root: Path) -> tuple[Any, ...]:
     gold_path = lake_root / "gold" / "strategy_opportunity_advisory"
     gold_files = _dataset_snapshot_signature(gold_path)
-    portfolio_files = _dataset_snapshot_signature(
-        lake_root / "gold" / "research_portfolio_status"
-    )
+    portfolio_files = _dataset_snapshot_signature(lake_root / "gold" / "research_portfolio_status")
     promotion_files = _dataset_snapshot_signature(
         lake_root / "gold" / "alpha_factory_promotion_queue"
     )
@@ -2841,16 +2108,13 @@ def _parquet_file_signature(path: Path) -> tuple[tuple[str, int, int], ...]:
         except OSError:
             continue
         relative_to = path if path.is_dir() else path.parent
-        signature.append(
-            (str(file_path.relative_to(relative_to)), stat.st_mtime_ns, stat.st_size)
-        )
+        signature.append((str(file_path.relative_to(relative_to)), stat.st_mtime_ns, stat.st_size))
     return tuple(signature)
 
 
 def _is_internal_api_lake_path(path: Path) -> bool:
     return any(
-        part == "._tmp" or part.startswith("__") or part.startswith(".")
-        for part in path.parts
+        part == "._tmp" or part.startswith("__") or part.startswith(".") for part in path.parts
     )
 
 
@@ -2952,9 +2216,7 @@ def _alpha_factory_promotion_overrides_by_candidate_symbol(
     latest_as_of_date = _latest_advisory_as_of_date(rows)
     if latest_as_of_date:
         rows = [
-            row
-            for row in rows
-            if str(row.get("as_of_date") or "").strip() == latest_as_of_date
+            row for row in rows if str(row.get("as_of_date") or "").strip() == latest_as_of_date
         ]
     for row in rows:
         candidate = _text_value(row.get("strategy_candidate"))
@@ -2977,11 +2239,7 @@ def _alpha_factory_result_metadata_by_candidate_symbol(
     rows = results.to_dicts()
     latest_as_of_date = _latest_advisory_as_of_date(rows)
     if latest_as_of_date:
-        rows = [
-            row
-            for row in rows
-            if _text_value(row.get("as_of_date")) == latest_as_of_date
-        ]
+        rows = [row for row in rows if _text_value(row.get("as_of_date")) == latest_as_of_date]
     for row in rows:
         candidate = _text_value(row.get("strategy_candidate"))
         symbol = normalize_symbol(row.get("symbol")) or "UNKNOWN"
@@ -3072,9 +2330,7 @@ def _is_alpha_factory_promotion_capped_model(row: StrategyOpportunityAdvisoryRow
         return False
     candidate = row.strategy_candidate
     candidate_key = (
-        candidate.split(":", 1)[1]
-        if candidate.startswith("regime_router:")
-        else candidate
+        candidate.split(":", 1)[1] if candidate.startswith("regime_router:") else candidate
     )
     source_module = (row.source_module or "").lower()
     if source_module == "expanded_universe":
@@ -3106,9 +2362,7 @@ def _apply_alpha_factory_result_metadata_to_advisory_rows(
             continue
         paper_ready_block_reasons = row.paper_ready_block_reasons
         if not paper_ready_block_reasons:
-            paper_ready_block_reasons = _advisory_reason_list(
-                meta.get("paper_ready_block_reasons")
-            )
+            paper_ready_block_reasons = _advisory_reason_list(meta.get("paper_ready_block_reasons"))
         output.append(
             row.model_copy(
                 update={
@@ -3156,9 +2410,7 @@ def _alpha_factory_promotion_decision_mode(
     promotion: dict[str, Any],
 ) -> tuple[str, str, list[str]]:
     state = _text_value(
-        promotion.get("promotion_state")
-        or promotion.get("decision")
-        or "RESEARCH"
+        promotion.get("promotion_state") or promotion.get("decision") or "RESEARCH"
     ).upper()
     decision = "RESEARCH_ONLY" if state == "RESEARCH" else state
     mode = _text_value(promotion.get("recommended_mode")).lower()
@@ -3193,9 +2445,7 @@ def _apply_alpha_factory_promotion_overrides_to_advisory_rows(
         else:
             decision, mode, reasons = _alpha_factory_promotion_decision_mode(promotion)
             promotion_state = _text_value(
-                promotion.get("promotion_state")
-                or promotion.get("decision")
-                or decision
+                promotion.get("promotion_state") or promotion.get("decision") or decision
             ).upper()
         live_block_reasons = sorted({*row.live_block_reasons, *reasons})
         paper_ready_block_reasons = sorted(
@@ -3274,9 +2524,7 @@ def _apply_research_portfolio_overrides_to_advisory_rows(
                     "would_block_if_enabled": True
                     if decision == "KILL"
                     else row.would_block_if_enabled,
-                    "would_enter": False
-                    if mode in {"none", "research"}
-                    else row.would_enter,
+                    "would_enter": False if mode in {"none", "research"} else row.would_enter,
                     "no_sample_reason": no_sample_reason,
                 }
             )
@@ -3446,8 +2694,7 @@ def _strategy_opportunity_advisory_row(
         live_block_reasons=_advisory_reason_list(row.get("live_block_reasons")),
         max_paper_notional_usdt=_optional_float(row.get("max_paper_notional_usdt")),
         max_live_notional_usdt=max_live_notional,
-        live_order_effect=_text_value(row.get("live_order_effect"))
-        or "read_only_no_live_order",
+        live_order_effect=_text_value(row.get("live_order_effect")) or "read_only_no_live_order",
     )
 
 
@@ -3845,9 +3092,11 @@ def _normalize_published_risk_permission(
 
 
 def _published_permission_is_active(permission: RiskPermission) -> bool:
-    return is_permission_status_enforceable(
-        permission.permission_status
-    ) and permission.enforceable is True and not _permission_expired(permission)
+    return (
+        is_permission_status_enforceable(permission.permission_status)
+        and permission.enforceable is True
+        and not _permission_expired(permission)
+    )
 
 
 def _permission_expired(permission: RiskPermission) -> bool:

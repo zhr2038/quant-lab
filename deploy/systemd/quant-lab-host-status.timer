@@ -1,0 +1,11 @@
+[Unit]
+Description=Sample quant-lab host resources once per minute
+
+[Timer]
+OnBootSec=20
+OnUnitActiveSec=60
+AccuracySec=2
+Unit=quant-lab-host-status.service
+
+[Install]
+WantedBy=timers.target

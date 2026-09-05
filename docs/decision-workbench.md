@@ -35,6 +35,19 @@
 - 内容层级：默认展示当前四币的参考动作与时效；选择币种后查看依据和收益分布；前向效果与数据状态放在各自工作页。
 - 交互：币种选择与详情平滑切换、导航焦点与刷新状态明确；顶部提供进入/退出全屏，浏览器拒绝时显式提示；尊重减少动态效果设置。
 - 网页无需访问密钥，直接读取公开的 `GET /v1/trade-advice/latest` 与规范建议 ID 的详情 GET。签名、时效与数据完整性校验继续执行；其余策略 API 与显式 IP 限制保留现有认证规则，匿名写入不开放。网页移除登录表单，并清除旧会话保存的访问密钥。
+- “服务器状态”展示 qyun2 和 NAS 的 CPU、内存、Swap、磁盘余量、关键服务与 NAS 容器状态。沿用 V5 深色样式与全宽布局，无需密钥，使用公开只读 `GET /v1/server-status`。
+
+### 轻量服务器状态
+
+两端每分钟运行标准库采集脚本 `src/quant_lab/decision/host_metrics.py`，单次 CPU 采样 0.2 秒；不扫描湖数据、不新建容器、不引入监控数据库。云端由 `quant-lab-host-status.timer` 触发限额 64 MiB / 10% CPU 的 oneshot，写入 `/var/lib/quant-lab/decision/status/qyun2.json`。
+
+NAS 将同一采集脚本复制至 `/volume2/quant-lab/decision/status/host_metrics.py`，通过 `deploy/decision/run_nas_status.sh` 单锁运行，复用已有固定主机、公钥校验及 SSH 身份，以 SFTP 原子替换云端 inbox 中的 `server-status-nas.json`。独立 cron `/etc/cron.d/quant-host-status` 每分钟运行，日志覆盖保存本次结果，避免增长。分析镜像、分析版本、数据签名与原任务调度保持现有配置。
+
+API 仅限量读取两个紧凑 JSON，并通过字段白名单和容量/时间校验输出；不执行 shell、不返回环境变量、IP、镜像配置或原始日志。单台采集失败不影响另一台。超过 180 秒的采样标记过期，缺失/损坏标记未知，Web 读取失败也撤下正常标识。旧数值明确标注为上次采样，服务状态显示当前未知。
+
+定时服务成功结束且 timer 激活时显示等待下一轮；失败、未启动、超时未运行分别呈现。NAS 分析容器完成后会自动删除，缺少该临时容器不视为故障；结合 worker-status、调度配置和最近记录判断，超过 20 分钟无任务结果提示未及时完成。重启次数为容器/进程创建以来累计，不把历史累计次数误报成正在重启。NAS 低于 6 GiB 可用内存时提示分析资源预留不足。
+
+状态页回滚：停用新增 `quant-lab-host-status.timer`、移除独立 NAS `/etc/cron.d/quant-host-status`（先备份），恢复本次 Web/API 前的提交并重启 API。状态文件可以保留；不修改分析任务、私钥、历史归档和已发布数据。
 
 ## 验收
 

@@ -1,7 +1,7 @@
 "use strict";
 const SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT"];
 const LABELS = {DEFER: "等待", REVIEW_ENTRY: "复核入场", KEEP_BASELINE: "保持原规则", NO_VIEW: "暂无观点"};
-const TITLES = {reference: "交易参考", forward: "效果观察", experiment: "实验与数据"};
+const TITLES = {reference: "交易参考", forward: "效果观察", experiment: "实验与数据", servers: "服务器状态"};
 const REASONS = {
   CURRENT_MARKET_MISSING: "缺少当前行情", CURRENT_MARKET_STALE: "当前行情已过期",
   HISTORY_CURRENT_MISMATCH: "历史与当前输入不一致", CONTEXT_WINDOW_INCOMPLETE: "趋势窗口有缺口",
@@ -21,6 +21,7 @@ const time = (value, full = false) => {
   return new Intl.DateTimeFormat("zh-CN", {timeZone: "Asia/Shanghai", ...(full ? {month:"2-digit", day:"2-digit"} : {}), hour:"2-digit", minute:"2-digit", hour12:false}).format(new Date(value));
 };
 const state = {data: null, symbol: "BTCUSDT", horizon: 4, page: "reference", busy: false, error: "", offset: 0, expiryTimer: null};
+const serverState = {data: null, busy: false, error: "", receivedAt: 0};
 try { sessionStorage.removeItem("qyun2.access"); } catch (_) { /* Clear the retired login credential when storage is available. */ }
 const effective = advice => !advice || state.error || Date.now() + state.offset >= Date.parse(advice.expires_at) ? "NO_VIEW" : (advice.effective_action || advice.action);
 const badge = action => `<span class="action ${esc(action)}">${esc(LABELS[action] || "暂无观点")}</span>`;
@@ -35,6 +36,64 @@ function setPage(page) {
     node.classList.toggle("active", node.dataset.page === page);
     if (node.dataset.page === page) node.setAttribute("aria-current", "page"); else node.removeAttribute("aria-current");
   });
+  $("notice").hidden = page === "servers";
+  $("export").hidden = page === "servers";
+  syncRefreshButton();
+  if (page === "servers") {renderServers(); refreshServers();}
+}
+
+const HOST_LABELS = {qyun2: ["qyun2", "行情采集 · 参考发布 · Web"], nas: ["NAS", "历史归档 · 按计划分析"]};
+const SERVICE_LABELS = {api: "中台 API", market: "实时行情采集", https: "网页 HTTPS", decision: "输入与结果发布", backfill: "行情补齐", compaction: "数据整理", analysis: "分析任务"};
+const STATUS_LABELS = {ok: "正常", warning: "需关注", stale: "状态已过期", unknown: "状态未知", running: "运行中", scheduled: "等待下一轮", stopped: "已停止", failed: "失败", restarting: "正在重启", overdue: "任务未及时完成", missing: "服务缺失", exited: "已退出", created: "已创建", paused: "已暂停", dead: "异常退出", removing: "删除中"};
+const STATUS_WARNINGS = {SNAPSHOT_MISSING: "尚未收到采样", SNAPSHOT_INVALID: "采样校验失败", SNAPSHOT_STALE: "超过 3 分钟未更新", RESOURCE_COLLECTION_FAILED: "资源采集失败", SERVICE_COLLECTION_FAILED: "服务采集失败", CONTAINER_COLLECTION_FAILED: "容器采集失败", WORKER_COLLECTION_FAILED: "分析任务状态采集失败", CPU_UNAVAILABLE: "CPU 采样不可用", CPU_HIGH: "CPU 占用较高", MEMORY_LOW: "可用内存不足 10%", NAS_MEMORY_RESERVE_LOW: "NAS 可用内存低于分析任务的 6 GiB 预留要求", DISK_LOW: "磁盘剩余不足 10%", SERVICE_ATTENTION: "关键服务或任务需关注", CONTAINER_ATTENTION: "有容器未正常运行"};
+const statusBadge = (value, text) => `<span class="status-badge ${esc(value)}">${esc(text || STATUS_LABELS[value] || "状态未知")}</span>`;
+const capacity = value => typeof value === "number" ? `${num(value / 1024 ** (value >= 1024 ** 4 ? 4 : 3))} ${value >= 1024 ** 4 ? "TiB" : "GiB"}` : "—";
+const usageMetric = (label, percent, caption) => `<div class="usage-metric"><dt>${esc(label)}</dt><dd class="number">${num(percent)}<small>%</small></dd>${Number.isFinite(percent) ? `<meter min="0" max="100" low="75" high="90" optimum="20" value="${Math.max(0, Math.min(100, percent))}" aria-label="${esc(label)}占用">${num(percent)}%</meter>` : ""}<p>${esc(caption)}</p></div>`;
+
+function renderServers() {
+  const elapsed = serverState.receivedAt ? (Date.now() - serverState.receivedAt) / 1000 : 0;
+  const hosts = (serverState.data?.hosts || ["qyun2", "nas"].map(host => ({host, state: "unknown", warnings: ["SNAPSHOT_MISSING"]}))).map(host => {
+    const age = host.age_seconds === null ? null : host.age_seconds + elapsed;
+    return {...host, age_seconds: age, state: serverState.error ? "unknown" : age > 180 ? "stale" : host.state};
+  });
+  const attention = hosts.filter(host => host.state !== "ok").length;
+  $("server-notice").classList.toggle("warning", Boolean(serverState.error) || attention > 0);
+  $("server-notice").textContent = serverState.error || (serverState.data ? `${hosts.length} 台主机 · ${attention ? `${attention} 台需关注` : "当前采样正常"} · 最近读取 ${time(serverState.data.viewed_at, true)}` : "正在读取服务器状态…");
+  $("server-hosts").innerHTML = hosts.map(host => {
+    const labels = HOST_LABELS[host.host] || ["主机", ""];
+    const r = host.resources, stale = ["unknown", "stale"].includes(host.state);
+    const metrics = r ? `<dl class="server-usage">${usageMetric("CPU", r.cpu_percent, `${num(r.cpu_cores, 0)} 核 · 1 分钟负载 ${num(r.load_1m, 2)}`)}${usageMetric("内存", 100 * (1 - r.memory_available_bytes / r.memory_total_bytes), `可用 ${capacity(r.memory_available_bytes)} / 共 ${capacity(r.memory_total_bytes)}`)}</dl><div class="disk-list">${r.disks.map(d => {
+      const used = 100 * (1 - d.free_bytes / d.total_bytes);
+      return `<div class="disk-row"><div><strong>${esc({system: "系统盘", ssd: "SSD 工作盘", hdd: "HDD 归档盘"}[d.id] || "磁盘")}</strong><span>剩余 ${capacity(d.free_bytes)} / ${capacity(d.total_bytes)}</span></div><meter min="0" max="100" low="75" high="90" optimum="20" value="${used}" aria-label="${esc(d.id)}磁盘占用">${num(used)}%</meter><span class="number">已用 ${num(used)}%</span></div>`;
+    }).join("")}</div><p class="host-footnote">连续运行 ${num(r.uptime_seconds / 86400)} 天 · Swap 已用 ${capacity(r.swap_used_bytes)} / ${capacity(r.swap_total_bytes)}</p>` : `<p class="empty">资源采样暂不可用。</p>`;
+    const services = (host.services || []).map(s => `<tr><td>${esc(SERVICE_LABELS[s.id] || s.id)}<span class="subline">${s.interval_seconds ? `每 ${num(s.interval_seconds / 60, 0)} 分钟` : "常驻服务"}</span></td><td>${statusBadge(stale ? "unknown" : s.state, stale ? "当前未知" : null)}</td><td class="number">${s.interval_seconds ? time(s.last_finished_at, true) : `${num(s.restart_count, 0)} 次重启`}</td></tr>`).join("");
+    const containers = host.host === "nas" ? `<div class="host-subheading"><h3>容器</h3><span>${num((host.containers || []).length, 0)} 个 · 重启次数为创建以来累计</span></div>${host.warnings?.includes("CONTAINER_COLLECTION_FAILED") ? `<p class="empty">容器状态采集失败。</p>` : `<div class="container-list">${(host.containers || []).map(c => `<div class="container-row"><span>${esc(c.name)}<small>${c.health ? esc({healthy: "健康检查通过", unhealthy: "健康检查异常", starting: "健康检查启动中"}[c.health]) : "未配置健康检查"}</small></span>${statusBadge(stale ? "unknown" : c.health === "unhealthy" ? "failed" : c.state)}<span class="number">${num(c.restart_count, 0)} 次</span></div>`).join("") || `<p class="empty">采样时没有容器。</p>`}</div>`}` : "";
+    const task = host.services?.find(s => s.id === "analysis");
+    const warnings = [...new Set([...(host.warnings || []), ...(host.state === "stale" ? ["SNAPSHOT_STALE"] : [])])];
+    return `<article class="host-panel ${stale ? "unconfirmed" : ""}"><div class="host-heading"><div><h3>${esc(labels[0])}</h3><p>${esc(labels[1])}</p></div>${statusBadge(host.state)}</div><p class="sample-time">${stale && r ? "以下为上次采样 · " : ""}采样时间 ${time(host.observed_at, true)}${Number.isFinite(host.age_seconds) ? ` · ${num(Math.max(0, host.age_seconds), 0)} 秒前` : ""}</p>${warnings.length ? `<p class="host-warning">${warnings.map(w => esc(STATUS_WARNINGS[w] || "状态需关注")).join(" · ")}</p>` : ""}${metrics}<div class="host-subheading"><h3>关键服务与任务</h3><span>最近记录 / 重启累计</span></div>${services ? `<div class="table-scroll"><table class="simple-table service-table"><thead><tr><th>服务 / 频率</th><th>状态</th><th>最近记录</th></tr></thead><tbody>${services}</tbody></table></div>` : `<p class="empty">服务状态暂不可用。</p>`}${task ? `<p class="host-footnote">上次分析耗时 ${num(task.runtime_seconds, 2)} 秒${typeof task.peak_rss_mib === "number" ? ` · 进程峰值 ${num(task.peak_rss_mib)} MiB` : ""}。分析结果以云端校验发布为准。</p>` : ""}${containers}</article>`;
+  }).join("");
+}
+
+function syncRefreshButton() {
+  const busy = state.page === "servers" ? serverState.busy : state.busy;
+  $("refresh").disabled = busy; $("refresh").textContent = busy ? "更新中…" : "刷新";
+}
+
+async function refreshServers() {
+  if (serverState.busy) return;
+  serverState.busy = true; syncRefreshButton();
+  const controller = new AbortController(), timer = setTimeout(() => controller.abort(), 8000);
+  try {
+    const response = await fetch("/v1/server-status", {cache: "no-store", signal: controller.signal});
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const data = await response.json();
+    if (!Array.isArray(data.hosts) || data.hosts.length !== 2) throw new Error("状态数据格式异常");
+    serverState.data = data; serverState.receivedAt = Date.now(); serverState.error = "";
+  } catch (error) {
+    serverState.error = `服务器状态读取失败，当前状态未知。${error.name === "AbortError" ? "请求超时。" : error.message}`;
+  } finally {
+    clearTimeout(timer); serverState.busy = false; renderServers(); syncRefreshButton();
+  }
 }
 
 function plot(distribution) {
@@ -103,7 +162,7 @@ function render() {
 
 async function refresh() {
   if (state.busy) return;
-  state.busy = true; $("refresh").disabled = true; $("refresh").textContent = "更新中…";
+  state.busy = true; syncRefreshButton();
   const controller = new AbortController(), timer = setTimeout(() => controller.abort(), 8000);
   try {
     const response = await fetch("/v1/trade-advice/latest", {cache: "no-store", signal: controller.signal});
@@ -117,7 +176,7 @@ async function refresh() {
     state.error = `更新失败，当前暂停显示有效观点。${error.name === "AbortError" ? "请求超时。" : error.message}`;
     render();
   } finally {
-    clearTimeout(timer); state.busy = false; $("refresh").disabled = false; $("refresh").textContent = "刷新";
+    clearTimeout(timer); state.busy = false; syncRefreshButton();
   }
 }
 
@@ -145,12 +204,12 @@ $("fullscreen").addEventListener("click", async () => {
   syncFullscreen();
 });
 document.addEventListener("fullscreenchange", syncFullscreen);
-$("refresh").addEventListener("click", refresh);
+$("refresh").addEventListener("click", () => state.page === "servers" ? refreshServers() : refresh());
 $("export").addEventListener("click", () => {
   if (!state.data?.result_id) return;
   const url = URL.createObjectURL(new Blob([JSON.stringify(state.data, null, 2)], {type: "application/json"}));
   const link = document.createElement("a"); link.href = url; link.download = `${state.data.result_id}.json`; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
 });
-setInterval(() => {if (!document.hidden) refresh();}, 30000);
-document.addEventListener("visibilitychange", () => { if (!document.hidden) {render(); refresh();} });
+setInterval(() => {if (!document.hidden) {refresh(); if (state.page === "servers") refreshServers();}}, 30000);
+document.addEventListener("visibilitychange", () => { if (!document.hidden) {render(); refresh(); if (state.page === "servers") {renderServers(); refreshServers();}} });
 refresh();

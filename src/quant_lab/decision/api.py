@@ -11,6 +11,7 @@ from fastapi.responses import FileResponse, JSONResponse
 
 from quant_lab.decision.contracts import Advice, AnalysisResult
 from quant_lab.decision.engine import advice_identity
+from quant_lab.decision.server_status import server_status
 from quant_lab.decision.storage import (
     MAX_RESULT_BYTES,
     effective_snapshot,
@@ -26,11 +27,16 @@ ASSETS = Path(__file__).parent / "assets"
 def is_public_workbench_request(method: str, path: str) -> bool:
     return method == "GET" and (
         path == "/v1/trade-advice/latest"
+        or path == "/v1/server-status"
         or re.fullmatch(r"/v1/trade-advice/advice-[a-f0-9]{64}", path) is not None
     )
 
 
 def install_routes(app: FastAPI, lake_root: Callable[[], Path]) -> None:
+    @app.get("/v1/server-status")
+    def status_snapshot():
+        return JSONResponse(server_status(), headers=HEADERS)
+
     @app.get("/", include_in_schema=False)
     def workbench():
         return FileResponse(

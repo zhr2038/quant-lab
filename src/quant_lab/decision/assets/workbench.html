@@ -17,6 +17,7 @@
       <button class="nav active" data-page="reference" aria-current="page"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>交易参考<span>01</span></button>
       <button class="nav" data-page="forward"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M4 3v17h17M9 15V9m5 6V5m5 10v-4"/></svg>效果观察<span>02</span></button>
       <button class="nav" data-page="experiment"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 3h6m-5 0v7L4 20h16l-6-10V3M7 15h10"/></svg>实验与数据<span>03</span></button>
+      <button class="nav" data-page="servers"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="3" y="3" width="18" height="7" rx="1"/><rect x="3" y="14" width="18" height="7" rx="1"/><path d="M6 6.5h2m-2 11h2m4-11h6m-6 11h6"/></svg>服务器状态<span>04</span></button>
     </nav>
     <div class="sidebar-note"><span class="small-label">当前范围</span><p>BTC · ETH · SOL · BNB</p><p>研究参考<br>执行规则由 V5 保持。</p></div>
   </aside>
@@ -54,6 +55,12 @@
         <div class="experiment-row"><span class="experiment-number">01</span><div><h3>相似趋势下，成本是否值得承担</h3><p>按已闭合的 1 小时行情计算 24 小时趋势，观察延迟入场后的 4 小时与 24 小时路径。历史统计用于形成研究参考，前向结果用于继续检验。</p><span class="code-label">trend-reference-1h-v1</span></div></div>
         <div class="section-heading lower"><div><h2>数据与运行</h2><p>查看更新是否及时、计算是否在预算内。</p></div></div>
         <div id="runtime-details"></div>
+      </section>
+      <section id="page-servers" class="page" hidden>
+        <div class="section-heading"><div><h2>资源与运行状态</h2><p>每分钟采集 · 页面每 30 秒刷新 · 超过 3 分钟未更新会提示</p></div></div>
+        <div id="server-notice" class="notice" role="status">正在读取服务器状态…</div>
+        <div id="server-hosts" class="server-hosts"></div>
+        <p class="flat-note">CPU 为短时采样；内存按可用内存计算。NAS 分析按计划启动、完成后退出，等待下一轮属于正常状态。状态过期只代表监测未及时更新。</p>
       </section>
     </main>
     <footer><span>时间均为北京时间</span><span>只读研究 · 无订单操作</span></footer>

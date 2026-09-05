@@ -68,6 +68,7 @@ from quant_lab.data.market_bar_time import (
     market_bar_freshness_seconds,
 )
 from quant_lab.decision.api import install_routes as install_decision_routes
+from quant_lab.decision.api import is_public_workbench_request
 from quant_lab.gates.defaults import conservative_example_gate_decision
 from quant_lab.ops.api_metrics import api_metrics_summary, record_api_request
 from quant_lab.ops.dataset_registry import dataset_names, get_dataset_spec
@@ -1254,6 +1255,9 @@ def _authorize_v1_request(request: Request) -> None:
             status_code=status.HTTP_403_FORBIDDEN,
             detail="quant-lab API client IP is not allowed",
         )
+    if is_public_workbench_request(request.method, request.url.path):
+        _set_auth_result(request, "public_workbench")
+        return
     token = os.environ.get("QUANT_LAB_API_TOKEN")
     if not token:
         _set_auth_result(request, "auth_not_configured")

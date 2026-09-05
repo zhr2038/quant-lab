@@ -106,20 +106,20 @@ def test_api_reads_only_published_gold_and_fails_closed_on_corruption(artifacts,
     monkeypatch.setenv("QUANT_LAB_DECISION_WORKER_PUBLIC_KEY", str(a["worker_public_key"]))
     monkeypatch.setenv("QUANT_LAB_API_TOKEN", "only-test-token")
     with TestClient(create_app()) as client:
-        assert client.get("/v1/trade-advice/latest").status_code == 401
-        response = client.get(
-            "/v1/trade-advice/latest", headers={"Authorization": "Bearer only-test-token"}
-        )
+        response = client.get("/v1/trade-advice/latest")
         assert response.status_code == 200
         assert response.headers["cache-control"] == "no-store"
         assert response.json()["effective_status"] == "EXPIRED"
         assert all(v["effective_action"] == "NO_VIEW" for v in response.json()["advice"])
+        advice_id = response.json()["advice"][0]["advice_id"]
+        detail = client.get(f"/v1/trade-advice/{advice_id}")
+        assert detail.status_code == 200
+        assert detail.json()["advice_id"] == advice_id
+        assert detail.json()["effective_action"] == "NO_VIEW"
         raw = read_json(gold / "publication.json", max_bytes=1024**2)
         raw["result"]["history_rows"] += 1
         atomic_json(gold / "publication.json", raw)
-        response = client.get(
-            "/v1/trade-advice/latest", headers={"Authorization": "Bearer only-test-token"}
-        )
+        response = client.get("/v1/trade-advice/latest")
         assert response.status_code == 503
         assert response.json()["advice"] == []
         assert client.get("/assets/decision/not-a-file").status_code == 404
@@ -132,6 +132,28 @@ def test_api_empty_result_is_explicit(tmp_path, monkeypatch):
         data = client.get("/v1/trade-advice/latest").json()
         assert data["effective_status"] == "NO_RESULT"
         assert data["advice"] == []
+
+
+def test_public_workbench_does_not_open_other_methods_or_strategy_apis(tmp_path, monkeypatch):
+    monkeypatch.setenv("QUANT_LAB_LAKE_ROOT", str(tmp_path))
+    monkeypatch.setenv("QUANT_LAB_API_TOKEN", "private-strategy-token")
+    with TestClient(create_app()) as client:
+        assert client.get("/v1/trade-advice/latest").status_code == 200
+        assert client.get("/v1/trade-advice/latest?view=web").status_code == 200
+        assert client.get("/v1/trade-advice/advice-" + "a" * 64).status_code == 404
+        assert client.post("/v1/trade-advice/latest").status_code == 401
+        assert client.post("/v1/trade-advice/advice-" + "a" * 64).status_code == 401
+        assert client.get("/v1/trade-advice/latest/private").status_code == 401
+        assert client.get("/v1/catalog/datasets").status_code == 401
+        assert client.get(
+            "/v1/catalog/datasets", headers={"Authorization": "Bearer private-strategy-token"}
+        ).status_code == 200
+
+
+def test_public_workbench_respects_explicit_ip_restrictions(monkeypatch):
+    monkeypatch.setenv("QUANT_LAB_ALLOWED_CLIENT_IPS", "192.0.2.1")
+    with TestClient(create_app()) as client:
+        assert client.get("/v1/trade-advice/latest").status_code == 403
 
 
 def test_published_receipt_recovery_preserves_actual_time(artifacts):

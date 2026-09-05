@@ -20,8 +20,8 @@ const time = (value, full = false) => {
   if (!value || !Number.isFinite(Date.parse(value))) return "—";
   return new Intl.DateTimeFormat("zh-CN", {timeZone: "Asia/Shanghai", ...(full ? {month:"2-digit", day:"2-digit"} : {}), hour:"2-digit", minute:"2-digit", hour12:false}).format(new Date(value));
 };
-const state = {data: null, symbol: "BTCUSDT", horizon: 4, page: "reference", busy: false, error: "", offset: 0, expiryTimer: null, token: "", authRequired: false};
-try { state.token = sessionStorage.getItem("qyun2.access") || ""; } catch (_) { /* Session storage may be disabled. */ }
+const state = {data: null, symbol: "BTCUSDT", horizon: 4, page: "reference", busy: false, error: "", offset: 0, expiryTimer: null};
+try { sessionStorage.removeItem("qyun2.access"); } catch (_) { /* Clear the retired login credential when storage is available. */ }
 const effective = advice => !advice || state.error || Date.now() + state.offset >= Date.parse(advice.expires_at) ? "NO_VIEW" : (advice.effective_action || advice.action);
 const badge = action => `<span class="action ${esc(action)}">${esc(LABELS[action] || "暂无观点")}</span>`;
 const metric = (title, value) => `<div class="metric"><dt>${esc(title)}</dt><dd class="number">${esc(value)}</dd></div>`;
@@ -29,6 +29,7 @@ const metric = (title, value) => `<div class="metric"><dt>${esc(title)}</dt><dd 
 function setPage(page) {
   state.page = page;
   $("page-title").textContent = TITLES[page];
+  $("breadcrumb-page").textContent = TITLES[page];
   document.querySelectorAll(".page").forEach(node => { node.hidden = node.id !== `page-${page}`; });
   document.querySelectorAll(".nav").forEach(node => {
     node.classList.toggle("active", node.dataset.page === page);
@@ -40,16 +41,14 @@ function plot(distribution) {
   const values = [distribution.net_p10_bps, distribution.net_p50_bps, distribution.net_p90_bps];
   if (!values.every(x => typeof x === "number" && Number.isFinite(x))) return `<p class="empty">样本尚不足以形成分布。</p>`;
   const lo = Math.min(0, values[0]), hi = Math.max(0, values[2]);
-  const span = Math.max(hi - lo, 1), x = value => 25 + (value - lo) / span * 240;
-  return `<svg viewBox="0 0 290 105" role="img" aria-label="历史净结果第十、五十和九十分位"><title>当前成本假设下的历史分布</title>
-    <line x1="25" y1="36" x2="265" y2="36" stroke="var(--line)" stroke-width="4"/>
-    <line x1="${x(0)}" y1="12" x2="${x(0)}" y2="54" stroke="var(--plot-zero)" stroke-dasharray="3 3"/>
-    <line x1="${x(values[0])}" y1="36" x2="${x(values[2])}" y2="36" stroke="var(--plot-range)" stroke-width="5"/>
-    <circle cx="${x(values[1])}" cy="36" r="5" fill="var(--accent)"/>
-    <text x="25" y="75" fill="var(--muted)" font-size="10">P10 ${esc(num(values[0]))}</text>
-    <text x="145" y="75" text-anchor="middle" fill="var(--accent)" font-size="10">P50 ${esc(num(values[1]))}</text>
-    <text x="265" y="75" text-anchor="end" fill="var(--muted)" font-size="10">P90 ${esc(num(values[2]))}</text>
-    <text x="145" y="96" text-anchor="middle" fill="var(--muted)" font-size="9">单位 bps · 虚线为零</text></svg>`;
+  const span = Math.max(hi - lo, 1), x = value => 25 + (value - lo) / span * 550;
+  return `<svg viewBox="0 0 600 96" role="img" aria-label="历史净结果第十、五十和九十分位"><title>当前成本假设下的历史分布</title>
+    <line x1="25" y1="48" x2="575" y2="48" stroke="var(--line)" stroke-width="4"/>
+    <line x1="${x(0)}" y1="16" x2="${x(0)}" y2="80" stroke="var(--plot-zero)" stroke-dasharray="3 3"/>
+    <line x1="${x(values[0])}" y1="48" x2="${x(values[2])}" y2="48" stroke="var(--plot-range)" stroke-width="5"/>
+    <circle cx="${x(values[1])}" cy="48" r="5" fill="var(--accent)"/></svg>
+    <div class="distribution-quantiles">${values.map((value, i) => `<span>${["P10", "P50", "P90"][i]}<strong class="number">${esc(num(value))}</strong></span>`).join("")}</div>
+    <p class="distribution-note">单位 bps · 虚线为零</p>`;
 }
 
 function renderReference() {
@@ -107,21 +106,13 @@ async function refresh() {
   state.busy = true; $("refresh").disabled = true; $("refresh").textContent = "更新中…";
   const controller = new AbortController(), timer = setTimeout(() => controller.abort(), 8000);
   try {
-    const response = await fetch("/v1/trade-advice/latest", {headers: state.token ? {Authorization: `Bearer ${state.token}`} : {}, cache: "no-store", signal: controller.signal});
-    if (response.status === 401 || response.status === 403) {
-      state.authRequired = true;
-      state.data = null; state.error = ""; render();
-      $("auth-panel").hidden = false; $("workspace").hidden = true; $("disconnect").hidden = true;
-      $("auth-error").textContent = state.token ? (response.status === 403 ? "当前网络没有访问权限。" : "访问密钥未通过验证。") : "";
-      return;
-    }
+    const response = await fetch("/v1/trade-advice/latest", {cache: "no-store", signal: controller.signal});
     if (!response.ok) throw new Error(`接口暂不可用（HTTP ${response.status}）`);
     const data = await response.json();
     if (!Array.isArray(data.advice)) throw new Error("接口返回了无法识别的结果");
-    state.data = data; state.error = ""; state.authRequired = false;
+    state.data = data; state.error = "";
     state.offset = data.viewed_at ? Date.parse(data.viewed_at) - Date.now() : 0;
-    $("auth-panel").hidden = true; $("workspace").hidden = false; $("disconnect").hidden = !state.token;
-    $("token").value = ""; render();
+    render();
   } catch (error) {
     state.error = `更新失败，当前暂停显示有效观点。${error.name === "AbortError" ? "请求超时。" : error.message}`;
     render();
@@ -136,14 +127,30 @@ document.querySelectorAll("[data-horizon]").forEach(button => button.addEventLis
   document.querySelectorAll("[data-horizon]").forEach(node => {const selected = Number(node.dataset.horizon) === state.horizon; node.classList.toggle("selected", selected); node.setAttribute("aria-pressed", String(selected));});
   render();
 }));
+function syncFullscreen() {
+  const active = Boolean(document.fullscreenElement);
+  $("fullscreen").textContent = active ? "退出全屏" : "全屏";
+  $("fullscreen").setAttribute("aria-pressed", String(active));
+}
+$("fullscreen").addEventListener("click", async () => {
+  $("display-status").hidden = true;
+  try {
+    if (document.fullscreenElement) await document.exitFullscreen();
+    else if (document.fullscreenEnabled && document.documentElement.requestFullscreen) await document.documentElement.requestFullscreen();
+    else throw new Error("Fullscreen unavailable");
+  } catch (_) {
+    $("display-status").textContent = "浏览器未允许全屏，可使用浏览器菜单中的全屏功能。";
+    $("display-status").hidden = false;
+  }
+  syncFullscreen();
+});
+document.addEventListener("fullscreenchange", syncFullscreen);
 $("refresh").addEventListener("click", refresh);
-$("auth-form").addEventListener("submit", event => {event.preventDefault(); state.token = $("token").value.trim(); try {sessionStorage.setItem("qyun2.access", state.token);} catch (_) {} refresh();});
-$("disconnect").addEventListener("click", () => {state.token = ""; state.data = null; try {sessionStorage.removeItem("qyun2.access");} catch (_) {} refresh();});
 $("export").addEventListener("click", () => {
   if (!state.data?.result_id) return;
   const url = URL.createObjectURL(new Blob([JSON.stringify(state.data, null, 2)], {type: "application/json"}));
   const link = document.createElement("a"); link.href = url; link.download = `${state.data.result_id}.json`; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
 });
-setInterval(() => {if (!document.hidden && !state.authRequired) refresh();}, 30000);
-document.addEventListener("visibilitychange", () => { if (!document.hidden) {render(); if (!state.authRequired) refresh();} });
+setInterval(() => {if (!document.hidden) refresh();}, 30000);
+document.addEventListener("visibilitychange", () => { if (!document.hidden) {render(); refresh();} });
 refresh();

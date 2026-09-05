@@ -23,6 +23,13 @@ HEADERS = {"Cache-Control": "no-store", "X-Quant-Lab-Decision-Scope": "research_
 ASSETS = Path(__file__).parent / "assets"
 
 
+def is_public_workbench_request(method: str, path: str) -> bool:
+    return method == "GET" and (
+        path == "/v1/trade-advice/latest"
+        or re.fullmatch(r"/v1/trade-advice/advice-[a-f0-9]{64}", path) is not None
+    )
+
+
 def install_routes(app: FastAPI, lake_root: Callable[[], Path]) -> None:
     @app.get("/", include_in_schema=False)
     def workbench():

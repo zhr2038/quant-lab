@@ -26,9 +26,10 @@
 
 本次归档批次：`192.168.1.15:/volume2/quant-lab/archive/retirement-20260905`。
 
-- `nas-ssd/`：旧 NAS 量化目录原样保存，包含历史结果、队列、失败记录和旧归档。
+- `nas-ssd/quant-research`、`quant-export`、`quant-ai`、`quant-runtime`：旧运行目录的数据副本，包含历史结果、队列和失败记录，保留硬链接与元数据。
+- `nas-ssd/quant-archive.tar-parts/`：旧高频和 V5 归档按日期及目录分批存为 TAR，避免在机械盘重复铺开约 177 万个小文件。`index.json` 将原始相对路径映射到归档包；每包附逐成员校验清单和完成回执。
 - `qyun2/data/`：云端同一截止点的完整数据副本；截止时间以 `snapshot-status.json` 为准。
-- `*-manifest.jsonl`、`*-verified.json`：逐文件 SHA256、源/目标映射和校验结果。文件存在不等于已经通过校验，以完成回执为准。
+- `*-manifest.jsonl`、`*-verified.json`：逐文件 SHA256、源/目标映射和校验结果。TAR 内每个文件重新读取校验，扩展属性另外保存在成员清单中。文件存在不等于已经通过校验，以完成回执为准。
 - `private/` 及云端 `private-config/`：受限的运行配置与镜像恢复资料，不对 Web 或下载服务公开。
 - 清理前代码：Git 提交 `33af8e23eec8018f3786dc46755b4035778053cf` 与 `quant-lab-before.bundle`。
 

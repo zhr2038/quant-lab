@@ -16,7 +16,9 @@ def test_retired_web_returns_gone_without_jobs_or_data_scans(monkeypatch):
     monkeypatch.setattr("quant_lab.api.main._strategy_opportunity_advisory_snapshot", unexpected)
     monkeypatch.setattr("quant_lab.api.main._cost_bucket_snapshot", unexpected)
     with TestClient(create_app()) as client:
-        for path in ("/", "/web-v2", "/web-v2/", "/web-v2/snapshot"):
+        assert client.get("/").status_code == 200
+        assert "交易参考" in client.get("/").text
+        for path in ("/web-v2", "/web-v2/", "/web-v2/snapshot"):
             response = client.get(path)
             assert response.status_code == 410
             assert response.json()["status"] == "retired"

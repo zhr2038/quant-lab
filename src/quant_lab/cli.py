@@ -15,6 +15,7 @@ from quant_lab.data.lake import (
     compact_parquet_directory_files,
     repair_parquet_partition_values,
 )
+from quant_lab.decision.jobs import app as decision_app
 from quant_lab.features.publish import feature_health
 from quant_lab.features.publish import publish_features as publish_feature_values
 from quant_lab.gates.defaults import conservative_example_gate_decision
@@ -56,6 +57,8 @@ from quant_lab.strategy_telemetry.remote_pull import RemoteBundlePuller
 from quant_lab.strategy_telemetry.sanitize import scan_for_secrets
 
 app = typer.Typer(help="quant-lab read-only research utilities.")
+
+app.add_typer(decision_app, name="decision")
 
 ReportsDirArgument = Annotated[
     Path,

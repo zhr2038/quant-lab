@@ -40,6 +40,7 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 "quant_lab.paper" = ["*.yaml"]
+"quant_lab.decision" = ["assets/*.html", "assets/*.css", "assets/*.js"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

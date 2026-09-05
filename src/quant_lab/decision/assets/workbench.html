@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>qyun2 · 交易参考</title>
+  <link rel="stylesheet" href="/assets/decision/workbench.css">
+  <script defer src="/assets/decision/workbench.js"></script>
+</head>
+<body>
+  <aside class="sidebar">
+    <a class="brand" href="/" aria-label="qyun2 首页">qyun2<span>交易参考中台</span></a>
+    <nav aria-label="主导航">
+      <button class="nav active" data-page="reference" aria-current="page">交易参考<span>01</span></button>
+      <button class="nav" data-page="forward">效果观察<span>02</span></button>
+      <button class="nav" data-page="experiment">实验与数据<span>03</span></button>
+    </nav>
+    <div class="sidebar-note"><span class="small-label">当前范围</span><p>BTC · ETH · SOL · BNB</p><p>研究参考<br>执行规则由 V5 保持。</p></div>
+  </aside>
+  <div class="shell">
+    <header class="page-header">
+      <div><p class="eyebrow">QYUN2 / DECISION REFERENCE</p><h1 id="page-title">交易参考</h1></div>
+      <div class="actions"><button id="export" class="quiet" disabled>导出参考</button><button id="refresh" class="primary">刷新</button></div>
+    </header>
+    <section id="auth-panel" class="auth" hidden>
+      <p class="eyebrow">访问中台</p><h2>连接你的分析结果</h2>
+      <p>输入现有 API 访问密钥，仅在本次浏览会话保存。</p>
+      <form id="auth-form"><label for="token">访问密钥</label><div class="auth-input"><input id="token" type="password" autocomplete="off" required><button class="primary" type="submit">连接</button></div></form>
+      <p id="auth-error" role="alert"></p>
+    </section>
+    <main id="workspace">
+      <div id="notice" class="notice" role="status">正在读取当前分析结果…</div>
+      <section id="page-reference" class="page">
+        <div class="section-heading"><div><h2>当前四币参考</h2><p>先看建议，再核对依据与有效时间。</p></div><div class="segmented" aria-label="观察时域"><button data-horizon="4" class="selected" aria-pressed="true">4 小时</button><button data-horizon="24" aria-pressed="false">24 小时</button></div></div>
+        <div class="reference-layout">
+          <div class="table-scroll"><table class="reference-table"><thead><tr><th>标的 / 最近收盘</th><th>参考动作</th><th>净均值 / 历史场景</th><th>非重叠样本</th><th>有效至</th></tr></thead><tbody id="reference-rows"></tbody></table></div>
+          <section id="advice-detail" class="inspector" aria-label="参考依据" aria-live="polite"></section>
+        </div>
+        <p class="footnote">历史相似行情统计不是预测胜率；净结果按所示往返成本测算，不代表 V5 账户收益。</p>
+      </section>
+      <section id="page-forward" class="page" hidden>
+        <div class="section-heading"><div><h2>发布之后，结果怎样</h2><p>从真实发布时间开始记录，等待固定观察窗口成熟。</p></div></div>
+        <div id="forward-summary"></div>
+        <div class="section-heading lower"><div><h2>按动作与时域观察</h2><p>标的价格路径与账户交易增益分开记录。</p></div></div>
+        <div id="forward-groups"></div>
+      </section>
+      <section id="page-experiment" class="page" hidden>
+        <div class="section-heading"><div><h2>当前实验</h2><p>一个明确问题，一组冻结规则。</p></div></div>
+        <div class="experiment-row"><span class="experiment-number">01</span><div><h3>相似趋势下，成本是否值得承担</h3><p>按已闭合的 1 小时行情计算 24 小时趋势，观察延迟入场后的 4 小时与 24 小时路径。历史统计用于形成研究参考，前向结果用于继续检验。</p><span class="code-label">trend-reference-1h-v1</span></div></div>
+        <div class="section-heading lower"><div><h2>数据与运行</h2><p>查看更新是否及时、计算是否在预算内。</p></div></div>
+        <div id="runtime-details"></div>
+      </section>
+    </main>
+    <footer><span>时间均为北京时间</span><button id="disconnect" class="link-button" hidden>断开本次会话</button><span>只读研究 · 无订单操作</span></footer>
+  </div>
+</body>
+</html>

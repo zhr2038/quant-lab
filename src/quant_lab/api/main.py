@@ -67,6 +67,7 @@ from quant_lab.data.market_bar_time import (
     market_bar_close_ts,
     market_bar_freshness_seconds,
 )
+from quant_lab.decision.api import install_routes as install_decision_routes
 from quant_lab.gates.defaults import conservative_example_gate_decision
 from quant_lab.ops.api_metrics import api_metrics_summary, record_api_request
 from quant_lab.ops.dataset_registry import dataset_names, get_dataset_spec
@@ -358,6 +359,7 @@ def create_app() -> FastAPI:
         lifespan=_api_lifespan,
     )
     app.add_middleware(GZipMiddleware, minimum_size=1024)
+    install_decision_routes(app, _lake_root)
 
     @app.middleware("http")
     async def require_bearer_token_and_record_metrics(request: Request, call_next: Any) -> Any:
@@ -438,7 +440,6 @@ def create_app() -> FastAPI:
             "warnings": warnings,
         }
 
-    @app.api_route("/", methods=["GET"], include_in_schema=False)
     @app.api_route("/web-v2", methods=["GET", "POST"], include_in_schema=False)
     @app.api_route("/web-v2/{path:path}", methods=["GET", "POST"], include_in_schema=False)
     @app.get("/v1/web/bigscreen-snapshot", include_in_schema=False)

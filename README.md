@@ -1,6 +1,6 @@
-# quant-lab 数据底座
+# quant-lab 交易参考中台
 
-2026-09-05 起，qyun2 进入精简重建阶段。当前版本保留事实数据、采集、成本、风险许可、V5 兼容读取与归档能力。旧 Web、Alpha/Factor Factory、专题研究、自动 AI、自动专家包及专用 NAS worker 已从运行版本退役。
+2026-09-05 完成精简后，首版重建聚焦一个问题：四币在相似趋势和当前往返成本下，值得复核候选还是等待。NAS 计算历史参考并记录发布后的观察，qyun2 提供有来源、有效期与限制的研究建议。旧 Web、Alpha/Factor Factory、专题研究、自动 AI、自动专家包及专用 NAS worker 已退役。
 
 中台不下单、不撤单、不维护真实仓位，不替代 V5 的执行、reconcile 或 kill-switch。当前兼容接口不代表研究有效、实盘就绪或盈利能力。
 
@@ -9,18 +9,20 @@
 | 位置 | 保留的工作 |
 | --- | --- |
 | qyun2 | BTC、ETH、SOL、BNB 的公开行情；只读成交/账单；有界 V5 遥测导入；闭合 K 线特征；成本与风险许可；HTTP 读接口 |
-| NAS SSD `/volume1` | 本轮清理旧量化运行目录；未来仅按明确预算放临时工作集 |
+| NAS SSD `/volume1/docker/quant-decision` | 四币一年以内小时线工作集，512 MiB 上限；不存完整历史任务目录 |
 | NAS HDD `/volume2/quant-lab/archive` | 长期历史、退役任务及结果、校验清单、软件版本和受限恢复资料 |
 | V5 | 交易执行、账户与真实仓位、风控、已有 Paper 状态及退出 |
 
-云端保留 API、WebSocket 两项常驻服务和 8 项定时底座任务。历史批任务共用原有 heavy lock；原有单任务内存保护保留。新研究应先确定输入、增量价值、资源预算和验收标准，再增加独立的 NAS 按需任务。
+云端保留 API、WebSocket 两项常驻业务服务、8 项底座定时任务，加 1 项轻量参考发布任务。Web 复用 API 的静态页面。NAS 只有一类按次退出的分析容器，最多 3 CPU / 4 GiB，不增加 swap 配额，预留至少 6 GiB 可用内存才启动。输入、历史快照、结果、前向观察存于 HDD `/volume2/quant-lab/decision/archive`。
 
 ## API 与旧消费者
 
 - `/v1/health`、`/v1/catalog/datasets`、行情/特征/成本/风险许可接口继续提供服务。
 - 旧 advisory、Paper proposal/status/promotion 和 canary 读接口作为过渡兼容层保留。它们读取历史发布结果，保持原始身份、过期时间及安全语义；不续期、不生成新提案、不升级 live 权限。响应头 `X-Quant-Lab-Legacy-Producer: retired-2026-09-05` 标明生产者已退役。
-- 旧 `/web-v2` 页面和专家包操作返回 HTTP 410。Streamlit 服务和依赖已删除。本阶段不建设新 Web。
+- `/` 为新交易参考 Web；`GET /v1/trade-advice/latest` 和按 `advice_id` 查询的详情复用现有鉴权。在线请求只读 Gold 紧凑发布结果。旧 `/web-v2` 页面和专家包操作仍返回 HTTP 410。
 - 遥测仅沉淀事实和运行健康。显式请求旧 candidate Gold 生成会在写入前报错。
+
+新参考有 4h / 24h 两个观察时域；动作为等待、复核入场、保持原规则或暂无观点。全部为 `research_only`、`live_order_effect=none`。历史净均值扣除当前 20 USDT 名义金额的往返成本假设，不是预测胜率或账户收益。V5 自动采纳与同资金对照尚未接入，页面明确展示此状态。设计、部署及回滚见 [decision-workbench.md](docs/decision-workbench.md)。
 
 ## 数据与恢复
 

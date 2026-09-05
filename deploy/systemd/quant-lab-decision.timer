@@ -1,0 +1,11 @@
+[Unit]
+Description=quant-lab decision input and publication every five minutes
+
+[Timer]
+OnCalendar=*-*-* *:02/5:00
+AccuracySec=5s
+Persistent=true
+Unit=quant-lab-decision.service
+
+[Install]
+WantedBy=timers.target

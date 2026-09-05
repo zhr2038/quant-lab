@@ -183,12 +183,23 @@ function render() {
   if (Number.isFinite(next)) state.expiryTimer = setTimeout(render, Math.max(5, next - now + 5));
 }
 
+async function fetchReference(signal) {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      return await fetch("/v1/trade-advice/latest", {cache: "no-store", signal});
+    } catch (error) {
+      if (attempt || signal.aborted) throw error;
+      await new Promise(resolve => setTimeout(resolve, 200));
+    }
+  }
+}
+
 async function refresh() {
   if (state.busy) return;
   state.busy = true; syncRefreshButton();
   const controller = new AbortController(), timer = setTimeout(() => controller.abort(), 8000);
   try {
-    const response = await fetch("/v1/trade-advice/latest", {cache: "no-store", signal: controller.signal});
+    const response = await fetchReference(controller.signal);
     if (!response.ok) throw new Error(`接口暂不可用（HTTP ${response.status}）`);
     const data = await response.json();
     if (!Array.isArray(data.advice)) throw new Error("接口返回了无法识别的结果");

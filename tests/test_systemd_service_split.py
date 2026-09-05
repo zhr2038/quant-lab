@@ -171,7 +171,7 @@ def test_lake_permission_repair_script_targets_service_user():
 
     assert 'LAKE_ROOT="${LAKE_ROOT:-/var/lib/quant-lab/lake}"' in script
     assert "QUANT_LAB_BASE_DIR=" in script
-    assert "EXPORTS_DIR=" in script
+    assert "EXPORTS_DIR" not in script
     assert 'QUANT_LAB_USER="${QUANT_LAB_USER:-quantlab}"' in script
     assert 'QUANT_LAB_GROUP="${QUANT_LAB_GROUP:-quantlab}"' in script
     assert "install -d" in script

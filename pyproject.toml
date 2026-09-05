@@ -20,6 +20,7 @@ dependencies = [
     "polars>=1.0",
     "pyarrow>=16.0",
     "pydantic>=2.7",
+    "pytz>=2024.1", # DuckDB TIMESTAMPTZ Python conversion requires this explicitly.
     "PyYAML>=6.0",
     "typer>=0.12",
     "uvicorn>=0.30",

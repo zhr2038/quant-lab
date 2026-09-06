@@ -131,6 +131,7 @@ function renderReference() {
     return;
   }
   const reasons = [...(row.effective_reason_codes || row.reason_codes)];
+  const contract = state.data?.reference_contracts?.find(c => c.advice_id === row.advice_id);
   if (Date.now() + state.offset >= Date.parse(row.expires_at) && !reasons.includes("ADVICE_EXPIRED")) reasons.push("ADVICE_EXPIRED");
   $("advice-detail").innerHTML = `<div class="detail-title"><h3>${esc(row.symbol.replace("USDT", ""))}</h3>${badge(effective(row))}</div>
     <p class="explanation">${esc(row.explanation)}</p>
@@ -139,6 +140,7 @@ function renderReference() {
     <p class="flat-note">研究可评估：${row.eligibility?.research_evaluable ? "是，仅独立 paper 对照" : "否或旧版未声明"} · 成本已校准：${row.eligibility?.cost_calibrated ? "是" : "否"} · 实盘授权：关闭</p>
     <div class="distribution"><p>相似行情 · 当前成本下的历史分布</p>${plot(row.distribution)}</div>
     <div class="detail-list"><p><strong>行情截至</strong>　${time(row.market_asof, true)}</p><p><strong>历史范围</strong>　${time(row.distribution.first_signal_at, true)} — ${time(row.distribution.last_signal_at, true)}</p><p><strong>成本前历史均值</strong>　${bps(row.distribution.gross_mean_bps)}</p><p><strong>近期窗口净均值</strong>　${bps(row.distribution.chronological_tail_net_mean_bps)}</p><p><strong>双倍成本净均值</strong>　${bps(row.distribution.double_cost_mean_bps)}</p><p><strong>成本观测时间</strong>　${time(row.cost.as_of, true)}</p><p><strong>依据与限制</strong><br>${reasons.map(r => esc(REASONS[r] || r)).join(" · ")}</p><p><strong>失效条件</strong><br>${row.invalidation_conditions.map(esc).join(" · ")}</p></div>
+    <details open><summary>分析版本与下游实验绑定</summary>${contract ? `<p>参考契约：<code>${esc(contract.reference_schema)}</code> · ${num(contract.horizon_hours, 0)} 小时</p><p>实验：<code>${esc(contract.experiment_version)}</code></p><p>策略：<code>${esc(contract.strategy_version || "旧版未声明")}</code> · 成本：<code>${esc(contract.cost_version)}</code></p><p>分析源：<code>${esc(contract.analysis_source_identity)}</code></p>` : `<p>契约信息暂不可用，不视为已匹配下游实验。</p>`}<p>V5 独立实验需逐项匹配冻结版本，并在共同决策截止点前收到有效建议；此页有建议不代表已经影响 V5 决策。版本更新后的收益不得拼接到旧实验。</p></details>
     <details><summary>查看证据标识</summary><p>建议：<code>${esc(row.advice_id)}</code></p><p>输入：<code>${esc(row.input_snapshot_id)}</code></p><p>数据：<code>${esc(row.data_snapshot_hash)}</code></p></details>`;
 }
 

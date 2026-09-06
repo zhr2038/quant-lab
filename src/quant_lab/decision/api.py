@@ -24,6 +24,22 @@ HEADERS = {"Cache-Control": "no-store", "X-Quant-Lab-Decision-Scope": "research_
 ASSETS = Path(__file__).parent / "assets"
 
 
+def reference_contract_view(result) -> list[dict]:
+    """Display-only projection of verified signed data; never rewrites its identity."""
+    return [
+        {
+            "advice_id": advice.advice_id,
+            "reference_schema": result.schema_version,
+            "experiment_version": advice.experiment_version,
+            "strategy_version": getattr(advice, "strategy_version", None),
+            "cost_version": advice.cost.version,
+            "analysis_source_identity": result.worker_commit,
+            "horizon_hours": advice.horizon_hours,
+        }
+        for advice in result.advice
+    ]
+
+
 def is_public_workbench_request(method: str, path: str) -> bool:
     return method == "GET" and (
         path == "/v1/trade-advice/latest"
@@ -84,6 +100,7 @@ def install_routes(app: FastAPI, lake_root: Callable[[], Path]) -> None:
                 raise ValueError("published result is from the future")
             response = effective_snapshot(result, now)
             response["publication"] = value["publication"]
+            response["reference_contracts"] = reference_contract_view(result)
             return JSONResponse(response, headers=HEADERS)
         except (ValueError, KeyError, OSError):
             return JSONResponse(

@@ -113,6 +113,13 @@ def test_api_reads_only_published_gold_and_fails_closed_on_corruption(artifacts,
         assert response.headers["cache-control"] == "no-store"
         assert response.json()["effective_status"] == "EXPIRED"
         assert all(v["effective_action"] == "NO_VIEW" for v in response.json()["advice"])
+        bindings = response.json()["reference_contracts"]
+        assert len(bindings) == len(a["result"].advice)
+        assert all(v["analysis_source_identity"] == a["result"].worker_commit for v in bindings)
+        assert bindings[0]["reference_schema"] == a["result"].schema_version
+        assert bindings[0]["strategy_version"] == a["result"].advice[0].strategy_version
+        signed = read_json(gold / "publication.json", max_bytes=1024**2)["result"]
+        assert "reference_contracts" not in signed
         advice_id = response.json()["advice"][0]["advice_id"]
         detail = client.get(f"/v1/trade-advice/{advice_id}")
         assert detail.status_code == 200

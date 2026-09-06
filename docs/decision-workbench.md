@@ -111,3 +111,24 @@ API 仅限量读取两个紧凑 JSON，并通过字段白名单和容量/时间�
 V5 候选消费回执和同资金收益对照仍未接入。本轮解决成本可测量和参考及时发布，不将历史描述统计或预留误差误报为账户盈利证据。
 
 接口依据：[OKX 费率文档](https://www.okx.com/docs-v5#trading-account-rest-api-get-fee-rates)、[OKX 字段变更记录](https://www.okx.com/docs-v5/log_en/)。
+# R1–R4 downstream research contract, 2026-09-06
+
+The public read view now exposes `reference_contracts`, derived only after the
+archived result signature and content identities pass verification. These display
+fields do not change signed AdviceV1/AdviceV2, result IDs, expiry or ledger history.
+Each binding contains result schema, experiment, strategy, cost, worker commit as
+analysis source identity, and horizon. Legacy strategy absence stays explicit.
+
+V5 review v2 predeclares one exact set of these six fields. New input, advice,
+publication or presentation metadata may refresh within the same semantics;
+an unknown/different analysis source or semantic version is recorded without
+affecting the existing experiment. A new worker release requires a new downstream
+cohort. No historical reference is backfilled and no live authorization is granted.
+
+V5 A/B/C/D evaluate entries together at the first observable quote at or after
+hour + 360 seconds, with a deadline of hour + 480 seconds. All groups use the same
+decision quote, and simulated execution still requires the next observable quote.
+References received later are diagnosed separately, never applied retroactively.
+D studies only 24-hour DEFER on an existing matched candidate, not REVIEW_ENTRY
+creation. Candidate-level coverage and actual treatment exposure belong to V5's
+independent account report, not the middle platform's HTTP/advice/price-label counts.

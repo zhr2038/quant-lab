@@ -160,6 +160,7 @@ def test_v5_telemetry_retention_is_bounded_and_separate_from_redacted_archive():
     assert "--keep-restricted-archive-days 7" in service
     assert "--keep-inbox-days 2" in service
     assert "archive/v5" not in service
+    assert "ExecStartPre=+/usr/bin/install -d -o quantlab -g quantlab -m 0750" in service
     assert "quant-lab-heavy.lock" in service
     assert "quant-lab-v5-telemetry-sync.lock" in service
     assert "--output-json /var/lib/quant-lab/ops/v5_telemetry_retention/latest.json" in service

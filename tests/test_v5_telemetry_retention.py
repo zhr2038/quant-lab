@@ -7,9 +7,13 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import polars as pl
+from typer.testing import CliRunner
 
+import quant_lab.cli as cli_module
 from quant_lab.data.lake import write_parquet_dataset
 from quant_lab.strategy_telemetry.retention import (
+    V5TelemetryRetentionResult,
+    prepare_v5_telemetry_retention_report,
     prune_v5_telemetry_storage,
     write_v5_telemetry_retention_report,
 )
@@ -139,6 +143,46 @@ def test_retention_report_is_atomic_and_bounded(tmp_path: Path) -> None:
     assert payload["schema_version"] == "quant_lab.v5_telemetry_retention.v1"
     assert payload["ok"] is True
     assert not output.with_name(f".{output.name}.tmp").exists()
+
+
+def test_retention_report_preflight_creates_parent_and_removes_probe(tmp_path: Path) -> None:
+    output = tmp_path / "new/retention/latest.json"
+
+    prepare_v5_telemetry_retention_report(output)
+
+    assert output.parent.is_dir()
+    assert not output.exists()
+    assert list(output.parent.glob("*.preflight")) == []
+
+
+def test_cli_checks_report_destination_before_pruning(tmp_path: Path, monkeypatch) -> None:
+    events: list[str] = []
+
+    def fail_preflight(_path: Path) -> None:
+        events.append("preflight")
+        raise PermissionError("report destination is not writable")
+
+    def unexpected_prune(**_kwargs) -> V5TelemetryRetentionResult:
+        events.append("prune")
+        raise AssertionError("prune must not run after report preflight failure")
+
+    monkeypatch.setattr(cli_module, "prepare_v5_telemetry_retention_report", fail_preflight)
+    monkeypatch.setattr(cli_module, "prune_v5_telemetry_storage", unexpected_prune)
+    result = CliRunner().invoke(
+        cli_module.app,
+        [
+            "prune-v5-telemetry-storage",
+            "--base-dir",
+            str(tmp_path),
+            "--apply",
+            "--output-json",
+            str(tmp_path / "blocked/latest.json"),
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert isinstance(result.exception, PermissionError)
+    assert events == ["preflight"]
 
 
 def _write_manifest(root: Path, hashes: list[str]) -> None:

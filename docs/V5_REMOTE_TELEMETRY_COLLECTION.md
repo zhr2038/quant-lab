@@ -128,6 +128,7 @@ sudo cp deploy/systemd/*.timer /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now quant-lab-v5-telemetry-sync.timer
 sudo systemctl enable --now quant-lab-v5-daily-analysis.timer
+sudo systemctl enable --now quant-lab-v5-telemetry-retention.timer
 ```
 
 Incremental sync runs every 3 minutes:
@@ -141,6 +142,14 @@ Telemetry analysis runs every 5 minutes:
 ```text
 /opt/quant-lab/.venv/bin/qlab analyze-v5-telemetry --lake-root /var/lib/quant-lab/lake
 ```
+
+After a bundle is parsed into Bronze/Silver, its expanded redacted files are
+repacked as `redacted_bundle.tar.gz`. The long-term NAS archive verifies a
+per-file SHA256 manifest before pruning a qyun2 redacted day older than two
+days. The separate daily telemetry-retention timer removes inbox copies older
+than two days and restricted raw copies older than seven days only when their
+SHA256 values are already present in the lake bundle manifest. Missing or
+unreadable manifests fail closed and leave the source data in place.
 
 ## Lake Outputs
 

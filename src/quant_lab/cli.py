@@ -54,6 +54,10 @@ from quant_lab.strategy_telemetry.ingest import ingest_v5_bundle as ingest_v5_bu
 from quant_lab.strategy_telemetry.ingest import ingest_v5_inbox as ingest_v5_inbox_dir
 from quant_lab.strategy_telemetry.models import BundleLimits
 from quant_lab.strategy_telemetry.remote_pull import RemoteBundlePuller
+from quant_lab.strategy_telemetry.retention import (
+    prune_v5_telemetry_storage,
+    write_v5_telemetry_retention_report,
+)
 from quant_lab.strategy_telemetry.sanitize import scan_for_secrets
 
 app = typer.Typer(help="quant-lab read-only research utilities.")
@@ -1438,6 +1442,62 @@ def sync_v5_telemetry_command(
     typer.echo(json.dumps(output, indent=None if compact_output else 2, sort_keys=True))
     if _v5_sync_has_operational_pull_failure(payload):
         raise typer.Exit(2)
+
+
+@app.command("prune-v5-telemetry-storage")
+def prune_v5_telemetry_storage_command(
+    base_dir: Annotated[
+        Path,
+        typer.Option(
+            "--base-dir",
+            file_okay=False,
+            dir_okay=True,
+            help="quant-lab data root containing the V5 inbox, restricted archive and lake.",
+        ),
+    ] = Path("/var/lib/quant-lab"),
+    keep_restricted_archive_days: Annotated[
+        int,
+        typer.Option("--keep-restricted-archive-days", min=1),
+    ] = 7,
+    keep_inbox_days: Annotated[int, typer.Option("--keep-inbox-days", min=1)] = 2,
+    dry_run: Annotated[
+        bool,
+        typer.Option(
+            "--dry-run/--apply",
+            help="Preview eligible removals by default; pass --apply to remove verified copies.",
+        ),
+    ] = True,
+    output_json: Annotated[
+        Path | None,
+        typer.Option("--output-json", help="Atomically write the latest retention result."),
+    ] = None,
+    max_paths_reported: Annotated[
+        int,
+        typer.Option("--max-paths-reported", min=0),
+    ] = 50,
+) -> None:
+    result = prune_v5_telemetry_storage(
+        base_dir=base_dir,
+        keep_restricted_archive_days=keep_restricted_archive_days,
+        keep_inbox_days=keep_inbox_days,
+        dry_run=dry_run,
+    )
+    if output_json is not None:
+        write_v5_telemetry_retention_report(
+            output_json,
+            result,
+            max_paths_reported=max_paths_reported,
+        )
+    typer.echo(
+        json.dumps(
+            result.to_dict(max_paths_reported=max_paths_reported),
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        )
+    )
+    if not result.ok:
+        raise typer.Exit(1)
 
 
 def _compact_v5_sync_payload(payload: dict[str, object]) -> dict[str, object]:

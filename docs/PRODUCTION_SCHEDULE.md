@@ -137,6 +137,7 @@ mismatch warning.
 The repository includes these timer templates:
 
 - `deploy/systemd/quant-lab-v5-telemetry-sync.timer`
+- `deploy/systemd/quant-lab-v5-telemetry-retention.timer`
 - `deploy/systemd/quant-lab-v5-daily-analysis.timer`
 - `deploy/systemd/quant-lab-v5-research-refresh.timer`
 - `deploy/systemd/quant-lab-v5-candidate-evidence-request.timer`

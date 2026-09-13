@@ -1,6 +1,7 @@
 import csv
 import gzip
 import json
+import tarfile
 from io import StringIO
 
 import polars as pl
@@ -57,6 +58,29 @@ def test_ingest_parses_state_files(tmp_path):
     }
 
 
+def test_ingest_compacts_redacted_files_after_parsing(tmp_path):
+    bundle = make_v5_bundle_fixture(tmp_path / "v5_live_followup_bundle_20260510T140249Z.tar.gz")
+    lake = tmp_path / "lake"
+
+    result = ingest_v5_bundle(bundle, lake, tmp_path / "restricted", tmp_path / "redacted")
+
+    redacted_root = tmp_path / "redacted" / "2026-05-10" / result.bundle_sha256
+    archive_path = redacted_root / "redacted_bundle.tar.gz"
+    report = json.loads((redacted_root / "redaction_report.json").read_text(encoding="utf-8"))
+    assert archive_path.is_file()
+    assert not (redacted_root / "redacted_files").exists()
+    assert report["archive_file"] == archive_path.name
+    assert report["archive_size_bytes"] == archive_path.stat().st_size
+    assert report["expanded_files_retained"] is False
+    with tarfile.open(archive_path, "r:gz") as archive:
+        names = set(archive.getnames())
+        summary = archive.extractfile("summaries/window_summary.json")
+        assert summary is not None
+        summary_payload = summary.read()
+    assert "summaries/window_summary.json" in names
+    assert json.loads(summary_payload)["run_count"] == 1
+
+
 def test_sync_ingest_can_skip_large_historical_outcomes(tmp_path):
     bundle = make_tar(
         tmp_path / "v5_live_followup_bundle_20260510T140249Z.tar.gz",
@@ -105,9 +129,11 @@ def test_sync_ingest_can_skip_large_historical_outcomes(tmp_path):
     assert historical.is_empty()
     assert shadow.is_empty()
     assert any("skipped_historical_outcome_file" in warning for warning in result.warnings)
-    redacted_root = tmp_path / "redacted" / "2026-05-10" / result.bundle_sha256 / "redacted_files"
-    assert not (redacted_root / "summaries/high_score_blocked_outcomes.csv").exists()
-    assert not (redacted_root / "summaries/alt_impulse_shadow_outcomes.csv").exists()
+    redacted_root = tmp_path / "redacted" / "2026-05-10" / result.bundle_sha256
+    with tarfile.open(redacted_root / "redacted_bundle.tar.gz", "r:gz") as archive:
+        names = set(archive.getnames())
+    assert "summaries/high_score_blocked_outcomes.csv" not in names
+    assert "summaries/alt_impulse_shadow_outcomes.csv" not in names
 
 
 def test_ingest_routes_alt_impulse_readiness_json_to_state_snapshot(tmp_path):

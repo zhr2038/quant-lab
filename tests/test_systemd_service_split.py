@@ -104,9 +104,27 @@ def test_cost_calibration_starts_readonly_private_backfill_when_configured():
     assert "TimeoutStartSec=30min" in unit
 
 
-def test_nas_redacted_archive_is_pull_only_and_checksum_verified():
+def test_nas_redacted_archive_prunes_source_only_after_checksum_verified_copy():
     script = (
         ROOT / "deploy" / "nas_archive" / "pull_qyun2_redacted_v5.sh"
+    ).read_text(encoding="utf-8")
+    prune_script = (
+        ROOT
+        / "deploy"
+        / "nas_archive"
+        / "prune_verified_redacted_v5_archive.py"
+    ).read_text(encoding="utf-8")
+    verify_script = (
+        ROOT
+        / "deploy"
+        / "nas_archive"
+        / "verify_redacted_v5_archive_receipt.py"
+    ).read_text(encoding="utf-8")
+    sudoers = (
+        ROOT
+        / "deploy"
+        / "nas_archive"
+        / "quant-research-redacted-v5-prune.sudoers"
     ).read_text(encoding="utf-8")
 
     assert "archive/v5/bundles" in script
@@ -115,8 +133,38 @@ def test_nas_redacted_archive_is_pull_only_and_checksum_verified():
     assert "cmp --silent" in script
     assert ".archive_manifest.sha256" in script
     assert "ARCHIVE_COMPLETE_HISTORY_RETAINED" in script
-    assert "retention_removed" not in script
     assert "/volume2/quant-lab/archive/current/qyun2" in script
+    assert "verified_receipt_fields" in script
+    assert "verify_redacted_v5_archive_receipt.py" in script
+    assert "QUANT_ARCHIVE_SOURCE_KEEP_DAYS:-2" in script
+    assert "prune_verified_redacted_v5_archive.py" in script
+    assert "--expected-manifest-sha256" in script
+    assert "--expected-file-count" in script
+    assert "--apply" in script
+    assert 'rm -rf -- "$SOURCE_ROOT' not in script
+    assert "PRODUCTION_SOURCE_ROOT" in prune_script
+    assert "build_source_manifest" in prune_script
+    assert "source manifest sha256 mismatch" in prune_script
+    assert "shutil.rmtree(day_root)" in prune_script
+    assert "redacted archive payload checksum mismatch" in verify_script
+    assert "redacted archive payload set differs from manifest" in verify_script
+    assert "(quantlab) NOPASSWD" in sudoers
+    assert "prune_verified_redacted_v5_archive.py" in sudoers
+
+
+def test_v5_telemetry_retention_is_bounded_and_separate_from_redacted_archive():
+    service = _unit("quant-lab-v5-telemetry-retention.service")
+    timer = _unit("quant-lab-v5-telemetry-retention.timer")
+
+    assert "prune-v5-telemetry-storage" in service
+    assert "--keep-restricted-archive-days 7" in service
+    assert "--keep-inbox-days 2" in service
+    assert "archive/v5" not in service
+    assert "quant-lab-heavy.lock" in service
+    assert "quant-lab-v5-telemetry-sync.lock" in service
+    assert "--output-json /var/lib/quant-lab/ops/v5_telemetry_retention/latest.json" in service
+    assert "OnCalendar=*-*-* 16:30:00" in timer
+    assert "Persistent=true" in timer
 
 
 def test_nas_high_frequency_archive_requires_verified_copy_before_source_prune():

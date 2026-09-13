@@ -11,6 +11,7 @@
     "okx-ws",
     "risk-permission",
     "v5-daily-analysis",
+    "v5-telemetry-retention",
     "v5-telemetry-sync"
   ],
   "retired_units": [

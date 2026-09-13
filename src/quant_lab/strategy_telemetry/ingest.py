@@ -5,6 +5,7 @@ import gzip
 import hashlib
 import json
 import shutil
+import tarfile
 import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
@@ -407,6 +408,20 @@ def ingest_v5_bundle(
             metadata,
             include_historical_outcomes=include_historical_outcomes,
         )
+        redacted_archive = _compact_redacted_files(
+            redacted_root / "redacted_files",
+            redacted_root / "redacted_bundle.tar.gz",
+        )
+        redaction_payload = redaction.model_dump(mode="json")
+        redaction_payload.update(
+            {
+                "archive_file": redacted_archive.name,
+                "archive_sha256": compute_sha256(redacted_archive),
+                "archive_size_bytes": redacted_archive.stat().st_size,
+                "expanded_files_retained": False,
+            }
+        )
+        _write_archive_json(redacted_root, "redaction_report.json", redaction_payload)
         warnings = prune_warnings + warnings
         candidate_gold_rows = {}
 
@@ -435,6 +450,44 @@ def ingest_v5_bundle(
         gold_rows={"strategy_health_daily": 1 if analysis else 0, **candidate_gold_rows},
         warnings=warnings,
     )
+
+
+def _compact_redacted_files(source_dir: Path, archive_path: Path) -> Path:
+    source = Path(source_dir)
+    target = Path(archive_path)
+    if not source.is_dir():
+        raise FileNotFoundError(f"redacted files directory missing: {source}")
+    files = sorted(item for item in source.rglob("*") if item.is_file())
+    expected = [
+        (item.relative_to(source).as_posix(), compute_sha256(item)) for item in files
+    ]
+    temporary = target.with_name(f".{target.name}.tmp")
+    temporary.unlink(missing_ok=True)
+    try:
+        with tarfile.open(temporary, mode="w:gz", compresslevel=6) as archive:
+            for file_path, (relative, _) in zip(files, expected, strict=True):
+                archive.add(file_path, arcname=relative, recursive=False)
+        with tarfile.open(temporary, mode="r:gz") as archive:
+            members = [member for member in archive.getmembers() if member.isfile()]
+            if [member.name for member in members] != [name for name, _ in expected]:
+                raise ValueError("redacted archive member verification failed")
+            for member, (_, expected_sha256) in zip(members, expected, strict=True):
+                extracted = archive.extractfile(member)
+                if extracted is None:
+                    raise ValueError(f"redacted archive member is unreadable: {member.name}")
+                digest = hashlib.sha256()
+                while block := extracted.read(1024 * 1024):
+                    digest.update(block)
+                if digest.hexdigest() != expected_sha256:
+                    raise ValueError(
+                        f"redacted archive member checksum mismatch: {member.name}"
+                    )
+        temporary.replace(target)
+        shutil.rmtree(source)
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        raise
+    return target
 
 
 def ingest_v5_inbox(

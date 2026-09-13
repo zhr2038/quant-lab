@@ -55,6 +55,7 @@ from quant_lab.strategy_telemetry.ingest import ingest_v5_inbox as ingest_v5_inb
 from quant_lab.strategy_telemetry.models import BundleLimits
 from quant_lab.strategy_telemetry.remote_pull import RemoteBundlePuller
 from quant_lab.strategy_telemetry.retention import (
+    prepare_v5_telemetry_retention_report,
     prune_v5_telemetry_storage,
     write_v5_telemetry_retention_report,
 )
@@ -1476,6 +1477,8 @@ def prune_v5_telemetry_storage_command(
         typer.Option("--max-paths-reported", min=0),
     ] = 50,
 ) -> None:
+    if output_json is not None:
+        prepare_v5_telemetry_retention_report(output_json)
     result = prune_v5_telemetry_storage(
         base_dir=base_dir,
         keep_restricted_archive_days=keep_restricted_archive_days,

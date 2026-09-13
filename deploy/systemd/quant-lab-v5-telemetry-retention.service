@@ -9,6 +9,7 @@ User=quantlab
 Group=quantlab
 WorkingDirectory=/opt/quant-lab
 Environment=PYTHONUNBUFFERED=1
+ExecStartPre=+/usr/bin/install -d -o quantlab -g quantlab -m 0750 /var/lib/quant-lab/ops/v5_telemetry_retention
 ExecStart=/bin/bash -lc 'set -euo pipefail; /usr/bin/flock -E 75 -w 600 /var/lock/quant-lab-heavy.lock /usr/bin/flock -E 75 -w 60 /var/lock/quant-lab-v5-telemetry-sync.lock /usr/bin/timeout 20m /opt/quant-lab/.venv/bin/qlab prune-v5-telemetry-storage --base-dir /var/lib/quant-lab --keep-restricted-archive-days 7 --keep-inbox-days 2 --apply --output-json /var/lib/quant-lab/ops/v5_telemetry_retention/latest.json --max-paths-reported 50 || { code="$?"; if [ "$${code}" = "75" ]; then echo "SKIP_V5_TELEMETRY_RETENTION_LOCK_BUSY"; exit 0; fi; exit "$${code}"; }'
 Nice=15
 IOSchedulingClass=idle

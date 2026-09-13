@@ -4,6 +4,7 @@ import hashlib
 import json
 import re
 import shutil
+import tempfile
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -143,6 +144,21 @@ def write_v5_telemetry_retention_report(
         encoding="utf-8",
     )
     temporary.replace(target)
+
+
+def prepare_v5_telemetry_retention_report(path: str | Path) -> None:
+    """Fail before pruning when the configured report destination is not writable."""
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        encoding="utf-8",
+        dir=target.parent,
+        prefix=f".{target.name}.",
+        suffix=".preflight",
+    ) as probe:
+        probe.write("{}\n")
+        probe.flush()
 
 
 def _load_ingested_bundle_sha256s(

@@ -23,8 +23,17 @@ def prune_acknowledged(
     if ack.get("schema_version") != "qlab.decision.archive_ack.v1":
         raise ValueError("unsupported NAS archive acknowledgement")
     at = datetime.fromisoformat(ack["generated_at"])
-    if at.tzinfo is None or at > now + timedelta(seconds=5) or now - at > timedelta(days=2):
+    if at.tzinfo is None or at > now + timedelta(seconds=5):
         raise ValueError("NAS archive acknowledgement is stale or future-dated")
+    if now - at > timedelta(days=2):
+        status = {
+            "status": "BLOCKED_STALE_NAS_ARCHIVE_ACK",
+            "at": now.isoformat(),
+            "ack_at": ack["generated_at"],
+            "removed": [],
+        }
+        atomic_json(root / "retention-status.json", status)
+        return status
     if len(ack["entries"]) > 10_000:
         raise ValueError("NAS archive acknowledgement exceeds entry budget")
     protected = set()

@@ -225,6 +225,30 @@ def test_retention_requires_signed_exact_nas_readback_and_preserves_current(arti
     assert not old.exists() and current.exists()
 
 
+def test_stale_archive_ack_blocks_pruning_and_records_status(artifacts):
+    a = artifacts
+    now = datetime.now(UTC)
+    ack = {
+        "schema_version": "qlab.decision.archive_ack.v1",
+        "generated_at": (now - timedelta(days=3)).isoformat(),
+        "entries": [],
+    }
+    ack["signature"] = sign_payload(ack, a["worker"])
+    atomic_json(a["root"] / "inbox" / "archive-ack.json", ack)
+
+    result = prune_acknowledged(
+        a["root"], a["root"], worker_public_key=a["worker_public_key"], now=now
+    )
+
+    assert result == {
+        "status": "BLOCKED_STALE_NAS_ARCHIVE_ACK",
+        "at": now.isoformat(),
+        "ack_at": ack["generated_at"],
+        "removed": [],
+    }
+    assert read_json(a["root"] / "retention-status.json", max_bytes=2 * 1024**2) == result
+
+
 def test_worker_archives_then_uploads_and_unchanged_input_never_renews_advice(
     artifacts, monkeypatch
 ):

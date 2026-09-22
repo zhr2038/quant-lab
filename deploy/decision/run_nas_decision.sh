@@ -2,19 +2,27 @@
 set -euo pipefail
 ROOT=/volume2/quant-lab/decision
 STATE=/volume1/docker/quant-decision
+mkdir -p "$ROOT/logs" "$STATE"
+# Keep bounded daily evidence instead of overwriting the only failure record.
+# Only this script's dated, regenerable logs are rotated; archive evidence stays.
+find "$ROOT/logs" -maxdepth 1 -type f -name 'worker-????-??-??.log' -mtime +30 -delete
+exec >>"$ROOT/logs/worker-$(date -u +%F).log" 2>&1
+echo "DECISION_WORKER_ATTEMPT $(date -u +%FT%TZ)"
 exec 9>"$ROOT/worker.lock"
 flock -n 9 || { echo 'DECISION_WORKER_BUSY'; exit 0; }
 image="$(cat "$ROOT/image-ref")"
 [[ "$image" =~ ^quant-decision:[a-f0-9]{40}$ ]] || { echo 'INVALID_IMAGE_REF' >&2; exit 2; }
-mkdir -p "$ROOT/logs" "$STATE"
 available_kib="$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo)"
 if (( available_kib < 6291456 )); then
   echo 'DECISION_DEFERRED_NAS_MEMORY_RESERVE_BELOW_6_GIB' >&2
   exit 75
 fi
 cleanup() {
+  code=$?
   label="$(docker inspect --format '{{index .Config.Labels "com.quant-lab.component"}}' quant-decision-job 2>/dev/null || true)"
-  if [[ "$label" == decision ]]; then docker stop --time 15 quant-decision-job >/dev/null; fi
+  if [[ "$label" == decision ]]; then docker stop --time 15 quant-decision-job >/dev/null || true; fi
+  echo "DECISION_WORKER_EXIT $(date -u +%FT%TZ) code=$code"
+  exit "$code"
 }
 trap cleanup EXIT
 # A one-shot container; no daemon, no automatic restart, no Docker socket mount.

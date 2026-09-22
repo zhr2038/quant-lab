@@ -10,7 +10,8 @@ from pathlib import Path
 import polars as pl
 
 from quant_lab.decision.contracts import HORIZONS, SYMBOLS, AnalysisResult, HourBar
-from quant_lab.decision.contracts_v2 import EXPERIMENT_VERSION, STRATEGY_VERSION, AnalysisResultV2
+from quant_lab.decision.contracts_v2 import EXPERIMENT_VERSION, STRATEGY_VERSION
+from quant_lab.decision.contracts_v3 import AnalysisResultV3
 from quant_lab.decision.engine import build_advice, content_hash, prepare_history
 from quant_lab.decision.ledger import Ledger
 from quant_lab.decision.pipeline import read_hour_bars
@@ -109,12 +110,31 @@ class Transport:
 
     @staticmethod
     def _run(command: list[str], *, stdin: bytes | None = None):
-        result = subprocess.run(command, input=stdin, capture_output=True, timeout=180)
-        if result.returncode:
-            raise RuntimeError(
-                "SSH transfer failed: " + result.stderr.decode(errors="replace")[-600:]
-            )
-        return result
+        # Atomic destinations make one bounded retry safe. Authentication, host-key,
+        # permission and archive validation errors are never retried or ignored.
+        for attempt in range(2):
+            try:
+                result = subprocess.run(command, input=stdin, capture_output=True, timeout=180)
+            except subprocess.TimeoutExpired:
+                if attempt:
+                    raise
+            else:
+                if result.returncode == 0:
+                    return result
+                detail = result.stderr.decode(errors="replace")[-600:]
+                permanent = any(
+                    term in detail.lower()
+                    for term in (
+                        "permission denied",
+                        "host key verification failed",
+                        "remote host identification",
+                    )
+                )
+                if attempt or permanent or result.returncode not in {10, 12, 24, 30, 35, 255}:
+                    raise RuntimeError("SSH transfer failed: " + detail)
+            print("DECISION_TRANSFER_TRANSIENT_RETRY", flush=True)
+            time.sleep(2)
+        raise AssertionError("unreachable transfer retry state")
 
 
 def check_capacity(state: Path, archive: Path) -> None:
@@ -286,11 +306,11 @@ def run_worker(
         and previous.forward.model_dump(exclude={"published_from", "published_until"})
         == forward.model_dump(exclude={"published_from", "published_until"})
     ):
-        ack = write_archive_ack(archive, signing_key, input_key, current)
-        transfer.push(ack, name="archive-ack.json")
         if previous.result_id not in {item["result_id"] for item in publications["publications"]}:
             old = archive / "results" / (previous.result_id + ".json")
             transfer.push(old, name=old.name)
+        ack = write_archive_ack(archive, signing_key, input_key, current)
+        transfer.push(ack, name="archive-ack.json")
         atomic_json(
             archive / "worker-status.json",
             {
@@ -314,7 +334,12 @@ def run_worker(
             for symbol in SYMBOLS
             for horizon in HORIZONS
         ]
-    result = AnalysisResultV2(
+    continuity_warnings = (
+        ["FORWARD_REGISTRATION_GAPS"] if forward.registration.status == "GAPS" else []
+    )
+    if any(row.late_publication_hours for row in forward.registration.by_symbol):
+        continuity_warnings.append("FORWARD_PUBLICATION_DELAY_OVER_15_MINUTES")
+    result = AnalysisResultV3(
         result_id="result-" + "0" * 64,
         generated_at=current,
         input_snapshot_id=inputs.snapshot_id,
@@ -326,6 +351,7 @@ def run_worker(
         peak_rss_mib=peak_rss_mib(),
         warnings=inputs.warnings
         + compatibility_warnings
+        + continuity_warnings
         + (["NO_HISTORY_AVAILABLE"] if not history else []),
         signature="pending",
     )
@@ -336,9 +362,12 @@ def run_worker(
     if load_result(path, signing_key.public_key()) != result:
         raise ValueError("result archive readback mismatch")
     atomic_json(previous_path, result)
+    # Publication has a deadline; an already archived/read-back result must not
+    # wait behind the full HDD archive acknowledgement scan. Retention remains
+    # gated by its independent signed acknowledgement on the cloud.
+    transfer.push(path, name=path.name)
     ack = write_archive_ack(archive, signing_key, input_key, current)
     transfer.push(ack, name="archive-ack.json")
-    transfer.push(path, name=path.name)
     atomic_json(
         archive / "worker-status.json",
         {

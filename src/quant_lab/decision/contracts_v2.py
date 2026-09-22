@@ -101,6 +101,10 @@ class AnalysisResultV2(AnalysisResult):
 
 def parse_result(value: dict) -> AnalysisResult | AnalysisResultV2:
     schema = value.get("schema_version")
+    if schema == "qlab.decision.result.v3":
+        from quant_lab.decision.contracts_v3 import AnalysisResultV3
+
+        return AnalysisResultV3.model_validate(value)
     if schema == "qlab.decision.result.v2":
         return AnalysisResultV2.model_validate(value)
     if schema == "qlab.decision.result.v1":

@@ -14,6 +14,8 @@ import duckdb
 from quant_lab.contracts.models import require_utc
 from quant_lab.decision.contracts import AnalysisResult, ForwardGroup, HourBar
 from quant_lab.decision.contracts_v2 import STRATEGY_VERSION, ScopedForwardSummary
+from quant_lab.decision.contracts_v3 import ObservedForwardSummary
+from quant_lab.decision.observation_diagnostics import mature_non_overlapping, registration_coverage
 
 
 class Ledger:
@@ -219,7 +221,14 @@ class Ledger:
             if symbol not in last_exit or entry >= last_exit[symbol]:
                 independent += 1
                 last_exit[symbol] = exit_at
-        return ScopedForwardSummary(
+        cursor = self.con.execute(
+            "SELECT symbol,opportunity,horizon,action,published_at,entry_at,exit_at,"
+            "label_at,gross_bps,net_bps FROM observations WHERE " + clause,
+            params,
+        )
+        columns = [column[0] for column in cursor.description]
+        rows = [dict(zip(columns, row, strict=True)) for row in cursor.fetchall()]
+        return ObservedForwardSummary(
             experiment=experiment,
             strategy_version=strategy_version,
             cost_versions=sorted(set(cost_versions)),
@@ -233,6 +242,8 @@ class Ledger:
             matured_observations=mature,
             waiting_observations=waiting,
             missing_label_observations=total - mature - waiting,
+            registration=registration_coverage(rows, now=published_until),
+            mature_non_overlapping_by_group=mature_non_overlapping(rows, now=now),
             by_group=[
                 ForwardGroup(
                     horizon_hours=h, action=a, observations=n, gross_mean_bps=g, net_mean_bps=v

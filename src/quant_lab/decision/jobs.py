@@ -78,7 +78,19 @@ def cloud_cycle(
     public = lake_root / "gold" / "decision_reference"
     worker_key = private_root / "worker.pub"
     # Garbage collection is gated by an authenticated NAS readback, never free-space heuristics.
-    retained = prune_acknowledged(job_root, public, worker_public_key=worker_key, now=now)
+    try:
+        retained = prune_acknowledged(job_root, public, worker_public_key=worker_key, now=now)
+    except (ValueError, OSError) as exc:
+        # Retention is independent housekeeping. Fail closed for deletion while
+        # still accepting signed results and refreshing the time-critical input.
+        retained = {
+            "status": "BLOCKED_RETENTION_ERROR",
+            "at": now.isoformat(),
+            "reason": type(exc).__name__,
+            "removed": None,
+            "removal_count_known": False,
+        }
+        atomic_json(job_root / "retention-status.json", retained)
     accepted = accept_results(
         job_root,
         worker_public_key=worker_key,
@@ -97,11 +109,11 @@ def cloud_cycle(
     status = {
         "input": inputs,
         "acceptance": accepted,
-        "pruned": len(retained["removed"]),
+        "pruned": len(retained["removed"]) if retained["removed"] is not None else None,
         "retention_status": retained["status"],
     }
     typer.echo(json.dumps(status))
-    if accepted["rejected"]:
+    if accepted["rejected"] or retained["status"] == "BLOCKED_RETENTION_ERROR":
         raise typer.Exit(2)
 
 

@@ -293,6 +293,7 @@ def test_worker_archives_then_uploads_and_unchanged_input_never_renews_advice(
         "transport": FakeTransport(),
     }
     first = run_worker(**args, now=a["now"])
+    assert uploaded[:2] == [first.result_id + ".json", "archive-ack.json"]
     publications["publications"] = [
         {"result_id": first.result_id, "published_at": a["now"].isoformat()}
     ]
